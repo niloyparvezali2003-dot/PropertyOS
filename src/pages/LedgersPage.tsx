@@ -1,0 +1,1771 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
+
+import {
+  AlertCircle,
+  BookOpen,
+  Building2,
+  CalendarDays,
+  Download,
+  Gauge,
+  LoaderCircle,
+  RefreshCw,
+  Search,
+  Users,
+  Wallet,
+  Zap,
+} from 'lucide-react'
+
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
+
+import type { Timestamp } from 'firebase/firestore'
+
+import {
+  loadLedgerSourceData,
+  type LedgerSourceData,
+} from '../services/firebase/ledgers'
+import {
+  DEFAULT_WORKSPACE_SETTINGS,
+  loadWorkspaceSettings,
+  type WorkspaceSettings,
+} from '../services/firebase/workspaceSettings'
+
+import type { ElectricityBillRecord } from '../services/firebase/electricity'
+import type { MeterRecord } from '../services/firebase/meters'
+import type { PaymentAllocationFormValues } from '../schemas/payment'
+
+import type {
+  PaymentRecord,
+} from '../services/firebase/payments'
+
+import type { RentBillRecord } from '../services/firebase/rentBills'
+import type { RoomRecord } from '../services/firebase/rooms'
+import type { TenantRecord } from '../services/firebase/tenants'
+
+import './ledgers.css'
+
+type LedgerScope = 'tenant' | 'room' | 'meter'
+
+type LedgerEntity = {
+  id: string
+  title: string
+  subtitle: string
+}
+
+type LedgerEntry = {
+  id: string
+  date: string
+  time: string
+  sortMinute: number
+  type: string
+  reference: string
+  description: string
+  debitMinor: number
+  creditMinor: number
+  balanceMinor: number
+  searchableText: string
+}
+
+type LedgerPageProps = {
+  ownerUid: string
+}
+
+// Refreshed from the signed-in account immediately before each PDF is generated.
+let activeStatementSettings: WorkspaceSettings = { ...DEFAULT_WORKSPACE_SETTINGS }
+
+function pad(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function toLocalIsoDate(date: Date): string {
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join('-')
+}
+
+function getDateFromTimestamp(
+  value: Timestamp | null,
+): string | null {
+  return value ? toLocalIsoDate(value.toDate()) : null
+}
+
+function getTimeFromTimestamp(
+  value: Timestamp | null,
+): string {
+  if (!value) return '—'
+
+  return new Intl.DateTimeFormat('en-BD', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(value.toDate())
+}
+
+function getSortMinute(
+  value: Timestamp | null,
+): number {
+  if (!value) return 0
+
+  const date = value.toDate()
+
+  return (
+    date.getHours() * 60 +
+    date.getMinutes()
+  )
+}
+
+function formatMoney(minor: number): string {
+  return `৳${new Intl.NumberFormat('en-BD', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(minor / 100)}`
+}
+
+function formatDate(value: string): string {
+  const date = new Date(`${value}T00:00:00`)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('en-BD', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(date)
+}
+
+function formatMonth(value: string): string {
+  const date = new Date(`${value}-01T00:00:00`)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('en-BD', {
+    month: 'long',
+    year: 'numeric',
+  }).format(date)
+}
+
+function buildEntities(
+  data: LedgerSourceData,
+  scope: LedgerScope,
+): LedgerEntity[] {
+  if (scope === 'tenant') {
+    return data.tenants
+      .map((tenant: TenantRecord) => ({
+        id: tenant.id,
+        title: tenant.fullName,
+        subtitle: `${tenant.tenantCode} · ${tenant.phone}`,
+      }))
+      .sort((a, b) => a.title.localeCompare(b.title))
+  }
+
+  if (scope === 'room') {
+    return data.rooms
+      .map((room: RoomRecord) => ({
+        id: room.id,
+        title: `Room ${room.roomNumber}`,
+        subtitle:
+          `${room.roomCode} · ${room.floorName} · ${room.propertyCode}`,
+      }))
+      .sort((a, b) => a.title.localeCompare(b.title))
+  }
+
+  return data.meters
+    .map((meter: MeterRecord) => ({
+      id: meter.id,
+      title: meter.meterCode,
+      subtitle: meter.serialNumber
+        ? `Serial: ${meter.serialNumber}`
+        : `Status: ${meter.status}`,
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title))
+}
+
+function safeMinor(value: number): number {
+  return Number.isSafeInteger(value) && value > 0
+    ? value
+    : 0
+}
+
+function billDate(bill: RentBillRecord): string {
+  return (
+    getDateFromTimestamp(bill.createdAt) ??
+    `${bill.billingMonth}-01`
+  )
+}
+
+function electricityDate(
+  bill: ElectricityBillRecord,
+): string {
+  return (
+    bill.readingDate ||
+    getDateFromTimestamp(bill.createdAt) ||
+    `${bill.billingMonth}-01`
+  )
+}
+
+function paymentTime(payment: PaymentRecord): string {
+  return getTimeFromTimestamp(payment.createdAt)
+}
+
+function paymentSortMinute(
+  payment: PaymentRecord,
+): number {
+  return getSortMinute(payment.createdAt)
+}
+
+function entrySearchText(
+  entry: Omit<
+    LedgerEntry,
+    'searchableText' | 'balanceMinor'
+  >,
+): string {
+  return [
+    entry.type,
+    entry.reference,
+    entry.description,
+    entry.date,
+  ].join(' ').toLocaleLowerCase()
+}
+
+// Readable references are derived deterministically from immutable Firestore IDs.
+// Collision checks make each ten-character code unique within the loaded record set.
+// These aliases are display-only: existing document IDs and saved financial data never change.
+type HumanReferenceKind = 'rent' | 'electricity' | 'payment' | 'advance' | 'meter'
+
+type HumanReferenceRegistry = {
+  rentByAssignmentId: Map<string, string>
+  electricityByMeterAssignmentId: Map<string, string>
+  paymentById: Map<string, string>
+  advanceById: Map<string, string>
+  meterEventByAssignmentId: Map<string, string>
+}
+
+function stableReferenceToken(source: string, salt: number): string {
+  const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  const input = `${source}::${salt}`
+  let hashA = 2166136261 >>> 0
+  let hashB = 0x9e3779b9 >>> 0
+
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input.charCodeAt(index)
+    hashA = Math.imul(hashA ^ character, 16777619) >>> 0
+    hashB = Math.imul(hashB ^ (character + index), 2246822519) >>> 0
+    hashB ^= hashB >>> 13
+    hashB >>>= 0
+  }
+
+  // Encode the combined 64-bit hash into ten base-36 characters without BigInt,
+  // so this also works with conservative TypeScript targets.
+  let high = hashA
+  let low = hashB
+  let token = ''
+  for (let index = 0; index < 10; index += 1) {
+    const highRemainder = high % 36
+    const nextHigh = Math.floor(high / 36)
+    const combined = highRemainder * 4294967296 + low
+    const nextLow = Math.floor(combined / 36)
+    const remainder = combined % 36
+    token = alphabet[remainder] + token
+    high = nextHigh
+    low = nextLow
+  }
+
+  return token
+}
+
+function createUniqueReferenceCodes(sourceIds: string[]): Map<string, string> {
+  const result = new Map<string, string>()
+  const used = new Set<string>()
+  const uniqueIds = [...new Set(sourceIds.filter(Boolean))].sort()
+
+  for (const sourceId of uniqueIds) {
+    let salt = 0
+    let token = stableReferenceToken(sourceId, salt)
+    while (used.has(token)) {
+      salt += 1
+      token = stableReferenceToken(sourceId, salt)
+    }
+    used.add(token)
+    result.set(sourceId, token)
+  }
+
+  return result
+}
+
+function createTransactionReferenceRegistry(
+  data: LedgerSourceData,
+): HumanReferenceRegistry {
+  return {
+    rentByAssignmentId: createUniqueReferenceCodes(
+      data.rentBills.map((bill) => bill.assignmentId),
+    ),
+    electricityByMeterAssignmentId: createUniqueReferenceCodes(
+      data.electricityBills.map((bill) => bill.meterAssignmentId),
+    ),
+    paymentById: createUniqueReferenceCodes(
+      data.payments.map((payment) => payment.id),
+    ),
+    advanceById: createUniqueReferenceCodes(
+      data.creditApplications.map((application) => application.id),
+    ),
+    meterEventByAssignmentId: createUniqueReferenceCodes(
+      data.meterAssignments.map((assignment) => assignment.id),
+    ),
+  }
+}
+
+function formatHumanReference(
+  registry: HumanReferenceRegistry,
+  kind: HumanReferenceKind,
+  sourceId: string,
+  billingMonth?: string,
+): string {
+  const monthCode = (billingMonth ?? '').replace(/\D/g, '').slice(0, 6)
+  const fallbackCode = stableReferenceToken(sourceId, 0)
+
+  switch (kind) {
+    case 'rent': {
+      const code = registry.rentByAssignmentId.get(sourceId) ?? fallbackCode
+      return `RB-${code}-${monthCode || '000000'}`
+    }
+    case 'electricity': {
+      const code = registry.electricityByMeterAssignmentId.get(sourceId) ?? fallbackCode
+      return `EB-${code}-${monthCode || '000000'}`
+    }
+    case 'payment':
+      return `P-${registry.paymentById.get(sourceId) ?? fallbackCode}`
+    case 'advance':
+      return `CA-${registry.advanceById.get(sourceId) ?? fallbackCode}`
+    case 'meter':
+      return `M-${registry.meterEventByAssignmentId.get(sourceId) ?? fallbackCode}`
+  }
+}
+function buildEntries(
+  data: LedgerSourceData,
+  scope: LedgerScope,
+  entityId: string,
+): LedgerEntry[] {
+  const entries: LedgerEntry[] = []
+  const references = createTransactionReferenceRegistry(data)
+
+  const electricityById =
+    new Map<string, ElectricityBillRecord>(
+      data.electricityBills.map(
+        (bill) => [bill.id, bill] as const,
+      ),
+    )
+
+  const add = (
+    entry: Omit<
+      LedgerEntry,
+      'balanceMinor' | 'searchableText'
+    >,
+  ) => {
+    const debitMinor = safeMinor(entry.debitMinor)
+    const creditMinor = safeMinor(entry.creditMinor)
+
+    if (debitMinor === 0 && creditMinor === 0) {
+      return
+    }
+
+    const normalized = {
+      ...entry,
+      debitMinor,
+      creditMinor,
+    }
+
+    entries.push({
+      ...normalized,
+      balanceMinor: 0,
+      searchableText: entrySearchText(normalized),
+    })
+  }
+
+  // Rent bills.
+  for (const bill of data.rentBills) {
+    if (
+      bill.status !== 'issued' ||
+      !safeMinor(bill.totalMinor)
+    ) {
+      continue
+    }
+
+    const matches =
+      scope === 'tenant'
+        ? bill.tenantId === entityId
+        : scope === 'room' &&
+          bill.roomId === entityId
+
+    if (!matches) continue
+
+    add({
+      id: `rent:${bill.id}`,
+      date: billDate(bill),
+      time: getTimeFromTimestamp(bill.createdAt),
+      sortMinute: getSortMinute(bill.createdAt),
+      type: 'Rent bill',
+      reference: formatHumanReference(references, 'rent', bill.assignmentId, bill.billingMonth),
+      description:
+        `${formatMonth(bill.billingMonth)} · ` +
+        `Room ${bill.roomNumber} · ${bill.tenantName}`,
+      debitMinor: bill.totalMinor,
+      creditMinor: 0,
+    })
+  }
+
+  // Electricity bills do not contain a tenant snapshot.
+  // Match them to exactly one assignment by room and reading date.
+  // This follows the assignment matching approach used by Payments.
+  for (const bill of data.electricityBills) {
+    if (
+      bill.status !== 'issued' ||
+      !safeMinor(bill.amountMinor)
+    ) {
+      continue
+    }
+
+    const linkedTenantAssignments =
+      data.tenantAssignments.filter((assignment) =>
+        assignment.roomId === bill.roomId &&
+        assignment.moveInDate <= bill.readingDate &&
+        (
+          assignment.moveOutDate === null ||
+          assignment.moveOutDate >= bill.readingDate
+        ),
+      )
+
+    const linkedTenantAssignment =
+      linkedTenantAssignments.length === 1
+        ? linkedTenantAssignments[0]
+        : null
+
+    const matches =
+      scope === 'tenant'
+        ? linkedTenantAssignment?.tenantId === entityId
+        : scope === 'room'
+          ? bill.roomId === entityId
+          : bill.meterId === entityId
+
+    if (!matches) continue
+
+    add({
+      id: `electricity:${bill.id}`,
+      date: electricityDate(bill),
+      time: getTimeFromTimestamp(bill.createdAt),
+      sortMinute: getSortMinute(bill.createdAt),
+      type: 'Electricity bill',
+      reference: formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.billingMonth),
+      description:
+        `${formatMonth(bill.billingMonth)} · ` +
+        `${bill.roomCode} · ${bill.meterCode} · ` +
+        `${bill.unitsConsumed} units` +
+        (
+          linkedTenantAssignment
+            ? ` · ${linkedTenantAssignment.tenantName}`
+            : ''
+        ),
+      debitMinor: bill.amountMinor,
+      creditMinor: 0,
+    })
+  }
+
+  // Payments:
+  // - Tenant ledger credits the full receipt once.
+  // - Room ledger credits only allocations belonging to that room.
+  // - Meter ledger credits only electricity allocations belonging to that meter.
+  for (const payment of data.payments) {
+    if (payment.status !== 'posted') continue
+
+    if (
+      scope === 'tenant' &&
+      payment.tenantId === entityId
+    ) {
+      add({
+        id: `payment:${payment.id}`,
+        date: payment.paidOn,
+        time: paymentTime(payment),
+        sortMinute: paymentSortMinute(payment),
+        type: 'Payment received',
+        reference: formatHumanReference(references, 'payment', payment.id),
+        description:
+          `${payment.tenantName} · ` +
+          `${payment.method.replaceAll('_', ' ')}` +
+          (
+            payment.reference
+              ? ` · ${payment.reference}`
+              : ''
+          ),
+        debitMinor: 0,
+        creditMinor: payment.amountMinor,
+      })
+
+      continue
+    }
+
+    if (scope === 'room') {
+      for (const allocation of payment.allocations) {
+        if (allocation.roomId !== entityId) continue
+
+        const linkedBill =
+          allocation.billType === 'electricity'
+            ? electricityById.get(allocation.billId)
+            : undefined
+
+        add({
+          id:
+            `payment:${payment.id}:` +
+            `${allocation.billType}:${allocation.billId}`,
+          date: payment.paidOn,
+          time: paymentTime(payment),
+          sortMinute: paymentSortMinute(payment),
+          type: 'Payment allocated',
+          reference: formatHumanReference(references, 'payment', payment.id),
+          description:
+            `${allocation.billType === 'rent' ? 'Rent' : 'Electricity'} bill · ` +
+            `Room ${allocation.roomNumber} · ${payment.tenantName}` +
+            (
+              linkedBill
+                ? ` · ${linkedBill.meterCode}`
+                : ''
+            ),
+          debitMinor: 0,
+          creditMinor: allocation.amountMinor,
+        })
+      }
+    }
+
+    if (scope === 'meter') {
+      for (const allocation of payment.allocations) {
+        if (allocation.billType !== 'electricity') {
+          continue
+        }
+
+        const bill = electricityById.get(allocation.billId)
+
+        if (!bill || bill.meterId !== entityId) {
+          continue
+        }
+
+        add({
+          id:
+            `payment:${payment.id}:` +
+            `electricity:${allocation.billId}`,
+          date: payment.paidOn,
+          time: paymentTime(payment),
+          sortMinute: paymentSortMinute(payment),
+          type: 'Payment allocated',
+          reference: formatHumanReference(references, 'payment', payment.id),
+          description:
+            `Electricity bill · ${bill.roomCode} · ` +
+            `${bill.billingMonth} · ${payment.tenantName}`,
+          debitMinor: 0,
+          creditMinor: allocation.amountMinor,
+        })
+      }
+    }
+  }
+
+  /*
+   * Advance applications are shown in room/meter ledgers when the advance
+   * is actually applied to that room or meter.
+   *
+   * They are deliberately NOT added as another credit to the tenant ledger:
+   * the original receipt already credited the full payment amount there.
+   * This avoids counting one payment twice.
+   */
+  if (scope !== 'tenant') {
+    for (const application of data.creditApplications) {
+      if (application.status !== 'posted') continue
+
+      const allocation =
+        application.allocation as PaymentAllocationFormValues
+
+      if (
+        scope === 'room' &&
+        allocation.roomId === entityId
+      ) {
+        add({
+          id: `credit-application:${application.id}`,
+          date:
+            getDateFromTimestamp(application.createdAt) ??
+            allocation.referenceDate,
+          time: getTimeFromTimestamp(application.createdAt),
+          sortMinute: getSortMinute(application.createdAt),
+          type: 'Advance applied',
+          reference: formatHumanReference(references, 'advance', application.id),
+          description:
+            `${allocation.billType === 'rent' ? 'Rent' : 'Electricity'} bill · ` +
+            `Room ${allocation.roomNumber} · ${application.tenantName}`,
+          debitMinor: 0,
+          creditMinor: application.amountMinor,
+        })
+      }
+
+      if (
+        scope === 'meter' &&
+        allocation.billType === 'electricity'
+      ) {
+        const bill = electricityById.get(allocation.billId)
+
+        if (!bill || bill.meterId !== entityId) {
+          continue
+        }
+
+        add({
+          id: `credit-application:${application.id}`,
+          date:
+            getDateFromTimestamp(application.createdAt) ??
+            allocation.referenceDate,
+          time: getTimeFromTimestamp(application.createdAt),
+          sortMinute: getSortMinute(application.createdAt),
+          type: 'Advance applied',
+          reference: formatHumanReference(references, 'advance', application.id),
+          description:
+            `Electricity bill · ${bill.roomCode} · ` +
+            `${bill.billingMonth} · ${application.tenantName}`,
+          debitMinor: 0,
+          creditMinor: application.amountMinor,
+        })
+      }
+    }
+  }
+
+  // Oldest transactions first, so each balance is cumulative.
+  entries.sort((a, b) => {
+    const byDate = a.date.localeCompare(b.date)
+
+    if (byDate !== 0) return byDate
+
+    if (a.sortMinute !== b.sortMinute) {
+      return a.sortMinute - b.sortMinute
+    }
+
+    const typeOrder =
+      (a.debitMinor > 0 ? 0 : 1) -
+      (b.debitMinor > 0 ? 0 : 1)
+
+    if (typeOrder !== 0) return typeOrder
+
+    return a.id.localeCompare(b.id)
+  })
+
+  let runningBalance = 0
+
+  return entries.map((entry) => {
+    runningBalance +=
+      entry.debitMinor - entry.creditMinor
+
+    return {
+      ...entry,
+      balanceMinor: runningBalance,
+    }
+  })
+}
+
+function isDateInside(
+  value: string,
+  start: string,
+  end: string,
+): boolean {
+  if (start && value < start) return false
+  if (end && value > end) return false
+
+  return true
+}
+
+function scopeLabel(scope: LedgerScope): string {
+  if (scope === 'tenant') return 'Tenant ledger'
+  if (scope === 'room') return 'Room ledger'
+
+  return 'Meter ledger'
+}
+
+function LedgerPageIcon({
+  scope,
+}: {
+  scope: LedgerScope
+}) {
+  if (scope === 'tenant') {
+    return <Users size={18} aria-hidden="true" />
+  }
+
+  if (scope === 'room') {
+    return <Building2 size={18} aria-hidden="true" />
+  }
+
+  return <Gauge size={18} aria-hidden="true" />
+}
+
+type StatementTable = {
+  head: string[][]
+  body: string[][]
+}
+
+function statementMoney(amountMinor: number): string {
+  return formatMoney(amountMinor)
+    .replace(/\u09F3/g, 'BDT ')
+    .replace(/\u00a0/g, ' ')
+}
+
+function statementBalance(amountMinor: number): string {
+  return amountMinor < 0
+    ? `-${statementMoney(Math.abs(amountMinor))}`
+    : statementMoney(amountMinor)
+}
+
+async function loadStatementLogo(): Promise<string | null> {
+  try {
+    const response = await fetch(import.meta.env.BASE_URL + 'icon-512.png')
+    if (!response.ok) return null
+
+    const blob = await response.blob()
+    return await new Promise<string | null>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        resolve(typeof reader.result === 'string' ? reader.result : null)
+      }
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    // The statement remains usable even if the optional logo cannot load.
+    return null
+  }
+}
+function drawStatementHeader(
+  pdf: jsPDF,
+  scope: LedgerScope,
+  entity: LedgerEntity,
+): void {
+  const pageWidth = pdf.internal.pageSize.getWidth()
+  const margin = 32
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(16)
+  pdf.setTextColor(28, 42, 62)
+  pdf.text('ACCOUNT STATEMENT', margin, 27)
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(9)
+  pdf.text(`${scopeLabel(scope)} - ${entity.title}`, margin, 43, {
+    maxWidth: pageWidth - margin * 2 - 180,
+  })
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(7.5)
+  pdf.setTextColor(90, 100, 114)
+  pdf.text(entity.subtitle, margin, 55, {
+    maxWidth: pageWidth - margin * 2 - 180,
+  })
+  pdf.text(
+    `Generated ${new Date().toLocaleString('en-GB')}`,
+    pageWidth - margin,
+    55,
+    { align: 'right' },
+  )
+
+  pdf.setDrawColor(211, 216, 224)
+  pdf.setLineWidth(0.7)
+  pdf.line(margin, 63, pageWidth - margin, 63)
+}
+
+function drawFirstPageBranding(
+  pdf: jsPDF,
+  scope: LedgerScope,
+  entity: LedgerEntity,
+  logoDataUrl: string | null,
+): void {
+  const pageWidth = pdf.internal.pageSize.getWidth()
+  const margin = 32
+
+  if (logoDataUrl) {
+    try {
+      pdf.addImage(logoDataUrl, 'PNG', margin, 10, 40, 40)
+    } catch {
+      // Keep the text branding even if the image format is unsupported.
+    }
+  }
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(16)
+  pdf.setTextColor(28, 42, 62)
+  pdf.text(activeStatementSettings.houseName, margin + 49, 25)
+
+  pdf.setFontSize(8)
+  pdf.setTextColor(36, 48, 65)
+  pdf.text('ACCOUNT STATEMENT', margin + 49, 41)
+
+  pdf.setFontSize(8.5)
+  pdf.text(scopeLabel(scope) + ' - ' + entity.title, margin + 49, 54, {
+    maxWidth: pageWidth - margin * 2 - 225,
+  })
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(7)
+  pdf.setTextColor(90, 100, 114)
+  pdf.text(entity.subtitle, margin + 49, 66, {
+    maxWidth: pageWidth - margin * 2 - 225,
+  })
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(7.5)
+  pdf.setTextColor(44, 55, 70)
+  pdf.text('Contract Number: ' + activeStatementSettings.contractNumber, pageWidth - margin, 18, {
+    align: 'right',
+  })
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(7.2)
+  pdf.text('Bkash/Nagad/Rocket/Upay: ' + activeStatementSettings.paymentContact, pageWidth - margin, 30, {
+    align: 'right',
+  })
+
+  pdf.setTextColor(90, 100, 114)
+  pdf.text('Generated ' + new Date().toLocaleString('en-GB'), pageWidth - margin, 43, {
+    align: 'right',
+  })
+
+  pdf.setDrawColor(211, 216, 224)
+  pdf.setLineWidth(0.7)
+  pdf.line(margin, 77, pageWidth - margin, 77)
+}
+function readingRecordedOnDate(
+  data: LedgerSourceData,
+  roomId: string,
+  date: string | null,
+): string {
+  if (!date) return '-'
+
+  const savedBills = data.electricityBills.filter(
+    (bill) => bill.roomId === roomId && bill.readingDate === date,
+  )
+  if (savedBills.length > 0) {
+    return [...new Set(savedBills.map(
+      (bill) => `${bill.meterCode}: ${bill.currentReading.toLocaleString('en-BD')}`,
+    ))].join('; ')
+  }
+
+  const assignmentReadings: string[] = []
+  for (const assignment of data.meterAssignments) {
+    if (assignment.roomId !== roomId) continue
+
+    if (assignment.assignedOn === date) {
+      assignmentReadings.push(
+        `${assignment.meterCode} initial: ${assignment.initialReading.toLocaleString('en-BD')}`,
+      )
+    }
+    if (assignment.endedOn === date && assignment.finalReading !== null) {
+      assignmentReadings.push(
+        `${assignment.meterCode} final: ${assignment.finalReading.toLocaleString('en-BD')}`,
+      )
+    }
+  }
+
+  return assignmentReadings.length > 0
+    ? [...new Set(assignmentReadings)].join('; ')
+    : 'No reading recorded on this date'
+}
+
+function addStatementHistoryTable(
+  pdf: jsPDF,
+  scope: LedgerScope,
+  entity: LedgerEntity,
+  title: string,
+  table: StatementTable,
+): void {
+  if (table.body.length === 0) return
+
+  pdf.addPage()
+  drawStatementHeader(pdf, scope, entity)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(10)
+  pdf.setTextColor(36, 48, 65)
+  pdf.text(title, 32, 81)
+
+  autoTable(pdf, {
+    head: table.head,
+    body: table.body,
+    startY: 94,
+    margin: { top: 94, bottom: 38, left: 32, right: 32 },
+    styles: {
+      font: 'helvetica',
+      fontSize: 7.5,
+      cellPadding: 4,
+      overflow: 'linebreak',
+      valign: 'middle',
+      textColor: [40, 48, 59],
+      lineColor: [225, 228, 233],
+      lineWidth: 0.35,
+    },
+    headStyles: {
+      fillColor: [38, 55, 79],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+    },
+    alternateRowStyles: { fillColor: [247, 248, 250] },
+    didDrawPage: (hookData) => {
+      drawStatementHeader(pdf, scope, entity)
+      if (hookData.pageNumber > 1) {
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(10)
+        pdf.setTextColor(36, 48, 65)
+        pdf.text(title, 32, 81)
+      }
+    },
+  })
+}
+
+async function downloadLedgerStatementPdf(
+  ownerUid: string,
+  scope: LedgerScope,
+  entity: LedgerEntity,
+  entries: LedgerEntry[],
+  data: LedgerSourceData,
+): Promise<void> {
+  const references = createTransactionReferenceRegistry(data)
+  activeStatementSettings = (await loadWorkspaceSettings(ownerUid)).settings
+  const logoDataUrl = await loadStatementLogo()
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
+  const pageWidth = pdf.internal.pageSize.getWidth()
+  const pageHeight = pdf.internal.pageSize.getHeight()
+  const margin = 32
+
+  const totals = entries.reduce(
+    (sum, entry) => ({
+      debits: sum.debits + entry.debitMinor,
+      credits: sum.credits + entry.creditMinor,
+    }),
+    { debits: 0, credits: 0 },
+  )
+  const currentBalance = entries.length > 0
+    ? entries[entries.length - 1].balanceMinor
+    : 0
+
+  drawFirstPageBranding(pdf, scope, entity, logoDataUrl)
+
+  const summaryY = 87
+  const summaryHeight = 37
+  const gap = 10
+  const cardWidth = (pageWidth - margin * 2 - gap * 2) / 3
+  const summaryCards = [
+    { label: 'TOTAL OUT / DEBITS', value: statementMoney(totals.debits) },
+    { label: 'TOTAL IN / CREDITS', value: statementMoney(totals.credits) },
+    { label: 'CURRENT BALANCE (NEGATIVE = CREDIT)', value: statementBalance(currentBalance) },
+  ]
+
+  summaryCards.forEach((card, index) => {
+    const x = margin + index * (cardWidth + gap)
+    pdf.setFillColor(246, 247, 249)
+    pdf.setDrawColor(230, 233, 237)
+    pdf.roundedRect(x, summaryY, cardWidth, summaryHeight, 4, 4, 'FD')
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(7)
+    pdf.setTextColor(88, 98, 112)
+    pdf.text(card.label, x + 9, summaryY + 12)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(10)
+    pdf.setTextColor(29, 42, 60)
+    pdf.text(card.value, x + 9, summaryY + 28, {
+      maxWidth: cardWidth - 18,
+    })
+  })
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(10)
+  pdf.setTextColor(36, 48, 65)
+  pdf.text('TRANSACTION HISTORY', margin, 141)
+
+  const transactionRows = entries.length > 0
+    ? entries.map((entry) => {
+      const time = /\d/.test(entry.time) ? ` ${entry.time}` : ''
+      return [
+        `${formatDate(entry.date)}${time}`,
+        entry.type,
+        `${entry.reference}\n${entry.description}`,
+        entry.debitMinor ? statementMoney(entry.debitMinor) : '-',
+        entry.creditMinor ? statementMoney(entry.creditMinor) : '-',
+        statementBalance(entry.balanceMinor),
+      ]
+    })
+    : [['-', '-', 'No financial transactions recorded', '-', '-', '-']]
+
+  autoTable(pdf, {
+    head: [[
+      'Date & Time',
+      'Transaction Type',
+      'Transaction Details / Reference',
+      'Debit',
+      'Credit',
+      'Balance',
+    ]],
+    body: transactionRows,
+    startY: 149,
+    margin: { top: 94, bottom: 38, left: margin, right: margin },
+    styles: {
+      font: 'helvetica',
+      fontSize: 7.4,
+      cellPadding: 4.5,
+      overflow: 'linebreak',
+      valign: 'middle',
+      textColor: [40, 48, 59],
+      lineColor: [225, 228, 233],
+      lineWidth: 0.35,
+    },
+    headStyles: {
+      fillColor: [38, 55, 79],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+    },
+    alternateRowStyles: { fillColor: [247, 248, 250] },
+    columnStyles: {
+      0: { cellWidth: 88 },
+      1: { cellWidth: 100 },
+      2: { cellWidth: 330 },
+      3: { cellWidth: 78, halign: 'right' },
+      4: { cellWidth: 78, halign: 'right' },
+      5: { cellWidth: 94, halign: 'right' },
+    },
+    didDrawPage: (hookData) => {
+      if (hookData.pageNumber === 1) {
+        drawFirstPageBranding(pdf, scope, entity, logoDataUrl)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(10)
+        pdf.setTextColor(36, 48, 65)
+        pdf.text('TRANSACTION HISTORY', margin, 141)
+      } else {
+        drawStatementHeader(pdf, scope, entity)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(10)
+        pdf.setTextColor(36, 48, 65)
+        pdf.text('TRANSACTION HISTORY', margin, 81)
+      }
+    },
+  })
+
+  if (scope === 'tenant') {
+    const tenantAssignments = data.tenantAssignments
+      .filter((assignment) => assignment.tenantId === entity.id)
+      .sort((a, b) => a.moveInDate.localeCompare(b.moveInDate))
+
+    addStatementHistoryTable(pdf, scope, entity, 'TENANT OCCUPANCY HISTORY', {
+      head: [[
+        'Move-in', 'Move-out', 'Room', 'Floor / Property',
+        'Meter reading at move-in', 'Meter reading at move-out', 'Status',
+      ]],
+      body: tenantAssignments.map((assignment) => [
+        assignment.moveInDate || '-',
+        assignment.moveOutDate || 'Current',
+        `Room ${assignment.roomNumber} (${assignment.roomCode})`,
+        `${assignment.floorName} / ${assignment.propertyCode}`,
+        readingRecordedOnDate(data, assignment.roomId, assignment.moveInDate),
+        assignment.moveOutDate
+          ? readingRecordedOnDate(data, assignment.roomId, assignment.moveOutDate)
+          : 'Not applicable - current assignment',
+        assignment.status.replaceAll('_', ' '),
+      ]),
+    })
+  }
+
+  if (scope === 'room') {
+    const roomAssignments = data.tenantAssignments
+      .filter((assignment) => assignment.roomId === entity.id)
+      .sort((a, b) => a.moveInDate.localeCompare(b.moveInDate))
+
+    addStatementHistoryTable(pdf, scope, entity, 'TENANT HISTORY FOR THIS ROOM', {
+      head: [[
+        'Tenant', 'Move-in', 'Move-out', 'Meter reading at move-in',
+        'Meter reading at move-out', 'Assignment status',
+      ]],
+      body: roomAssignments.map((assignment) => [
+        `${assignment.tenantName} (${assignment.tenantCode})`,
+        assignment.moveInDate || '-',
+        assignment.moveOutDate || 'Current',
+        readingRecordedOnDate(data, assignment.roomId, assignment.moveInDate),
+        assignment.moveOutDate
+          ? readingRecordedOnDate(data, assignment.roomId, assignment.moveOutDate)
+          : 'Not applicable - current assignment',
+        assignment.status.replaceAll('_', ' '),
+      ]),
+    })
+
+    const roomMeterAssignments = data.meterAssignments
+      .filter((assignment) => assignment.roomId === entity.id)
+      .sort((a, b) => a.assignedOn.localeCompare(b.assignedOn))
+
+    addStatementHistoryTable(pdf, scope, entity, 'METER ASSIGNMENT HISTORY FOR THIS ROOM', {
+      head: [[
+        'Reference', 'Meter', 'Assigned on', 'Initial reading', 'Ended on',
+        'Final reading', 'End reason', 'Status',
+      ]],
+      body: roomMeterAssignments.map((assignment) => [
+        formatHumanReference(references, 'meter', assignment.id),
+        assignment.meterCode,
+        assignment.assignedOn || '-',
+        assignment.initialReading.toLocaleString('en-BD'),
+        assignment.endedOn || 'Current',
+        assignment.finalReading === null
+          ? '-'
+          : assignment.finalReading.toLocaleString('en-BD'),
+        assignment.endReason ? assignment.endReason.replaceAll('_', ' ') : '-',
+        assignment.status.replaceAll('_', ' '),
+      ]),
+    })
+
+    const roomReadings = data.electricityBills
+      .filter((bill) => bill.roomId === entity.id)
+      .sort((a, b) => a.readingDate.localeCompare(b.readingDate))
+
+    addStatementHistoryTable(pdf, scope, entity, 'RECORDED ELECTRICITY READINGS', {
+      head: [[
+        'Reading date', 'Month', 'Meter', 'Previous', 'Current',
+        'Units', 'Rate / unit', 'Amount', 'Bill reference',
+      ]],
+      body: roomReadings.map((bill) => [
+        bill.readingDate,
+        bill.billingMonth,
+        bill.meterCode,
+        bill.previousReading.toLocaleString('en-BD'),
+        bill.currentReading.toLocaleString('en-BD'),
+        bill.unitsConsumed.toLocaleString('en-BD'),
+        statementMoney(bill.pricePerUnitMinor),
+        statementMoney(bill.amountMinor),
+        formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.billingMonth),
+      ]),
+    })
+  }
+
+  if (scope === 'meter') {
+    const meterAssignments = data.meterAssignments
+      .filter((assignment) => assignment.meterId === entity.id)
+      .sort((a, b) => a.assignedOn.localeCompare(b.assignedOn))
+
+    addStatementHistoryTable(pdf, scope, entity, 'METER ASSIGNMENT HISTORY', {
+      head: [[
+        'Reference', 'Assigned on', 'Room', 'Property', 'Initial reading',
+        'Ended on', 'Final reading', 'End reason', 'Status',
+      ]],
+      body: meterAssignments.map((assignment) => [
+        formatHumanReference(references, 'meter', assignment.id),
+        assignment.assignedOn || '-',
+        assignment.roomCode,
+        assignment.propertyCode,
+        assignment.initialReading.toLocaleString('en-BD'),
+        assignment.endedOn || 'Current',
+        assignment.finalReading === null
+          ? '-'
+          : assignment.finalReading.toLocaleString('en-BD'),
+        assignment.endReason ? assignment.endReason.replaceAll('_', ' ') : '-',
+        assignment.status.replaceAll('_', ' '),
+      ]),
+    })
+
+    const meterReadings = data.electricityBills
+      .filter((bill) => bill.meterId === entity.id)
+      .sort((a, b) => a.readingDate.localeCompare(b.readingDate))
+
+    addStatementHistoryTable(pdf, scope, entity, 'RECORDED METER READINGS', {
+      head: [[
+        'Reading date', 'Month', 'Room', 'Previous', 'Current',
+        'Units', 'Rate / unit', 'Amount', 'Bill reference',
+      ]],
+      body: meterReadings.map((bill) => [
+        bill.readingDate,
+        bill.billingMonth,
+        bill.roomCode,
+        bill.previousReading.toLocaleString('en-BD'),
+        bill.currentReading.toLocaleString('en-BD'),
+        bill.unitsConsumed.toLocaleString('en-BD'),
+        statementMoney(bill.pricePerUnitMinor),
+        statementMoney(bill.amountMinor),
+        formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.billingMonth),
+      ]),
+    })
+  }
+
+  const totalPages = pdf.getNumberOfPages()
+  for (let page = 1; page <= totalPages; page++) {
+    pdf.setPage(page)
+    pdf.setDrawColor(211, 216, 224)
+    pdf.setLineWidth(0.5)
+    pdf.line(margin, pageHeight - 27, pageWidth - margin, pageHeight - 27)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(7.5)
+    pdf.setTextColor(95, 103, 115)
+    pdf.text(`Page ${page} of ${totalPages}`, pageWidth - margin, pageHeight - 12, {
+      align: 'right',
+    })
+    pdf.text(
+      [
+        'Amounts shown in BDT where applicable',
+        activeStatementSettings.statementFooter.trim(),
+      ].filter(Boolean).join(' · '),
+      margin,
+      pageHeight - 12,
+    )
+  }
+
+  const safeName = `${scope}-${entity.title}`
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase() || scope
+  const dateStamp = new Date().toISOString().slice(0, 10)
+  pdf.save(`${safeName}-statement-${dateStamp}.pdf`)
+}
+
+export function LedgersPage({
+  ownerUid,
+}: LedgerPageProps) {
+  const [scope, setScope] =
+    useState<LedgerScope>('tenant')
+
+  const [data, setData] =
+    useState<LedgerSourceData | null>(null)
+
+  const [selectedEntityId, setSelectedEntityId] =
+    useState('')
+
+  const [search, setSearch] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+
+  const loadData = useCallback(async (
+    isRefresh = false,
+  ) => {
+    setError('')
+
+    if (isRefresh) {
+      setRefreshing(true)
+    } else {
+      setIsLoading(true)
+    }
+
+    try {
+      const nextData =
+        await loadLedgerSourceData(ownerUid)
+
+      setData(nextData)
+    } catch (loadError: unknown) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'Unable to load ledger records.',
+      )
+    } finally {
+      setIsLoading(false)
+      setRefreshing(false)
+    }
+  }, [ownerUid])
+
+  useEffect(() => {
+    void loadData()
+  }, [loadData])
+
+  const entities = useMemo(
+    () => data
+      ? buildEntities(data, scope)
+      : [],
+    [data, scope],
+  )
+
+  useEffect(() => {
+    if (
+      !entities.some(
+        (entity) => entity.id === selectedEntityId,
+      )
+    ) {
+      setSelectedEntityId(entities[0]?.id ?? '')
+    }
+  }, [entities, selectedEntityId])
+
+  const allEntries = useMemo(
+    () => data && selectedEntityId
+      ? buildEntries(data, scope, selectedEntityId)
+      : [],
+    [data, scope, selectedEntityId],
+  )
+
+  const displayedEntries = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase()
+
+    return allEntries.filter((entry) =>
+      isDateInside(entry.date, startDate, endDate) &&
+      (
+        !query ||
+        entry.searchableText.includes(query)
+      ),
+    )
+  }, [allEntries, search, startDate, endDate])
+
+  const summary = useMemo(
+    () => displayedEntries.reduce(
+      (result, entry) => ({
+        debits: result.debits + entry.debitMinor,
+        credits: result.credits + entry.creditMinor,
+      }),
+      { debits: 0, credits: 0 },
+    ),
+    [displayedEntries],
+  )
+
+  const currentBalance = allEntries.length
+    ? allEntries[allEntries.length - 1].balanceMinor
+    : 0
+
+  const selectedEntity = entities.find(
+    (entity) => entity.id === selectedEntityId,
+  )
+
+  return (
+    <section className="ledgers-page">
+      <header className="ledger-page-heading">
+        <div>
+          <p className="ledger-eyebrow">
+            FINANCE · STATEMENTS
+          </p>
+          <h1>Ledgers</h1>
+          <p className="ledger-subtitle">
+            One consistent transaction history across
+            tenants, rooms, and meters.
+          </p>
+        </div>
+
+        <button
+          className="ledger-refresh-button"
+          type="button"
+          onClick={() => {
+            if (!data || !selectedEntity) return
+            void downloadLedgerStatementPdf(ownerUid, scope, selectedEntity, allEntries, data).catch((downloadError: unknown) => {
+              setError(downloadError instanceof Error ? downloadError.message : 'The PDF statement could not be created.')
+            })
+          }}
+          disabled={isLoading || !data || !selectedEntity}
+        >
+          <Download size={17} />
+          <span>Download PDF</span>
+        </button>
+
+        <button
+          className="ledger-refresh-button"
+          type="button"
+          onClick={() => void loadData(true)}
+          disabled={isLoading || refreshing}
+        >
+          {refreshing
+            ? <LoaderCircle size={17} className="ledger-spin" />
+            : <RefreshCw size={17} />
+          }
+          <span>
+            {refreshing ? 'Refreshing' : 'Refresh'}
+          </span>
+        </button>
+      </header>
+
+      <div
+        className="ledger-scope-tabs"
+        role="tablist"
+        aria-label="Ledger type"
+      >
+        {(
+          ['tenant', 'room', 'meter'] as LedgerScope[]
+        ).map((item) => (
+          <button
+            key={item}
+            type="button"
+            role="tab"
+            aria-selected={scope === item}
+            className={
+              scope === item
+                ? 'ledger-scope-tab is-active'
+                : 'ledger-scope-tab'
+            }
+            onClick={() => setScope(item)}
+          >
+            <LedgerPageIcon scope={item} />
+            <span>
+              {item === 'tenant'
+                ? 'Tenant'
+                : item === 'room'
+                  ? 'Room'
+                  : 'Meter'
+              }
+            </span>
+          </button>
+        ))}
+      </div>
+
+      <div className="ledger-filter-panel">
+        <label className="ledger-field ledger-entity-field">
+          <span>
+            {scope === 'tenant'
+              ? 'Select tenant'
+              : scope === 'room'
+                ? 'Select room'
+                : 'Select meter'
+            }
+          </span>
+
+          <select
+            value={selectedEntityId}
+            onChange={(event) =>
+              setSelectedEntityId(event.target.value)
+            }
+            disabled={isLoading || entities.length === 0}
+          >
+            {entities.length === 0 && (
+              <option value="">No records available</option>
+            )}
+
+            {entities.map((entity) => (
+              <option value={entity.id} key={entity.id}>
+                {entity.title} — {entity.subtitle}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="ledger-field ledger-search-field">
+          <span>Search transactions</span>
+
+          <div className="ledger-input-with-icon">
+            <Search size={17} aria-hidden="true" />
+            <input
+              value={search}
+              onChange={(event) =>
+                setSearch(event.target.value)
+              }
+              placeholder="Type, reference, room, bill ID…"
+            />
+          </div>
+        </label>
+
+        <label className="ledger-field">
+          <span>From date</span>
+
+          <div className="ledger-input-with-icon">
+            <CalendarDays size={16} aria-hidden="true" />
+            <input
+              type="date"
+              value={startDate}
+              max={endDate || undefined}
+              onChange={(event) =>
+                setStartDate(event.target.value)
+              }
+            />
+          </div>
+        </label>
+
+        <label className="ledger-field">
+          <span>To date</span>
+
+          <div className="ledger-input-with-icon">
+            <CalendarDays size={16} aria-hidden="true" />
+            <input
+              type="date"
+              value={endDate}
+              min={startDate || undefined}
+              onChange={(event) =>
+                setEndDate(event.target.value)
+              }
+            />
+          </div>
+        </label>
+      </div>
+
+      {error && (
+        <div className="ledger-error" role="alert">
+          <AlertCircle size={18} aria-hidden="true" />
+
+          <div>
+            <strong>Could not load ledger data</strong>
+            <p>{error}</p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void loadData(true)}
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      <div className="ledger-summary-grid">
+        <article className="ledger-summary-card">
+          <span><BookOpen size={16} /> Entries shown</span>
+          <strong>
+            {displayedEntries.length.toLocaleString('en-BD')}
+          </strong>
+          <small>
+            {selectedEntity?.title ?? scopeLabel(scope)}
+          </small>
+        </article>
+
+        <article className="ledger-summary-card">
+          <span><Zap size={16} /> Debits in filter</span>
+          <strong>{formatMoney(summary.debits)}</strong>
+          <small>Bills and charges</small>
+        </article>
+
+        <article className="ledger-summary-card">
+          <span><Wallet size={16} /> Credits in filter</span>
+          <strong>{formatMoney(summary.credits)}</strong>
+          <small>Payments or applied advances</small>
+        </article>
+
+        <article
+          className={
+            'ledger-summary-card ' +
+            (
+              currentBalance > 0
+                ? 'is-due'
+                : currentBalance < 0
+                  ? 'is-credit'
+                  : ''
+            )
+          }
+        >
+          <span><Wallet size={16} /> Current balance</span>
+          <strong>
+            {formatMoney(Math.abs(currentBalance))}
+          </strong>
+          <small>
+            {currentBalance > 0
+              ? 'Outstanding due'
+              : currentBalance < 0
+                ? 'Credit / advance'
+                : 'Settled'
+            }
+          </small>
+        </article>
+      </div>
+
+      <section
+        className="ledger-table-card"
+        aria-label={scopeLabel(scope)}
+      >
+        <div className="ledger-table-heading">
+          <div>
+            <h2>{scopeLabel(scope)}</h2>
+            <p>
+              {selectedEntity
+                ? `${selectedEntity.title} · ${selectedEntity.subtitle}`
+                : 'Choose a record to view its statement.'
+              }
+            </p>
+          </div>
+
+          <span className="ledger-count-pill">
+            {displayedEntries.length} rows
+          </span>
+        </div>
+
+        {isLoading ? (
+          <div className="ledger-state">
+            <LoaderCircle
+              className="ledger-spin"
+              size={24}
+            />
+            <span>Loading transactions…</span>
+          </div>
+        ) : !selectedEntityId ? (
+          <div className="ledger-state">
+            <BookOpen size={26} />
+            <span>No {scope} records are available yet.</span>
+          </div>
+        ) : displayedEntries.length === 0 ? (
+          <div className="ledger-state">
+            <Search size={26} />
+            <span>No transactions match these filters.</span>
+            <small>
+              Try clearing the search or date range.
+            </small>
+          </div>
+        ) : (
+          <>
+            <div className="ledger-desktop-table-wrap">
+              <table className="ledger-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Type</th>
+                    <th>Reference / Details</th>
+                    <th className="align-right">Debit</th>
+                    <th className="align-right">Credit</th>
+                    <th className="align-right">Balance</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {displayedEntries.map((entry) => (
+                    <tr key={entry.id}>
+                      <td className="ledger-date-cell">
+                        {formatDate(entry.date)}
+                      </td>
+                      <td className="ledger-time-cell">
+                        {entry.time}
+                      </td>
+                      <td>
+                        <span
+                          className={
+                            'ledger-type-pill ' +
+                            (
+                              entry.creditMinor > 0
+                                ? 'is-credit'
+                                : 'is-debit'
+                            )
+                          }
+                        >
+                          {entry.type}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="ledger-reference">
+                          {entry.reference}
+                        </div>
+                        <div className="ledger-description">
+                          {entry.description}
+                        </div>
+                      </td>
+                      <td className="align-right ledger-money debit">
+                        {entry.debitMinor
+                          ? formatMoney(entry.debitMinor)
+                          : '—'
+                        }
+                      </td>
+                      <td className="align-right ledger-money credit">
+                        {entry.creditMinor
+                          ? formatMoney(entry.creditMinor)
+                          : '—'
+                        }
+                      </td>
+                      <td
+                        className={
+                          'align-right ledger-money ' +
+                          (
+                            entry.balanceMinor > 0
+                              ? 'due'
+                              : entry.balanceMinor < 0
+                                ? 'credit'
+                                : ''
+                          )
+                        }
+                      >
+                        {entry.balanceMinor < 0
+                          ? `−${formatMoney(Math.abs(entry.balanceMinor))}`
+                          : formatMoney(entry.balanceMinor)
+                        }
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="ledger-mobile-list">
+              {displayedEntries.map((entry) => (
+                <article
+                  className="ledger-mobile-entry"
+                  key={entry.id}
+                >
+                  <div className="ledger-mobile-entry-top">
+                    <span
+                      className={
+                        'ledger-type-pill ' +
+                        (
+                          entry.creditMinor > 0
+                            ? 'is-credit'
+                            : 'is-debit'
+                        )
+                      }
+                    >
+                      {entry.type}
+                    </span>
+
+                    <time>
+                      {formatDate(entry.date)}
+                      {entry.time !== '—'
+                        ? ` · ${entry.time}`
+                        : ''
+                      }
+                    </time>
+                  </div>
+
+                  <strong className="ledger-mobile-reference">
+                    {entry.reference}
+                  </strong>
+
+                  <p>{entry.description}</p>
+
+                  <div className="ledger-mobile-amounts">
+                    <span>
+                      <small>Debit</small>
+                      <b>
+                        {entry.debitMinor
+                          ? formatMoney(entry.debitMinor)
+                          : '—'
+                        }
+                      </b>
+                    </span>
+
+                    <span>
+                      <small>Credit</small>
+                      <b>
+                        {entry.creditMinor
+                          ? formatMoney(entry.creditMinor)
+                          : '—'
+                        }
+                      </b>
+                    </span>
+
+                    <span>
+                      <small>Balance</small>
+                      <b
+                        className={
+                          entry.balanceMinor > 0
+                            ? 'due'
+                            : entry.balanceMinor < 0
+                              ? 'credit'
+                              : ''
+                        }
+                      >
+                        {entry.balanceMinor < 0
+                          ? `−${formatMoney(Math.abs(entry.balanceMinor))}`
+                          : formatMoney(entry.balanceMinor)
+                        }
+                      </b>
+                    </span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
+      <p className="ledger-footnote">
+        Balances are calculated from saved issued bills and posted
+        receipts/credit applications. This screen is read-only and
+        does not modify financial records. Date filters change the
+        displayed rows; the current balance always reflects the full
+        available history.
+      </p>
+    </section>
+  )
+}

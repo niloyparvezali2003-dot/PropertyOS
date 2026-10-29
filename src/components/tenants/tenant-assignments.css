@@ -1,0 +1,526 @@
+.tenant-assignment-panel {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  color: var(--text-primary, #172033);
+}
+
+.tenant-assignment-heading-row,
+.tenant-assignment-card-heading,
+.tenant-assignment-item-topline,
+.tenant-assignment-person,
+.tenant-assignment-inline-actions,
+.tenant-assignment-item-actions {
+  display: flex;
+  align-items: center;
+}
+
+.tenant-assignment-heading-row {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tenant-assignment-eyebrow {
+  margin: 0 0 6px;
+  color: var(--text-muted, #6b7280);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+}
+
+.tenant-assignment-heading-row h2 {
+  margin: 0;
+  font-size: clamp(1.25rem, 2.5vw, 1.65rem);
+  font-weight: 750;
+  letter-spacing: -0.035em;
+}
+
+.tenant-assignment-intro {
+  margin: 7px 0 0;
+  color: var(--text-secondary, #667085);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.tenant-assignment-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tenant-assignment-stat,
+.tenant-assignment-card {
+  min-width: 0;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 16px;
+  background: var(--surface, #fff);
+  box-shadow: 0 2px 8px rgb(16 24 40 / 3%);
+}
+
+.tenant-assignment-stat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px;
+}
+
+.tenant-assignment-stat-icon,
+.tenant-assignment-heading-icon,
+.tenant-assignment-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--surface-muted, #f3f5f8);
+  color: var(--text-secondary, #536175);
+}
+
+.tenant-assignment-stat-icon {
+  width: 38px;
+  height: 38px;
+}
+
+.tenant-assignment-stat-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.tenant-assignment-stat-copy strong {
+  font-size: 1.3rem;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.tenant-assignment-stat-copy small {
+  color: var(--text-muted, #667085);
+  font-size: 0.78rem;
+}
+
+.tenant-assignment-layout {
+  display: grid;
+  grid-template-columns: minmax(270px, 0.82fr) minmax(0, 1.4fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.tenant-assignment-card {
+  padding: 20px;
+}
+
+.tenant-assignment-card-heading {
+  gap: 11px;
+  margin-bottom: 18px;
+}
+
+.tenant-assignment-heading-icon {
+  width: 38px;
+  height: 38px;
+}
+
+.tenant-assignment-card-heading h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 740;
+}
+
+.tenant-assignment-card-heading p {
+  margin: 4px 0 0;
+  color: var(--text-muted, #667085);
+  font-size: 0.81rem;
+  line-height: 1.45;
+}
+
+.tenant-assignment-form,
+.tenant-assignment-moveout-form {
+  display: grid;
+  gap: 15px;
+}
+
+.tenant-assignment-field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  color: var(--text-primary, #253047);
+  font-size: 0.83rem;
+  font-weight: 650;
+}
+
+.tenant-assignment-field > span:first-child > small,
+.tenant-assignment-field > small {
+  color: var(--text-muted, #667085);
+  font-weight: 450;
+}
+
+.tenant-assignment-field input,
+.tenant-assignment-field select,
+.tenant-assignment-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-color, #d9dee7);
+  border-radius: 10px;
+  outline: none;
+  background: var(--surface, #fff);
+  color: var(--text-primary, #172033);
+  font: inherit;
+  font-size: 0.87rem;
+  font-weight: 450;
+}
+
+.tenant-assignment-field input,
+.tenant-assignment-field select {
+  min-height: 42px;
+  padding: 0 11px;
+}
+
+.tenant-assignment-field textarea {
+  padding: 10px 11px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.tenant-assignment-field input:focus,
+.tenant-assignment-field select:focus,
+.tenant-assignment-field textarea:focus {
+  border-color: var(--accent, #7187ed);
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 10%);
+}
+
+.tenant-assignment-input-with-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  color: var(--text-muted, #667085);
+}
+
+.tenant-assignment-input-with-icon svg {
+  position: absolute;
+  left: 11px;
+  pointer-events: none;
+}
+
+.tenant-assignment-input-with-icon input {
+  padding-left: 35px;
+}
+
+.tenant-assignment-primary-button,
+.tenant-assignment-secondary-button,
+.tenant-assignment-danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 39px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.83rem;
+  font-weight: 700;
+  transition: opacity 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.tenant-assignment-primary-button {
+  min-height: 43px;
+  background: var(--accent, #4f63d9);
+  color: #fff;
+}
+
+.tenant-assignment-secondary-button {
+  border-color: var(--border-color, #dce1e9);
+  background: var(--surface, #fff);
+  color: var(--text-primary, #263248);
+}
+
+.tenant-assignment-danger-button {
+  border-color: #f2d4d4;
+  background: #fff6f6;
+  color: #a92f35;
+}
+
+.tenant-assignment-primary-button:disabled,
+.tenant-assignment-secondary-button:disabled,
+.tenant-assignment-danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.tenant-assignment-footnote {
+  margin: -5px 0 0;
+  color: var(--text-muted, #667085);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.tenant-assignment-message {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.tenant-assignment-message.is-error {
+  border: 1px solid #f0c8c8;
+  background: #fff5f5;
+  color: #9b252b;
+}
+
+.tenant-assignment-message.is-success {
+  border: 1px solid #cce8d8;
+  background: #f2fbf6;
+  color: #216e44;
+}
+
+.tenant-assignment-list,
+.tenant-assignment-history-list {
+  display: grid;
+  gap: 12px;
+}
+
+.tenant-assignment-item {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 13px;
+  background: var(--surface, #fff);
+}
+
+.tenant-assignment-item-topline {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tenant-assignment-person {
+  min-width: 0;
+  gap: 10px;
+}
+
+.tenant-assignment-avatar {
+  width: 38px;
+  height: 38px;
+}
+
+.tenant-assignment-person > div,
+.tenant-assignment-history-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.tenant-assignment-person strong,
+.tenant-assignment-history-main strong {
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+}
+
+.tenant-assignment-person > div > span,
+.tenant-assignment-history-main > span {
+  color: var(--text-muted, #667085);
+  font-size: 0.77rem;
+}
+
+.tenant-assignment-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 25px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.tenant-assignment-status.is-current {
+  background: #eaf8f0;
+  color: #247247;
+}
+
+.tenant-assignment-status.is-ended {
+  background: #f0f2f5;
+  color: #586274;
+}
+
+.tenant-assignment-item-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 15px;
+  padding-top: 13px;
+  border-top: 1px solid var(--border-color, #edf0f4);
+}
+
+.tenant-assignment-item-details > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.tenant-assignment-item-details small {
+  color: var(--text-muted, #667085);
+  font-size: 0.72rem;
+}
+
+.tenant-assignment-item-details strong {
+  overflow-wrap: anywhere;
+  font-size: 0.79rem;
+  line-height: 1.4;
+}
+
+.tenant-assignment-note {
+  margin: 12px 0 0;
+  color: var(--text-secondary, #667085);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.tenant-assignment-item-actions {
+  justify-content: flex-end;
+  margin-top: 13px;
+}
+
+.tenant-assignment-moveout-form {
+  margin-top: 15px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-color, #edf0f4);
+}
+
+.tenant-assignment-inline-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tenant-assignment-empty,
+.tenant-assignment-history-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 130px;
+  color: var(--text-muted, #667085);
+  font-size: 0.84rem;
+  text-align: center;
+}
+
+.tenant-assignment-empty {
+  flex-direction: column;
+}
+
+.tenant-assignment-empty strong {
+  color: var(--text-primary, #344054);
+}
+
+.tenant-assignment-history-card {
+  display: grid;
+  gap: 0;
+}
+
+.tenant-assignment-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 0;
+  border-top: 1px solid var(--border-color, #edf0f4);
+}
+
+.tenant-assignment-history-dates {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary, #667085);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tenant-assignment-history-item > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-muted, #667085);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 880px) {
+  .tenant-assignment-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .tenant-assignment-panel {
+    gap: 14px;
+  }
+
+  .tenant-assignment-heading-row {
+    align-items: flex-start;
+  }
+
+  .tenant-assignment-heading-row > .tenant-assignment-secondary-button {
+    min-height: 36px;
+    padding: 0 10px;
+  }
+
+  .tenant-assignment-stats {
+    gap: 8px;
+  }
+
+  .tenant-assignment-stat {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 11px 9px;
+    border-radius: 12px;
+  }
+
+  .tenant-assignment-stat-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+  }
+
+  .tenant-assignment-stat-icon svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .tenant-assignment-stat-copy strong {
+    font-size: 1.08rem;
+  }
+
+  .tenant-assignment-stat-copy small {
+    font-size: 0.67rem;
+    line-height: 1.25;
+  }
+
+  .tenant-assignment-card {
+    padding: 15px;
+    border-radius: 14px;
+  }
+
+  .tenant-assignment-item-details {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .tenant-assignment-history-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px;
+  }
+
+  .tenant-assignment-history-dates {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    white-space: normal;
+  }
+
+  .tenant-assignment-history-item > .tenant-assignment-status {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}

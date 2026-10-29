@@ -1,0 +1,594 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react'
+import {
+  Banknote,
+  CheckCircle2,
+  CircleDollarSign,
+  ClipboardList,
+  CreditCard,
+  LoaderCircle,
+  Printer,
+  ReceiptText,
+  RefreshCw,
+  Wallet,
+} from 'lucide-react'
+
+import { listElectricityBills, type ElectricityBillRecord } from '../services/firebase/electricity'
+import {
+  applyTenantCredit,
+  createPayment,
+  getPaymentErrorMessage,
+  listCreditApplications,
+  listPaymentBillBalances,
+  listPayments,
+  listTenantCredits,
+  type CreditApplicationRecord,
+  type PaymentBillBalanceRecord,
+  type PaymentRecord,
+  type TenantCreditRecord,
+} from '../services/firebase/payments'
+import { listRentBills, type RentBillRecord } from '../services/firebase/rentBills'
+import { listTenantAssignments, type TenantAssignmentRecord } from '../services/firebase/tenantAssignments'
+import { recordAuditEvent } from '../services/firebase/audit'
+import { listTenants, type TenantRecord } from '../services/firebase/tenants'
+import type { PaymentAllocationFormValues, PaymentBillType, PaymentMethod } from '../schemas/payment'
+import './payments.css'
+
+type PaymentsPageProps = { ownerUid: string }
+
+type PayableBill = Omit<PaymentAllocationFormValues, 'amountMinor'> & {
+  key: string
+  paidAmountMinor: number
+  outstandingMinor: number
+}
+
+type PaymentFormState = {
+  paidOn: string
+  method: PaymentMethod
+  reference: string
+  notes: string
+  amountReceived: string
+}
+
+function newAttemptId(): string {
+  return crypto.randomUUID().replace(/-/g, '').toLowerCase()
+}
+
+function getToday(): string {
+  const today = new Date()
+  const year = today.getFullYear()
+  const month = String(today.getMonth() + 1).padStart(2, '0')
+  const day = String(today.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function emptyPaymentForm(): PaymentFormState {
+  return { paidOn: getToday(), method: 'cash', reference: '', notes: '', amountReceived: '' }
+}
+
+function parseTakaToPoisha(value: string): number | null {
+  const normalized = value.trim()
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null
+  const [wholePart, fractionalPart = ''] = normalized.split('.')
+  const whole = Number(wholePart)
+  const fractional = Number((fractionalPart + '00').slice(0, 2))
+  const amount = whole * 100 + fractional
+  return Number.isSafeInteger(amount) ? amount : null
+}
+
+function formatTaka(amountMinor: number): string {
+  return `\u09F3${new Intl.NumberFormat('en-BD', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amountMinor / 100)}`
+}
+
+function formatDate(value: string): string {
+  const date = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('en-BD', { day: '2-digit', month: 'short', year: 'numeric' }).format(date)
+}
+
+function formatMonth(value: string): string {
+  const date = new Date(`${value}-01T00:00:00`)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('en-BD', { month: 'long', year: 'numeric' }).format(date)
+}
+
+function billTypeLabel(value: PaymentBillType): string {
+  return value === 'rent' ? 'Rent' : 'Electricity'
+}
+
+function methodLabel(value: PaymentMethod): string {
+  const labels: Record<PaymentMethod, string> = {
+    cash: 'Cash',
+    bank_transfer: 'Bank transfer',
+    mobile_banking: 'Mobile banking',
+    cheque: 'Cheque',
+    other: 'Other',
+  }
+  return labels[value]
+}
+
+function assignmentCovers(assignment: TenantAssignmentRecord, date: string): boolean {
+  return assignment.moveInDate <= date &&
+    (assignment.moveOutDate === null || assignment.moveOutDate >= date)
+}
+
+function makePayableBills(
+  rentBills: RentBillRecord[],
+  electricityBills: ElectricityBillRecord[],
+  assignments: TenantAssignmentRecord[],
+  balances: PaymentBillBalanceRecord[],
+): { bills: PayableBill[]; unmatchedElectricity: number; unmatchedRent: number; invalidBalances: number } {
+  const assignmentById = new Map(assignments.map((assignment) => [assignment.id, assignment]))
+  const balanceByKey = new Map(balances.map((balance) => [balance.id, balance]))
+  const bills: PayableBill[] = []
+  let unmatchedElectricity = 0
+  let unmatchedRent = 0
+  let invalidBalances = 0
+
+  const addBill = (allocation: Omit<PaymentAllocationFormValues, 'amountMinor'>, amountMinor: number) => {
+    if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) return
+    const key = `${allocation.billType}__${allocation.billId}`
+    const balance = balanceByKey.get(key)
+    if (balance && (
+      balance.originalAmountMinor !== amountMinor ||
+      balance.tenantAssignmentId !== allocation.tenantAssignmentId ||
+      balance.tenantId !== allocation.tenantId ||
+      balance.roomId !== allocation.roomId ||
+      balance.billType !== allocation.billType ||
+      balance.billId !== allocation.billId
+    )) {
+      invalidBalances += 1
+      return
+    }
+    const paidAmountMinor = balance?.paidAmountMinor ?? 0
+    const outstandingMinor = balance?.outstandingMinor ?? amountMinor
+    if (!Number.isSafeInteger(outstandingMinor) || outstandingMinor < 0 || paidAmountMinor + outstandingMinor !== amountMinor) {
+      invalidBalances += 1
+      return
+    }
+    if (outstandingMinor <= 0) return
+    bills.push({ ...allocation, key, billAmountMinor: amountMinor, paidAmountMinor, outstandingMinor })
+  }
+
+  for (const bill of rentBills) {
+    const assignment = assignmentById.get(bill.assignmentId)
+    if (!assignment || assignment.tenantId !== bill.tenantId || assignment.roomId !== bill.roomId ||
+      assignment.moveInDate > bill.occupancyStartDate ||
+      (assignment.moveOutDate !== null && assignment.moveOutDate < bill.occupancyEndDate)) {
+      unmatchedRent += 1
+      continue
+    }
+    addBill({
+      billType: 'rent',
+      billId: bill.id,
+      billingMonth: bill.billingMonth,
+      referenceDate: bill.occupancyEndDate,
+      billAmountMinor: bill.totalMinor,
+      tenantAssignmentId: bill.assignmentId,
+      tenantId: bill.tenantId,
+      tenantCode: bill.tenantCode,
+      tenantName: bill.tenantName,
+      roomId: bill.roomId,
+      roomCode: bill.roomCode,
+      roomNumber: bill.roomNumber,
+      floorName: bill.floorName,
+      propertyId: bill.propertyId,
+      propertyCode: bill.propertyCode,
+    }, bill.totalMinor)
+  }
+
+  for (const bill of electricityBills) {
+    const matches = assignments.filter((assignment) => assignment.roomId === bill.roomId && assignmentCovers(assignment, bill.readingDate))
+    if (matches.length !== 1) {
+      unmatchedElectricity += 1
+      continue
+    }
+    const assignment = matches[0]
+    addBill({
+      billType: 'electricity',
+      billId: bill.id,
+      billingMonth: bill.billingMonth,
+      referenceDate: bill.readingDate,
+      billAmountMinor: bill.amountMinor,
+      tenantAssignmentId: assignment.id,
+      tenantId: assignment.tenantId,
+      tenantCode: assignment.tenantCode,
+      tenantName: assignment.tenantName,
+      roomId: bill.roomId,
+      roomCode: bill.roomCode,
+      roomNumber: assignment.roomNumber,
+      floorName: assignment.floorName,
+      propertyId: bill.propertyId,
+      propertyCode: bill.propertyCode,
+    }, bill.amountMinor)
+  }
+
+  bills.sort((left, right) => right.billingMonth.localeCompare(left.billingMonth) ||
+    left.tenantName.localeCompare(right.tenantName) || left.roomCode.localeCompare(right.roomCode))
+  return { bills, unmatchedElectricity, unmatchedRent, invalidBalances }
+}
+
+function allocationFor(bill: PayableBill, amountMinor: number): PaymentAllocationFormValues {
+  return {
+    billType: bill.billType,
+    billId: bill.billId,
+    billingMonth: bill.billingMonth,
+    referenceDate: bill.referenceDate,
+    amountMinor,
+    billAmountMinor: bill.billAmountMinor,
+    tenantAssignmentId: bill.tenantAssignmentId,
+    tenantId: bill.tenantId,
+    tenantCode: bill.tenantCode,
+    tenantName: bill.tenantName,
+    roomId: bill.roomId,
+    roomCode: bill.roomCode,
+    roomNumber: bill.roomNumber,
+    floorName: bill.floorName,
+    propertyId: bill.propertyId,
+    propertyCode: bill.propertyCode,
+  }
+}
+
+export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
+  const [rentBills, setRentBills] = useState<RentBillRecord[]>([])
+  const [electricityBills, setElectricityBills] = useState<ElectricityBillRecord[]>([])
+  const [assignments, setAssignments] = useState<TenantAssignmentRecord[]>([])
+  const [tenants, setTenants] = useState<TenantRecord[]>([])
+  const [payments, setPayments] = useState<PaymentRecord[]>([])
+  const [balances, setBalances] = useState<PaymentBillBalanceRecord[]>([])
+  const [credits, setCredits] = useState<TenantCreditRecord[]>([])
+  const [creditApplications, setCreditApplications] = useState<CreditApplicationRecord[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [pageError, setPageError] = useState('')
+  const [pageSuccess, setPageSuccess] = useState('')
+  const [formError, setFormError] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+  const [applyingCreditKey, setApplyingCreditKey] = useState<string | null>(null)
+  const [selectedTenantId, setSelectedTenantId] = useState('')
+  const [allocationAmounts, setAllocationAmounts] = useState<Record<string, string>>({})
+  const [form, setForm] = useState<PaymentFormState>(emptyPaymentForm)
+  const [printPaymentId, setPrintPaymentId] = useState<string | null>(null)
+  const [paymentAttemptId, setPaymentAttemptId] = useState(newAttemptId)
+  const creditAttemptIds = useRef(new Map<string, string>())
+
+  const loadData = useCallback(async () => {
+    setIsLoading(true)
+    setPageError('')
+    try {
+      const [nextRentBills, nextElectricityBills, nextAssignments, nextTenants, nextPayments, nextBalances, nextCredits, nextApplications] = await Promise.all([
+        listRentBills(ownerUid),
+        listElectricityBills(ownerUid),
+        listTenantAssignments(ownerUid),
+        listTenants(ownerUid),
+        listPayments(ownerUid),
+        listPaymentBillBalances(ownerUid),
+        listTenantCredits(ownerUid),
+        listCreditApplications(ownerUid),
+      ])
+      setRentBills(nextRentBills)
+      setElectricityBills(nextElectricityBills)
+      setAssignments(nextAssignments)
+      setTenants(nextTenants)
+      setPayments(nextPayments)
+      setBalances(nextBalances)
+      setCredits(nextCredits)
+      setCreditApplications(nextApplications)
+    } catch (error: unknown) {
+      setPageError(getPaymentErrorMessage(error))
+    } finally {
+      setIsLoading(false)
+    }
+  }, [ownerUid])
+
+  useEffect(() => { void loadData() }, [loadData])
+
+  const payableState = useMemo(() => makePayableBills(rentBills, electricityBills, assignments, balances), [rentBills, electricityBills, assignments, balances])
+  const openBills = payableState.bills
+  const tenantsById = useMemo(() => new Map(tenants.map((tenant) => [tenant.id, tenant])), [tenants])
+  const tenantOptions = useMemo(() => tenants
+    .map((tenant) => ({ id: tenant.id, code: tenant.tenantCode, name: tenant.fullName }))
+    .sort((left, right) => left.name.localeCompare(right.name)), [tenants])
+  const creditByTenantId = useMemo(() => new Map(credits.map((credit) => [credit.tenantId, credit])), [credits])
+  const selectedTenant = tenantsById.get(selectedTenantId) ?? null
+  const selectedTenantCredit = selectedTenantId ? creditByTenantId.get(selectedTenantId)?.creditMinor ?? 0 : 0
+  const selectedTenantBills = useMemo(() => openBills.filter((bill) => bill.tenantId === selectedTenantId), [openBills, selectedTenantId])
+
+  const selectedAllocations = useMemo(() => {
+    const result: PaymentAllocationFormValues[] = []
+    for (const bill of selectedTenantBills) {
+      const raw = allocationAmounts[bill.key] ?? ''
+      if (!raw.trim()) continue
+      const amountMinor = parseTakaToPoisha(raw)
+      if (amountMinor === null || amountMinor <= 0) continue
+      result.push(allocationFor(bill, amountMinor))
+    }
+    return result
+  }, [selectedTenantBills, allocationAmounts])
+
+  const totalAllocatedMinor = selectedAllocations.reduce((total, allocation) => total + allocation.amountMinor, 0)
+  const amountReceivedMinor = form.amountReceived.trim() ? parseTakaToPoisha(form.amountReceived) : null
+  const hasInvalidReceived = !form.amountReceived.trim() || amountReceivedMinor === null || amountReceivedMinor <= 0
+  const hasInvalidAllocation = selectedTenantBills.some((bill) => {
+    const raw = allocationAmounts[bill.key] ?? ''
+    return raw.trim().length > 0 && parseTakaToPoisha(raw) === null
+  })
+  const overAllocated = selectedAllocations.some((allocation) => {
+    const bill = selectedTenantBills.find((item) => item.billType === allocation.billType && item.billId === allocation.billId)
+    return !bill || allocation.amountMinor > bill.outstandingMinor
+  })
+  const receivedBelowAllocated = amountReceivedMinor !== null && totalAllocatedMinor > amountReceivedMinor
+  const advanceFromThisPayment = amountReceivedMinor !== null && amountReceivedMinor >= totalAllocatedMinor && amountReceivedMinor > 0
+    ? amountReceivedMinor - totalAllocatedMinor
+    : 0
+  const totalOutstandingMinor = openBills.reduce((total, bill) => total + bill.outstandingMinor, 0)
+  const totalCreditMinor = credits.reduce((total, credit) => total + credit.creditMinor, 0)
+
+  const updateForm = <K extends keyof PaymentFormState>(key: K, value: PaymentFormState[K]) => {
+    setForm((current) => ({ ...current, [key]: value }))
+  }
+
+  const handleTenantChange = (tenantId: string) => {
+    setSelectedTenantId(tenantId)
+    setAllocationAmounts({})
+    setFormError('')
+    setPageSuccess('')
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setFormError('')
+    setPageSuccess('')
+    if (!selectedTenant) {
+      setFormError('Select a tenant before recording a payment.')
+      return
+    }
+    if (hasInvalidReceived || amountReceivedMinor === null) {
+      setFormError('Enter the actual amount received, with up to two decimal places.')
+      return
+    }
+    if (hasInvalidAllocation) {
+      setFormError('Enter each allocation as a valid amount with up to two decimal places.')
+      return
+    }
+    if (overAllocated) {
+      setFormError('An allocation exceeds the bill’s current outstanding balance.')
+      return
+    }
+    if (receivedBelowAllocated) {
+      setFormError('The actual amount received cannot be less than the total bill allocations.')
+      return
+    }
+
+    setIsSaving(true)
+    try {
+      const receiptNumber = await createPayment(ownerUid, {
+        tenantId: selectedTenant.id,
+        tenantCode: selectedTenant.tenantCode,
+        tenantName: selectedTenant.fullName,
+        paidOn: form.paidOn,
+        method: form.method,
+        reference: form.reference.trim(),
+        notes: form.notes.trim(),
+        amountReceivedMinor,
+        allocations: selectedAllocations,
+      }, paymentAttemptId)
+      await recordAuditEvent(ownerUid, {
+        action: 'payment_recorded',
+        entityType: 'payment',
+        entityId: receiptNumber,
+        entityLabel: `${receiptNumber} · ${selectedTenant.fullName}`,
+        summary: `Recorded a payment of ${formatTaka(amountReceivedMinor)} for ${selectedTenant.fullName}.`,
+        dedupeKey: `payment_${receiptNumber}`,
+      })
+      setPageSuccess(`Payment recorded successfully. Receipt: ${receiptNumber}${advanceFromThisPayment > 0 ? ` · ${formatTaka(advanceFromThisPayment)} added to advance credit.` : ''}`)
+      setAllocationAmounts({})
+      setPaymentAttemptId(newAttemptId())
+      setForm((current) => ({ ...current, reference: '', notes: '', amountReceived: '' }))
+      await loadData()
+    } catch (error: unknown) {
+      setFormError(getPaymentErrorMessage(error))
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const applyAdvance = async (bill: PayableBill) => {
+    setPageError('')
+    setPageSuccess('')
+    const credit = creditByTenantId.get(bill.tenantId)
+    if (!credit || credit.creditMinor <= 0) {
+      setPageError('This tenant has no available advance credit.')
+      return
+    }
+    const rawRequested = allocationAmounts[bill.key] ?? ''
+    let amountMinor: number
+    if (rawRequested.trim()) {
+      const parsed = parseTakaToPoisha(rawRequested)
+      if (parsed === null || parsed <= 0) {
+        setPageError('Enter a valid positive allocation amount before applying advance credit.')
+        return
+      }
+      amountMinor = parsed
+    } else {
+      amountMinor = Math.min(credit.creditMinor, bill.outstandingMinor)
+    }
+    if (amountMinor > credit.creditMinor) {
+      setPageError(`The allocation exceeds available advance credit of ${formatTaka(credit.creditMinor)}.`)
+      return
+    }
+    if (amountMinor > bill.outstandingMinor) {
+      setPageError(`The allocation exceeds this bill’s outstanding balance of ${formatTaka(bill.outstandingMinor)}.`)
+      return
+    }
+    const attemptKey = `${bill.key}:${amountMinor}`
+    let idempotencyKey = creditAttemptIds.current.get(attemptKey)
+    if (!idempotencyKey) {
+      idempotencyKey = newAttemptId()
+      creditAttemptIds.current.set(attemptKey, idempotencyKey)
+    }
+
+    setApplyingCreditKey(bill.key)
+    try {
+      const applicationNumber = await applyTenantCredit(ownerUid, allocationFor(bill, amountMinor), idempotencyKey)
+      await recordAuditEvent(ownerUid, {
+        action: 'credit_applied',
+        entityType: 'credit_application',
+        entityId: applicationNumber,
+        entityLabel: `${applicationNumber} · ${bill.tenantName}`,
+        summary: `Applied ${formatTaka(amountMinor)} of advance credit for ${bill.tenantName} to a ${bill.billType} bill (${bill.billId}).`,
+        dedupeKey: `credit_${applicationNumber}`,
+      })
+      creditAttemptIds.current.delete(attemptKey)
+      setPageSuccess(`Advance applied successfully. Reference: ${applicationNumber}`)
+      setAllocationAmounts((current) => ({ ...current, [bill.key]: '' }))
+      await loadData()
+    } catch (error: unknown) {
+      setPageError(getPaymentErrorMessage(error))
+    } finally {
+      setApplyingCreditKey(null)
+    }
+  }
+
+  const printReceipt = (payment: PaymentRecord) => {
+    setPrintPaymentId(payment.id)
+    window.setTimeout(() => window.print(), 120)
+  }
+
+  return (
+    <div className="payments-page">
+      <header className="payments-header">
+        <div>
+          <p className="eyebrow">FINANCE</p>
+          <h1>Payments</h1>
+          <p className="page-description">Record tenant payments, allocate money to issued bills, track advance credit, and preserve printable receipts and transaction history.</p>
+        </div>
+        <button className="button button-secondary" type="button" onClick={() => void loadData()} disabled={isLoading || isSaving || applyingCreditKey !== null}>
+          {isLoading ? <LoaderCircle size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+          Refresh
+        </button>
+      </header>
+
+      {pageError && <div className="payment-error" role="alert">{pageError}</div>}
+      {pageSuccess && <div className="payment-success" role="status"><CheckCircle2 size={17} /> {pageSuccess}</div>}
+
+      <section className="payments-summary-grid" aria-label="Payment summary">
+        <div className="payments-summary-card"><div className="payments-summary-label"><CircleDollarSign size={16} /> Total outstanding</div><strong className="payments-summary-value">{formatTaka(totalOutstandingMinor)}</strong></div>
+        <div className="payments-summary-card"><div className="payments-summary-label"><ClipboardList size={16} /> Open bills</div><strong className="payments-summary-value">{openBills.length}</strong></div>
+        <div className="payments-summary-card"><div className="payments-summary-label"><Wallet size={16} /> Available advances</div><strong className="payments-summary-value">{formatTaka(totalCreditMinor)}</strong></div>
+        <div className="payments-summary-card"><div className="payments-summary-label"><ReceiptText size={16} /> Recorded receipts</div><strong className="payments-summary-value">{payments.length}</strong></div>
+      </section>
+
+      {(payableState.unmatchedElectricity > 0 || payableState.unmatchedRent > 0 || payableState.invalidBalances > 0) && (
+        <div className="payment-notice" role="status">Some records need review before they can be paid. Unmatched electricity bills: {payableState.unmatchedElectricity}; unmatched rent bills: {payableState.unmatchedRent}; inconsistent bill balances: {payableState.invalidBalances}. No payment was changed for these records.</div>
+      )}
+
+      <div className="payments-content-grid">
+        <form className="payments-panel" onSubmit={handleSubmit}>
+          <div className="payments-section-heading"><div><h2>Record a payment</h2><p className="payments-section-subtitle">Enter the money actually received. Allocate some or all of it to bills; any remainder is saved as tenant advance credit.</p></div><Wallet size={21} aria-hidden="true" /></div>
+
+          <div className="payments-form-grid">
+            <label className="property-form-field payment-field-full"><span>Tenant <span>*</span></span>
+              <select value={selectedTenantId} onChange={(event) => handleTenantChange(event.target.value)} required>
+                <option value="">Select tenant</option>
+                {tenantOptions.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.code} — {tenant.name}</option>)}
+              </select>
+            </label>
+            <label className="property-form-field"><span>Amount actually received (BDT) <span>*</span></span>
+              <input type="number" min="0.01" step="0.01" inputMode="decimal" value={form.amountReceived} onChange={(event) => updateForm('amountReceived', event.target.value)} placeholder="0.00" required />
+            </label>
+            <label className="property-form-field"><span>Payment date <span>*</span></span>
+              <input type="date" value={form.paidOn} max={getToday()} onChange={(event) => updateForm('paidOn', event.target.value)} required />
+            </label>
+            <label className="property-form-field"><span>Payment method <span>*</span></span>
+              <select value={form.method} onChange={(event) => updateForm('method', event.target.value as PaymentMethod)} required>
+                <option value="cash">Cash</option><option value="bank_transfer">Bank transfer</option><option value="mobile_banking">Mobile banking (bKash/Nagad)</option><option value="cheque">Cheque</option><option value="other">Other</option>
+              </select>
+            </label>
+            <label className="property-form-field"><span>Reference / transaction ID</span><input value={form.reference} maxLength={120} onChange={(event) => updateForm('reference', event.target.value)} placeholder="Optional transaction reference" /></label>
+            <label className="property-form-field payment-field-full"><span>Notes</span><textarea value={form.notes} maxLength={1000} onChange={(event) => updateForm('notes', event.target.value)} placeholder="Optional payment note" /></label>
+          </div>
+
+          {selectedTenantId && (
+            <div className="payment-credit-panel">
+              <div><span>Available advance credit</span><strong>{formatTaka(selectedTenantCredit)}</strong></div>
+              <p>Advance credit is money already received and not yet allocated to a bill. Applying it to a bill does not create a second cash receipt.</p>
+            </div>
+          )}
+
+          <div className="payments-section-heading" style={{ marginTop: 22, marginBottom: 0 }}><div><h2>Outstanding bills</h2><p className="payments-section-subtitle">Enter an amount for any bill you want to pay, or apply existing advance credit.</p></div></div>
+
+          {!selectedTenantId ? <div className="payment-empty-state">Select a tenant to view their outstanding rent and electricity bills.</div> : selectedTenantBills.length === 0 ? <div className="payment-empty-state">No outstanding bills are available for this tenant. You can still record received money as advance credit.</div> : (
+            <div className="payment-bill-list">
+              {selectedTenantBills.map((bill) => {
+                const billCredit = creditByTenantId.get(bill.tenantId)?.creditMinor ?? 0
+                return (
+                  <article className="payment-bill-row" key={bill.key}>
+                    <div className="payment-bill-topline"><div><p className="payment-bill-title">{billTypeLabel(bill.billType)} · {formatMonth(bill.billingMonth)}</p><div className="payment-bill-meta">{bill.roomCode} · Room {bill.roomNumber} · {bill.propertyCode} · {bill.floorName}</div></div><strong>{formatTaka(bill.outstandingMinor)} due</strong></div>
+                    <div className="payment-bill-amounts"><div><span>Original bill</span><strong>{formatTaka(bill.billAmountMinor)}</strong></div><div><span>Already paid</span><strong>{formatTaka(bill.paidAmountMinor)}</strong></div><div><span>Remaining</span><strong>{formatTaka(bill.outstandingMinor)}</strong></div></div>
+                    <div className="payment-allocation-input"><label>Amount to allocate (BDT)
+                      <input type="number" min="0" max={(bill.outstandingMinor / 100).toFixed(2)} step="0.01" inputMode="decimal" value={allocationAmounts[bill.key] ?? ''} onChange={(event) => setAllocationAmounts((current) => ({ ...current, [bill.key]: event.target.value }))} placeholder="0.00" />
+                    </label><button className="payment-small-button" type="button" onClick={() => setAllocationAmounts((current) => ({ ...current, [bill.key]: (bill.outstandingMinor / 100).toFixed(2) }))}>Full balance</button></div>
+                    <div className="payment-bill-actions"><button className="payment-small-button payment-advance-button" type="button" disabled={billCredit <= 0 || applyingCreditKey !== null || isSaving || isLoading} onClick={() => void applyAdvance(bill)}>{applyingCreditKey === bill.key ? <LoaderCircle size={14} className="animate-spin" /> : <CreditCard size={14} />} Apply advance ({formatTaka(billCredit)})</button></div>
+                  </article>
+                )
+              })}
+            </div>
+          )}
+
+          <div className="payment-total-row"><div><span>Total allocated to bills</span><div className="payments-section-subtitle">Allocated money cannot exceed the amount actually received.</div></div><strong>{formatTaka(totalAllocatedMinor)}</strong></div>
+          <div className="payment-total-row payment-receipt-preview"><div><span>Receipt total · actual cash received</span><div className="payments-section-subtitle">The difference, if any, is added to advance credit.</div></div><strong>{amountReceivedMinor !== null && amountReceivedMinor > 0 ? formatTaka(amountReceivedMinor) : '—'}</strong></div>
+          <div className="payment-credit-preview"><span>Advance added by this receipt</span><strong>{formatTaka(advanceFromThisPayment)}</strong></div>
+          {form.amountReceived.trim() && hasInvalidReceived && <div className="payment-error" role="alert">Enter a valid received amount greater than zero, using no more than two decimal places.</div>}
+          {hasInvalidAllocation && <div className="payment-error" role="alert">One or more bill allocation amounts are invalid. Use amounts with no more than two decimal places.</div>}
+          {overAllocated && <div className="payment-error" role="alert">One or more allocations exceed the current outstanding bill balance.</div>}
+          {receivedBelowAllocated && <div className="payment-error" role="alert">Amount received is less than the total allocated to bills. Increase the received amount or lower the allocations.</div>}
+
+          {formError && <div className="payment-error" role="alert" style={{ marginTop: 12 }}>{formError}</div>}
+          <div className="payment-submit-row"><button className="button-primary" type="submit" disabled={isSaving || isLoading || !selectedTenantId || hasInvalidReceived || hasInvalidAllocation || overAllocated || receivedBelowAllocated || applyingCreditKey !== null}>{isSaving ? <LoaderCircle size={17} className="animate-spin" /> : <Banknote size={17} />}{isSaving ? 'Recording payment…' : 'Record payment & issue receipt'}</button></div>
+          <p className="payments-section-subtitle" style={{ marginTop: 12 }}>Payment receipts, bill-balance changes, and advance-credit changes are written atomically. Issued bills are never edited, and applying advance credit does not count as a second payment.</p>
+        </form>
+
+        <section className="payments-history-panel">
+          <div className="payments-section-heading"><div><h2>Recent payments</h2><p className="payments-section-subtitle">Posted receipts are preserved as immutable history.</p></div><ReceiptText size={21} aria-hidden="true" /></div>
+          {isLoading ? <div className="payment-empty-state"><span className="payment-inline-spinner"><LoaderCircle size={17} className="animate-spin" /> Loading payment history…</span></div> : payments.length === 0 ? <div className="payment-empty-state">No payments recorded yet. A receipt will appear here after the first payment.</div> : (
+            <div className="payment-history-list">{payments.slice(0, 12).map((payment) => (
+              <article className="payment-history-row" key={payment.id}><div className="payment-history-main"><p className="payment-history-title">{payment.receiptNumber}</p><div className="payment-history-meta">{payment.tenantCode} — {payment.tenantName}<br />{formatDate(payment.paidOn)} · {methodLabel(payment.method)}<br />{payment.allocations.length} bill{payment.allocations.length === 1 ? '' : 's'} allocated{payment.advanceAddedMinor > 0 ? ` · ${formatTaka(payment.advanceAddedMinor)} advance` : ''}</div><div className="payment-history-actions"><button type="button" onClick={() => printReceipt(payment)}><Printer size={14} /> Print receipt</button></div></div><strong className="payment-history-amount">{formatTaka(payment.amountMinor)}</strong></article>
+            ))}</div>
+          )}
+
+          <div className="payments-section-heading payment-subsection-heading"><div><h2>Advance applications</h2><p className="payments-section-subtitle">Advance credit applied to bills, separate from cash receipts.</p></div><CreditCard size={20} aria-hidden="true" /></div>
+          {isLoading ? <div className="payment-empty-state">Loading advance history…</div> : creditApplications.length === 0 ? <div className="payment-empty-state">No advance credit has been applied yet.</div> : (
+            <div className="payment-history-list">{creditApplications.slice(0, 12).map((application) => (
+              <article className="payment-history-row" key={application.id}><div className="payment-history-main"><p className="payment-history-title">{application.applicationNumber}</p><div className="payment-history-meta">{application.tenantCode} — {application.tenantName}<br />{billTypeLabel(application.allocation.billType)} · {formatMonth(application.allocation.billingMonth)} · {application.allocation.roomCode} / {application.allocation.roomNumber}</div></div><strong className="payment-history-amount">{formatTaka(application.amountMinor)}</strong></article>
+            ))}</div>
+          )}
+        </section>
+      </div>
+
+      {payments.map((payment) => (
+        <section className="payment-print-receipt" data-active={printPaymentId === payment.id ? 'true' : 'false'} key={`print-${payment.id}`} aria-label={`Receipt ${payment.receiptNumber}`}>
+          <div className="payment-receipt-sheet">
+            <div className="payment-receipt-header"><div><h1>PropertyOS</h1><p>Payment receipt</p></div><div className="payment-receipt-meta"><strong>{payment.receiptNumber}</strong><br />Payment date: {formatDate(payment.paidOn)}<br />Method: {methodLabel(payment.method)}</div></div>
+            <p className="payment-receipt-meta">Tenant: {payment.tenantCode} — {payment.tenantName}<br />Reference: {payment.reference || '—'}</p>
+            <table className="payment-receipt-table"><thead><tr><th>Type</th><th>Billing month</th><th>Room</th><th>Allocated amount</th></tr></thead><tbody>
+              {payment.allocations.length === 0 ? <tr><td colSpan={4}>Advance credit received; no bill allocation on this receipt.</td></tr> : payment.allocations.map((allocation) => <tr key={`${allocation.billType}-${allocation.billId}`}><td>{billTypeLabel(allocation.billType)}</td><td>{formatMonth(allocation.billingMonth)}</td><td>{allocation.roomCode} · {allocation.roomNumber}</td><td>{formatTaka(allocation.amountMinor)}</td></tr>)}
+            </tbody></table>
+            <div className="payment-receipt-total">Total received: {formatTaka(payment.amountMinor)}</div>
+            {payment.advanceAddedMinor > 0 && <p className="payment-receipt-notes">Advance credit added: {formatTaka(payment.advanceAddedMinor)}</p>}
+            {payment.notes && <p className="payment-receipt-notes">Notes: {payment.notes}</p>}
+            <p className="payment-receipt-meta">This receipt records money received. Applying any advance credit later creates a separate application reference, not a second cash receipt.</p>
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}

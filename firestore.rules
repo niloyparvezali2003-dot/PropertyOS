@@ -1,0 +1,2515 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==================================================
+    // 1. OWNER ACCESS
+    // ==================================================
+
+    function isOwner(userId) {
+      return request.auth != null
+        && request.auth.uid == userId;
+    }
+
+    // Temporary restore mode is scoped to the signed-in user's own namespace
+    // and expires after ten minutes. It only enables create operations through
+    // the dedicated restore matcher below; restore writes use create-only transactions.
+    function isRestoreMode(userId) {
+      let restorePath =
+        /databases/$(database)/documents/users/$(userId)/system/restoreMode;
+      return request.auth != null
+        && request.auth.uid == userId
+        && exists(restorePath)
+        && get(restorePath).data.active == true
+        && get(restorePath).data.ownerUid == request.auth.uid
+        && get(restorePath).data.sessionToken is string
+        && get(restorePath).data.sessionToken.size() >= 32
+        && get(restorePath).data.expiresAt is timestamp
+        && get(restorePath).data.expiresAt > request.time;
+    }
+
+    // ==================================================
+    // 2. PROPERTY VALIDATION
+    // ==================================================
+
+    function validProperty(data) {
+      return data.keys().hasAll([
+          'name',
+          'propertyCode',
+          'normalizedName',
+          'address',
+          'notes',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'name',
+          'propertyCode',
+          'normalizedName',
+          'address',
+          'notes',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.name is string
+        && data.name.size() >= 2
+        && data.name.size() <= 100
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.propertyCode != 'P00'
+        && data.normalizedName is string
+        && data.normalizedName.size() >= 1
+        && data.normalizedName.size() <= 100
+        && data.address is string
+        && data.address.size() <= 240
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.status == 'active'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    function validNameIndex(data) {
+      return data.keys().hasAll([
+          'propertyId',
+          'normalizedName',
+          'displayName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'propertyId',
+          'normalizedName',
+          'displayName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.normalizedName is string
+        && data.normalizedName.size() >= 1
+        && data.normalizedName.size() <= 100
+        && data.displayName is string
+        && data.displayName.size() >= 2
+        && data.displayName.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // ==================================================
+    // 3. TENANT VALIDATION
+    // ==================================================
+
+    function validTenant(data) {
+      return data.keys().hasAll([
+          'tenantCode',
+          'fullName',
+          'phone',
+          'email',
+          'address',
+          'notes',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'tenantCode',
+          'fullName',
+          'phone',
+          'email',
+          'address',
+          'notes',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.fullName is string
+        && data.fullName.size() >= 2
+        && data.fullName.size() <= 100
+        && data.phone is string
+        && data.phone.size() >= 7
+        && data.phone.size() <= 20
+        && data.phone.matches('^[+0-9() -]{7,20}$')
+        && data.phone.matches('.*[0-9].*[0-9].*[0-9].*[0-9].*[0-9].*[0-9].*[0-9].*')
+        && data.email is string
+        && data.email.size() <= 254
+        && data.address is string
+        && data.address.size() <= 240
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.status in ['active', 'archived']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    // ==================================================
+    // 4. ROOM / PROPERTY VALIDATION
+    // ==================================================
+
+    function roomPropertyIsActive(userId, data) {
+      return data.propertyId is string
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && exists(
+          /databases/$(database)/documents/users/$(userId)/properties/$(data.propertyId)
+        )
+        && get(
+          /databases/$(database)/documents/users/$(userId)/properties/$(data.propertyId)
+        ).data.propertyCode == data.propertyCode
+        && get(
+          /databases/$(database)/documents/users/$(userId)/properties/$(data.propertyId)
+        ).data.status == 'active';
+    }
+
+    function validRoom(data, userId) {
+      return data.keys().hasAll([
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'floorName',
+          'roomNumber',
+          'normalizedFloorName',
+          'normalizedRoomNumber',
+          'notes',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'floorName',
+          'roomNumber',
+          'normalizedFloorName',
+          'normalizedRoomNumber',
+          'notes',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.floorName is string
+        && data.floorName.size() >= 1
+        && data.floorName.size() <= 80
+        && data.roomNumber is string
+        && data.roomNumber.size() >= 1
+        && data.roomNumber.size() <= 30
+        && data.normalizedFloorName is string
+        && data.normalizedFloorName.size() >= 1
+        && data.normalizedFloorName.size() <= 80
+        && data.normalizedRoomNumber is string
+        && data.normalizedRoomNumber.size() >= 1
+        && data.normalizedRoomNumber.size() <= 30
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.status in ['vacant', 'maintenance', 'inactive']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && roomPropertyIsActive(userId, data);
+    }
+
+    function validRoomNameIndex(data) {
+      return data.keys().hasAll([
+          'roomId',
+          'propertyId',
+          'normalizedFloorName',
+          'normalizedRoomNumber',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'roomId',
+          'propertyId',
+          'normalizedFloorName',
+          'normalizedRoomNumber',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.normalizedFloorName is string
+        && data.normalizedFloorName.size() >= 1
+        && data.normalizedFloorName.size() <= 80
+        && data.normalizedRoomNumber is string
+        && data.normalizedRoomNumber.size() >= 1
+        && data.normalizedRoomNumber.size() <= 30
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // ==================================================
+    // 5. METER VALIDATION
+    // ==================================================
+
+    function validMeter(data) {
+      return data.keys().hasAll([
+          'meterCode',
+          'serialNumber',
+          'notes',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'meterCode',
+          'serialNumber',
+          'notes',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.meterCode is string
+        && data.meterCode.matches('^M[0-9]{4}$')
+        && data.meterCode != 'M0000'
+        && data.serialNumber is string
+        && data.serialNumber.size() <= 80
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.status in ['available', 'assigned', 'retired']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    // ==================================================
+    // 6. METER ASSIGNMENT VALIDATION
+    // ==================================================
+
+    function validMeterAssignment(data) {
+      return data.keys().hasAll([
+          'meterId',
+          'meterCode',
+          'roomId',
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'status',
+          'assignedOn',
+          'initialReading',
+          'endedOn',
+          'finalReading',
+          'endReason',
+          'endNotes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'meterId',
+          'meterCode',
+          'roomId',
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'status',
+          'assignedOn',
+          'initialReading',
+          'endedOn',
+          'finalReading',
+          'endReason',
+          'endNotes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.meterId is string
+        && data.meterId.size() > 0
+        && data.meterCode is string
+        && data.meterCode.matches('^M[0-9]{4}$')
+        && data.meterCode != 'M0000'
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.propertyCode != 'P00'
+        && data.status in ['current', 'ended']
+        && data.assignedOn is string
+        && data.assignedOn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (
+          (data.initialReading is int && data.initialReading >= 0)
+          || (data.initialReading is float && data.initialReading >= 0)
+        )
+        && (
+          data.endedOn == null
+          || (
+            data.endedOn is string
+            && data.endedOn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+          )
+        )
+        && (
+          data.finalReading == null
+          || (
+            data.finalReading is int
+            && data.finalReading >= 0
+          )
+          || (
+            data.finalReading is float
+            && data.finalReading >= 0
+          )
+        )
+        && (
+          data.endReason == null
+          || data.endReason in [
+            'damaged',
+            'overreading',
+            'slow_reading',
+            'other'
+          ]
+        )
+        && data.endNotes is string
+        && data.endNotes.size() <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && (
+          (
+            data.status == 'current'
+            && data.endedOn == null
+            && data.finalReading == null
+            && data.endReason == null
+          )
+          || (
+            data.status == 'ended'
+            && data.endedOn is string
+            && data.endedOn >= data.assignedOn
+            && data.finalReading != null
+            && data.endReason in [
+              'damaged',
+              'overreading',
+              'slow_reading',
+              'other'
+            ]
+          )
+        );
+    }
+
+    function validMeterAssignmentRoom(userId, data) {
+      return data.propertyCode.matches('^P[0-9]{2}$')
+        && exists(
+          /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId)
+        )
+        && get(
+          /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId)
+        ).data.roomCode == data.roomCode
+        && get(
+          /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId)
+        ).data.propertyId == data.propertyId
+        && get(
+          /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId)
+        ).data.propertyCode == data.propertyCode
+        && get(
+          /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId)
+        ).data.status != 'inactive'
+        && roomPropertyIsActive(userId, data);
+    }
+
+    // ==================================================
+    // 7. CURRENT METER INDEX VALIDATION
+    // ==================================================
+
+    function validCurrentMeterIndex(data) {
+      return data.keys().hasAll([
+          'meterId',
+          'meterCode',
+          'roomId',
+          'assignmentId',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'meterId',
+          'meterCode',
+          'roomId',
+          'assignmentId',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.meterId is string
+        && data.meterId.size() > 0
+        && data.meterCode is string
+        && data.meterCode.matches('^M[0-9]{4}$')
+        && data.meterCode != 'M0000'
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.assignmentId is string
+        && data.assignmentId.size() > 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Check that the meter, assignment and both current indexes
+    // agree after the transaction has completed.
+    function validCurrentMeterPair(
+      userId,
+      assignmentId,
+      meterId,
+      meterCode,
+      roomId
+    ) {
+      return existsAfter(
+          /databases/$(database)/documents/users/$(userId)/meters/$(meterId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/meters/$(meterId)
+        ).data.meterCode == meterCode
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/meters/$(meterId)
+        ).data.status == 'assigned'
+
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(assignmentId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(assignmentId)
+        ).data.status == 'current'
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(assignmentId)
+        ).data.meterId == meterId
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(assignmentId)
+        ).data.meterCode == meterCode
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(assignmentId)
+        ).data.roomId == roomId
+
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(roomId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(roomId)
+        ).data.meterId == meterId
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(roomId)
+        ).data.assignmentId == assignmentId
+
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(meterId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(meterId)
+        ).data.meterId == meterId
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(meterId)
+        ).data.roomId == roomId
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(meterId)
+        ).data.assignmentId == assignmentId;
+    }
+
+    function validMeterAssignedAfter(userId, meterId, meterCode) {
+      let indexPath =
+        /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(meterId);
+
+      return existsAfter(indexPath)
+        && getAfter(indexPath).data.meterId == meterId
+        && getAfter(indexPath).data.meterCode == meterCode
+        && validCurrentMeterPair(
+          userId,
+          getAfter(indexPath).data.assignmentId,
+          meterId,
+          meterCode,
+          getAfter(indexPath).data.roomId
+        );
+    }
+
+    function validMeterRetirementAfter(userId, meterId) {
+      let indexPath =
+        /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(meterId);
+
+      return exists(indexPath)
+        && get(indexPath).data.meterId == meterId
+        && !existsAfter(indexPath)
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(get(indexPath).data.assignmentId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(get(indexPath).data.assignmentId)
+        ).data.status == 'ended'
+        && (
+          !existsAfter(
+            /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(get(indexPath).data.roomId)
+          )
+          || getAfter(
+            /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(get(indexPath).data.roomId)
+          ).data.meterId != meterId
+        );
+    }
+
+    function validMeterUnassignmentAfter(userId, data) {
+      let indexPath =
+        /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(data.meterId);
+
+      return exists(indexPath)
+        && get(indexPath).data.assignmentId is string
+        && !existsAfter(indexPath)
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(get(indexPath).data.assignmentId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/meterAssignments/$(get(indexPath).data.assignmentId)
+        ).data.status == 'ended'
+        && (
+          !existsAfter(
+            /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(data.roomId)
+          )
+          || getAfter(
+            /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(data.roomId)
+          ).data.meterId != data.meterId
+        );
+    }
+
+    // ==================================================
+    // TENANT / ROOM ASSIGNMENT VALIDATION
+    // ==================================================
+
+    function validTenantAssignment(data) {
+      return data.keys().hasAll([
+          'tenantId',
+          'tenantCode',
+          'tenantName',
+          'roomId',
+          'roomCode',
+          'roomNumber',
+          'floorName',
+          'propertyId',
+          'propertyCode',
+          'moveInDate',
+          'moveOutDate',
+          'status',
+          'notes',
+          'moveOutNotes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'tenantId',
+          'tenantCode',
+          'tenantName',
+          'roomId',
+          'roomCode',
+          'roomNumber',
+          'floorName',
+          'propertyId',
+          'propertyCode',
+          'moveInDate',
+          'moveOutDate',
+          'status',
+          'notes',
+          'moveOutNotes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && data.roomNumber is string
+        && data.roomNumber.size() >= 1
+        && data.roomNumber.size() <= 30
+        && data.floorName is string
+        && data.floorName.size() >= 1
+        && data.floorName.size() <= 80
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.propertyCode != 'P00'
+        && data.moveInDate is string
+        && data.moveInDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (
+          data.moveOutDate == null
+          || (
+            data.moveOutDate is string
+            && data.moveOutDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            && data.moveOutDate >= data.moveInDate
+          )
+        )
+        && data.status in ['current', 'ended']
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.moveOutNotes is string
+        && data.moveOutNotes.size() <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && (
+          (
+            data.status == 'current'
+            && data.moveOutDate == null
+            && data.moveOutNotes == ''
+          )
+          || (
+            data.status == 'ended'
+            && data.moveOutDate is string
+            && data.moveOutDate >= data.moveInDate
+          )
+        );
+    }
+
+    function validTenantAssignmentTenant(userId, data) {
+      let tenantPath =
+        /databases/$(database)/documents/users/$(userId)/tenants/$(data.tenantId);
+
+      return exists(tenantPath)
+        && get(tenantPath).data.tenantCode == data.tenantCode
+        && get(tenantPath).data.fullName == data.tenantName
+        && get(tenantPath).data.status == 'active';
+    }
+
+    function validTenantAssignmentRoom(userId, data) {
+      let roomPath =
+        /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId);
+
+      return exists(roomPath)
+        && get(roomPath).data.roomCode == data.roomCode
+        && get(roomPath).data.roomNumber == data.roomNumber
+        && get(roomPath).data.floorName == data.floorName
+        && get(roomPath).data.propertyId == data.propertyId
+        && get(roomPath).data.propertyCode == data.propertyCode
+        && get(roomPath).data.status == 'vacant'
+        && roomPropertyIsActive(userId, data);
+    }
+
+    function validCurrentTenantIndex(data) {
+      return data.keys().hasAll([
+          'tenantId',
+          'tenantCode',
+          'tenantName',
+          'roomId',
+          'roomCode',
+          'roomNumber',
+          'floorName',
+          'propertyId',
+          'propertyCode',
+          'assignmentId',
+          'moveInDate',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'tenantId',
+          'tenantCode',
+          'tenantName',
+          'roomId',
+          'roomCode',
+          'roomNumber',
+          'floorName',
+          'propertyId',
+          'propertyCode',
+          'assignmentId',
+          'moveInDate',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && data.roomNumber is string
+        && data.roomNumber.size() >= 1
+        && data.roomNumber.size() <= 30
+        && data.floorName is string
+        && data.floorName.size() >= 1
+        && data.floorName.size() <= 80
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.propertyCode != 'P00'
+        && data.assignmentId is string
+        && data.assignmentId.size() > 0
+        && data.moveInDate is string
+        && data.moveInDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // The assignment and both unique-current indexes must agree after a transaction.
+    function validCurrentTenantAssignmentPair(userId, assignmentId, data) {
+      let assignmentPath =
+        /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(assignmentId);
+      let roomIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentTenantByRoom/$(data.roomId);
+      let tenantIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentRoomByTenant/$(data.tenantId);
+
+      return existsAfter(assignmentPath)
+        && getAfter(assignmentPath).data.status == 'current'
+        && getAfter(assignmentPath).data.tenantId == data.tenantId
+        && getAfter(assignmentPath).data.tenantCode == data.tenantCode
+        && getAfter(assignmentPath).data.tenantName == data.tenantName
+        && getAfter(assignmentPath).data.roomId == data.roomId
+        && getAfter(assignmentPath).data.roomCode == data.roomCode
+        && getAfter(assignmentPath).data.roomNumber == data.roomNumber
+        && getAfter(assignmentPath).data.floorName == data.floorName
+        && getAfter(assignmentPath).data.propertyId == data.propertyId
+        && getAfter(assignmentPath).data.propertyCode == data.propertyCode
+        && getAfter(assignmentPath).data.moveInDate == data.moveInDate
+        && existsAfter(roomIndexPath)
+        && getAfter(roomIndexPath).data.assignmentId == assignmentId
+        && getAfter(roomIndexPath).data.tenantId == data.tenantId
+        && getAfter(roomIndexPath).data.roomId == data.roomId
+        && getAfter(roomIndexPath).data.tenantCode == data.tenantCode
+        && getAfter(roomIndexPath).data.tenantName == data.tenantName
+        && getAfter(roomIndexPath).data.roomCode == data.roomCode
+        && getAfter(roomIndexPath).data.roomNumber == data.roomNumber
+        && getAfter(roomIndexPath).data.floorName == data.floorName
+        && getAfter(roomIndexPath).data.propertyId == data.propertyId
+        && getAfter(roomIndexPath).data.propertyCode == data.propertyCode
+        && getAfter(roomIndexPath).data.moveInDate == data.moveInDate
+        && existsAfter(tenantIndexPath)
+        && getAfter(tenantIndexPath).data.assignmentId == assignmentId
+        && getAfter(tenantIndexPath).data.tenantId == data.tenantId
+        && getAfter(tenantIndexPath).data.tenantCode == data.tenantCode
+        && getAfter(tenantIndexPath).data.tenantName == data.tenantName
+        && getAfter(tenantIndexPath).data.roomId == data.roomId
+        && getAfter(tenantIndexPath).data.roomCode == data.roomCode
+        && getAfter(tenantIndexPath).data.roomNumber == data.roomNumber
+        && getAfter(tenantIndexPath).data.floorName == data.floorName
+        && getAfter(tenantIndexPath).data.propertyId == data.propertyId
+        && getAfter(tenantIndexPath).data.propertyCode == data.propertyCode
+        && getAfter(tenantIndexPath).data.moveInDate == data.moveInDate;
+    }
+
+    function validTenantAssignmentEndedAfter(userId, assignmentId, data) {
+      let assignmentPath =
+        /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(assignmentId);
+      let roomIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentTenantByRoom/$(data.roomId);
+      let tenantIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentRoomByTenant/$(data.tenantId);
+
+      return existsAfter(assignmentPath)
+        && getAfter(assignmentPath).data.status == 'ended'
+        && getAfter(assignmentPath).data.tenantId == data.tenantId
+        && getAfter(assignmentPath).data.roomId == data.roomId
+        && !existsAfter(roomIndexPath)
+        && !existsAfter(tenantIndexPath);
+    }
+
+    function validTenantAssignmentIndexRemoval(userId, data) {
+      let assignmentPath =
+        /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(data.assignmentId);
+      let roomIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentTenantByRoom/$(data.roomId);
+      let tenantIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentRoomByTenant/$(data.tenantId);
+
+      return existsAfter(assignmentPath)
+        && getAfter(assignmentPath).data.status == 'ended'
+        && getAfter(assignmentPath).data.tenantId == data.tenantId
+        && getAfter(assignmentPath).data.tenantCode == data.tenantCode
+        && getAfter(assignmentPath).data.roomId == data.roomId
+        && getAfter(assignmentPath).data.roomCode == data.roomCode
+        && !existsAfter(roomIndexPath)
+        && !existsAfter(tenantIndexPath);
+    }
+
+    // ==================================================
+    // 8. PROPERTY RECORDS
+    // ==================================================
+
+    match /users/{userId}/properties/{propertyId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validProperty(request.resource.data);
+
+      allow update: if isOwner(userId)
+        && validProperty(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.status == resource.data.status
+        && (
+          !('propertyCode' in resource.data)
+          || request.resource.data.propertyCode == resource.data.propertyCode
+        );
+
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 9. PROPERTY NAME INDEX
+    // ==================================================
+
+    match /users/{userId}/propertyNameIndex/{indexId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validNameIndex(request.resource.data);
+
+      allow update: if isOwner(userId)
+        && validNameIndex(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if isOwner(userId);
+    }
+
+    // ==================================================
+    // 10. SHARED PERMANENT ID SEQUENCES
+    // ==================================================
+
+    function isKnownSequence(systemId) {
+      return systemId == 'propertySequence'
+        || systemId == 'tenantSequence'
+        || systemId == 'roomSequence'
+        || systemId == 'meterSequence';
+    }
+
+    function validSequence(systemId, data) {
+      return data.keys().hasAll([
+          'nextNumber',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'nextNumber',
+          'updatedAt'
+        ])
+        && data.nextNumber is int
+        && data.updatedAt is timestamp
+        && (
+          (
+            systemId == 'propertySequence'
+            && data.nextNumber >= 2
+            && data.nextNumber <= 100
+          )
+          || (
+            systemId == 'tenantSequence'
+            && data.nextNumber >= 1
+            && data.nextNumber <= 2600000
+          )
+          || (
+            (
+              systemId == 'roomSequence'
+              || systemId == 'meterSequence'
+            )
+            && data.nextNumber >= 2
+            && data.nextNumber <= 10000
+          )
+        );
+    }
+
+    match /users/{userId}/system/{systemId} {
+      allow read: if isOwner(userId)
+        && isKnownSequence(systemId);
+
+      allow create: if isOwner(userId)
+        && isKnownSequence(systemId)
+        && validSequence(systemId, request.resource.data);
+
+      allow update: if isOwner(userId)
+        && isKnownSequence(systemId)
+        && validSequence(systemId, request.resource.data)
+        && resource.data.nextNumber is int
+        && request.resource.data.nextNumber > resource.data.nextNumber;
+
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 11. ROOM RECORDS
+    // ==================================================
+
+    match /users/{userId}/rooms/{roomId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validRoom(request.resource.data, userId);
+
+      allow update: if isOwner(userId)
+        && validRoom(request.resource.data, userId)
+        && request.resource.data.roomCode == resource.data.roomCode
+        && request.resource.data.propertyId == resource.data.propertyId
+        && request.resource.data.propertyCode == resource.data.propertyCode
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy;
+
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 12. ROOM NAME INDEX
+    // ==================================================
+
+    match /users/{userId}/roomNameIndex/{indexId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validRoomNameIndex(request.resource.data);
+
+      allow update: if isOwner(userId)
+        && validRoomNameIndex(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if isOwner(userId);
+    }
+
+    // ==================================================
+    // 13. TENANT RECORDS
+    // ==================================================
+
+    match /users/{userId}/tenants/{tenantId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validTenant(request.resource.data);
+
+      allow update: if isOwner(userId)
+        && validTenant(request.resource.data)
+        && request.resource.data.tenantCode == resource.data.tenantCode
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy;
+
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 14. METER RECORDS
+    // ==================================================
+
+    match /users/{userId}/meters/{meterId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validMeter(request.resource.data)
+        && (
+          request.resource.data.status == 'available'
+          || (
+            request.resource.data.status == 'assigned'
+            && validMeterAssignedAfter(
+              userId,
+              meterId,
+              request.resource.data.meterCode
+            )
+          )
+        );
+
+      allow update: if isOwner(userId)
+        && validMeter(request.resource.data)
+        && request.resource.data.meterCode == resource.data.meterCode
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && (
+          (
+            request.resource.data.status == resource.data.status
+            && (
+              resource.data.status != 'assigned'
+              || validMeterAssignedAfter(
+                userId,
+                meterId,
+                request.resource.data.meterCode
+              )
+            )
+          )
+          || (
+            resource.data.status == 'available'
+            && request.resource.data.status == 'assigned'
+            && validMeterAssignedAfter(
+              userId,
+              meterId,
+              request.resource.data.meterCode
+            )
+          )
+          || (
+            resource.data.status == 'assigned'
+            && request.resource.data.status == 'retired'
+            && validMeterRetirementAfter(userId, meterId)
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 15. METER ASSIGNMENT HISTORY
+    // ==================================================
+
+    match /users/{userId}/meterAssignments/{assignmentId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validMeterAssignment(request.resource.data)
+        && request.resource.data.status == 'current'
+        && validMeterAssignmentRoom(userId, request.resource.data)
+        && validCurrentMeterPair(
+          userId,
+          assignmentId,
+          request.resource.data.meterId,
+          request.resource.data.meterCode,
+          request.resource.data.roomId
+        );
+
+      allow update: if isOwner(userId)
+        && validMeterAssignment(request.resource.data)
+        && resource.data.status == 'current'
+        && request.resource.data.status == 'ended'
+        && request.resource.data.meterId == resource.data.meterId
+        && request.resource.data.meterCode == resource.data.meterCode
+        && request.resource.data.roomId == resource.data.roomId
+        && request.resource.data.roomCode == resource.data.roomCode
+        && request.resource.data.propertyId == resource.data.propertyId
+        && request.resource.data.propertyCode == resource.data.propertyCode
+        && request.resource.data.assignedOn == resource.data.assignedOn
+        && request.resource.data.initialReading == resource.data.initialReading
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && validMeterUnassignmentAfter(
+          userId,
+          request.resource.data
+        );
+
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 16. ONE CURRENT METER PER ROOM
+    // ==================================================
+
+    match /users/{userId}/currentMeterByRoom/{roomId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validCurrentMeterIndex(request.resource.data)
+        && request.resource.data.roomId == roomId
+        && validCurrentMeterPair(
+          userId,
+          request.resource.data.assignmentId,
+          request.resource.data.meterId,
+          request.resource.data.meterCode,
+          request.resource.data.roomId
+        );
+
+      allow update: if isOwner(userId)
+        && validCurrentMeterIndex(request.resource.data)
+        && request.resource.data.roomId == roomId
+        && resource.data.roomId == roomId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && validCurrentMeterPair(
+          userId,
+          request.resource.data.assignmentId,
+          request.resource.data.meterId,
+          request.resource.data.meterCode,
+          request.resource.data.roomId
+        );
+
+      // Keep the current assignment index consistent.
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 17. ONE CURRENT ROOM PER METER
+    // ==================================================
+
+    match /users/{userId}/currentAssignmentByMeter/{meterId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validCurrentMeterIndex(request.resource.data)
+        && request.resource.data.meterId == meterId
+        && validCurrentMeterPair(
+          userId,
+          request.resource.data.assignmentId,
+          request.resource.data.meterId,
+          request.resource.data.meterCode,
+          request.resource.data.roomId
+        );
+
+      allow update: if isOwner(userId)
+        && validCurrentMeterIndex(request.resource.data)
+        && request.resource.data.meterId == meterId
+        && resource.data.meterId == meterId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && validCurrentMeterPair(
+          userId,
+          request.resource.data.assignmentId,
+          request.resource.data.meterId,
+          request.resource.data.meterCode,
+          request.resource.data.roomId
+        );
+
+      allow delete: if isOwner(userId)
+        && validMeterUnassignmentAfter(userId, resource.data);
+    }
+
+    // ==================================================
+    // 18. TENANT ASSIGNMENT HISTORY
+    // ==================================================
+
+    match /users/{userId}/tenantAssignments/{assignmentId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validTenantAssignment(request.resource.data)
+        && request.resource.data.status == 'current'
+        && validTenantAssignmentTenant(userId, request.resource.data)
+        && validTenantAssignmentRoom(userId, request.resource.data)
+        && validCurrentTenantAssignmentPair(
+          userId,
+          assignmentId,
+          request.resource.data
+        );
+
+      // An assignment may only transition from current to ended.
+      // Its tenant, room, property and move-in snapshots cannot be rewritten.
+      allow update: if isOwner(userId)
+        && validTenantAssignment(request.resource.data)
+        && resource.data.status == 'current'
+        && request.resource.data.status == 'ended'
+        && request.resource.data.tenantId == resource.data.tenantId
+        && request.resource.data.tenantCode == resource.data.tenantCode
+        && request.resource.data.tenantName == resource.data.tenantName
+        && request.resource.data.roomId == resource.data.roomId
+        && request.resource.data.roomCode == resource.data.roomCode
+        && request.resource.data.roomNumber == resource.data.roomNumber
+        && request.resource.data.floorName == resource.data.floorName
+        && request.resource.data.propertyId == resource.data.propertyId
+        && request.resource.data.propertyCode == resource.data.propertyCode
+        && request.resource.data.moveInDate == resource.data.moveInDate
+        && request.resource.data.notes == resource.data.notes
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && validTenantAssignmentEndedAfter(
+          userId,
+          assignmentId,
+          request.resource.data
+        );
+
+      // Preserve ended assignments permanently for history and auditability.
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 19. ONE CURRENT TENANT PER ROOM
+    // ==================================================
+
+    match /users/{userId}/currentTenantByRoom/{roomId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validCurrentTenantIndex(request.resource.data)
+        && request.resource.data.roomId == roomId
+        && validCurrentTenantAssignmentPair(
+          userId,
+          request.resource.data.assignmentId,
+          request.resource.data
+        );
+
+      // Existing current indexes cannot be overwritten to bypass move-out.
+      allow update: if false;
+
+      allow delete: if isOwner(userId)
+        && validTenantAssignmentIndexRemoval(userId, resource.data);
+    }
+
+    // ==================================================
+    // 20. ONE CURRENT ROOM PER TENANT
+    // ==================================================
+
+    match /users/{userId}/currentRoomByTenant/{tenantId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validCurrentTenantIndex(request.resource.data)
+        && request.resource.data.tenantId == tenantId
+        && validCurrentTenantAssignmentPair(
+          userId,
+          request.resource.data.assignmentId,
+          request.resource.data
+        );
+
+      allow update: if false;
+
+      allow delete: if isOwner(userId)
+        && validTenantAssignmentIndexRemoval(userId, resource.data);
+    }
+
+    // ==================================================
+    // 21. RENT RATE VALIDATION
+    // ==================================================
+
+    function validRentIsoDate(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function validRentBillingMonth(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-(0[1-9]|1[0-2])$');
+    }
+
+    function validRentRateRoom(userId, data) {
+      let roomPath =
+        /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId);
+
+      return exists(roomPath)
+        && get(roomPath).data.roomCode == data.roomCode
+        && get(roomPath).data.propertyId == data.propertyId
+        && get(roomPath).data.propertyCode == data.propertyCode
+        && roomPropertyIsActive(userId, data);
+    }
+
+    function validRentRate(userId, rateId, data) {
+      return data.keys().hasAll([
+          'roomId',
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'effectiveFrom',
+          'monthlyRentMinor',
+          'notes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'roomId',
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'effectiveFrom',
+          'monthlyRentMinor',
+          'notes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.propertyCode != 'P00'
+        && validRentIsoDate(data.effectiveFrom)
+        && data.monthlyRentMinor is int
+        && data.monthlyRentMinor >= 1
+        && data.monthlyRentMinor <= 10000000000
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && rateId == data.roomId + '__' + data.effectiveFrom
+        && validRentRateRoom(userId, data);
+    }
+
+    // ==================================================
+    // 22. RENT BILL VALIDATION
+    // ==================================================
+
+    function validRentBill(userId, billId, data) {
+      let assignmentPath =
+        /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(data.assignmentId);
+
+      return data.keys().hasAll([
+          'assignmentId',
+          'tenantId',
+          'tenantCode',
+          'tenantName',
+          'roomId',
+          'roomCode',
+          'roomNumber',
+          'floorName',
+          'propertyId',
+          'propertyCode',
+          'billingMonth',
+          'occupancyStartDate',
+          'occupancyEndDate',
+          'chargedDays',
+          'daysInMonth',
+          'rateBreakdown',
+          'totalMinor',
+          'currency',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'assignmentId',
+          'tenantId',
+          'tenantCode',
+          'tenantName',
+          'roomId',
+          'roomCode',
+          'roomNumber',
+          'floorName',
+          'propertyId',
+          'propertyCode',
+          'billingMonth',
+          'occupancyStartDate',
+          'occupancyEndDate',
+          'chargedDays',
+          'daysInMonth',
+          'rateBreakdown',
+          'totalMinor',
+          'currency',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.assignmentId is string
+        && data.assignmentId.size() > 0
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && data.roomNumber is string
+        && data.roomNumber.size() >= 1
+        && data.roomNumber.size() <= 30
+        && data.floorName is string
+        && data.floorName.size() >= 1
+        && data.floorName.size() <= 80
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.propertyCode != 'P00'
+        && validRentBillingMonth(data.billingMonth)
+        && validRentIsoDate(data.occupancyStartDate)
+        && validRentIsoDate(data.occupancyEndDate)
+        && data.occupancyStartDate <= data.occupancyEndDate
+        && data.occupancyStartDate[0:7] == data.billingMonth
+        && data.occupancyEndDate[0:7] == data.billingMonth
+        && data.chargedDays is int
+        && data.chargedDays >= 1
+        && data.chargedDays <= 31
+        && data.daysInMonth is int
+        && data.daysInMonth >= 28
+        && data.daysInMonth <= 31
+        && data.chargedDays <= data.daysInMonth
+        && data.rateBreakdown is list
+        && data.rateBreakdown.size() >= 1
+        && data.rateBreakdown.size() <= 31
+        && data.totalMinor is int
+        && data.totalMinor >= 0
+        && data.totalMinor <= 9000000000000000
+        && data.currency == 'BDT'
+        && data.status == 'issued'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && billId == data.assignmentId + '__' + data.billingMonth
+        && exists(assignmentPath)
+        && get(assignmentPath).data.tenantId == data.tenantId
+        && get(assignmentPath).data.tenantCode == data.tenantCode
+        && get(assignmentPath).data.tenantName == data.tenantName
+        && get(assignmentPath).data.roomId == data.roomId
+        && get(assignmentPath).data.roomCode == data.roomCode
+        && get(assignmentPath).data.roomNumber == data.roomNumber
+        && get(assignmentPath).data.floorName == data.floorName
+        && get(assignmentPath).data.propertyId == data.propertyId
+        && get(assignmentPath).data.propertyCode == data.propertyCode
+        && get(assignmentPath).data.moveInDate is string
+        && data.occupancyStartDate >= get(assignmentPath).data.moveInDate
+        && (
+          get(assignmentPath).data.moveOutDate == null
+          || data.occupancyEndDate <= get(assignmentPath).data.moveOutDate
+        );
+    }
+
+    // ==================================================
+    // 23. ROOM RENT RATE HISTORY
+    // ==================================================
+
+    match /users/{userId}/roomRentRates/{rateId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validRentRate(userId, rateId, request.resource.data);
+
+      // Rate records are immutable. Add a new effective date to change rent.
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 24. GENERATED RENT BILLS
+    // ==================================================
+
+    match /users/{userId}/rentBills/{billId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validRentBill(userId, billId, request.resource.data);
+
+      // Issued bills are historical financial records and cannot be rewritten.
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 25. ELECTRICITY RATE HISTORY
+    // ==================================================
+
+    function validElectricityDate(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function validElectricityMonth(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-(0[1-9]|1[0-2])$');
+    }
+
+    function validElectricityNumber(value) {
+      return ((value is int) || (value is float))
+        && value >= 0
+        && value <= 1000000000;
+    }
+
+    function validElectricityRate(userId, rateId, data) {
+      let roomPath =
+        /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId);
+
+      return data.keys().hasAll([
+          'roomId',
+          'roomCode',
+          'effectiveFrom',
+          'pricePerUnitMinor',
+          'notes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'roomId',
+          'roomCode',
+          'effectiveFrom',
+          'pricePerUnitMinor',
+          'notes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && exists(roomPath)
+        && get(roomPath).data.roomCode == data.roomCode
+        && validElectricityDate(data.effectiveFrom)
+        && data.pricePerUnitMinor is int
+        && data.pricePerUnitMinor >= 1
+        && data.pricePerUnitMinor <= 10000000
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && rateId == 'rate__' + data.roomId + '__' + data.effectiveFrom;
+    }
+    // ==================================================
+    // 26. ELECTRICITY METER READING HISTORY
+    // ==================================================
+
+    function validElectricityReading(userId, readingId, data) {
+      let assignmentPath =
+        /databases/$(database)/documents/users/$(userId)/meterAssignments/$(data.meterAssignmentId);
+      let ratePath =
+        /databases/$(database)/documents/users/$(userId)/electricityRates/$(data.rateId);
+      let statePath =
+        /databases/$(database)/documents/users/$(userId)/electricityReadingState/$(data.meterAssignmentId);
+      let billPath =
+        /databases/$(database)/documents/users/$(userId)/electricityBills/$(readingId);
+
+      return data.keys().hasAll([
+          'meterAssignmentId',
+          'meterId',
+          'meterCode',
+          'roomId',
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'billingMonth',
+          'readingDate',
+          'previousReading',
+          'currentReading',
+          'unitsConsumed',
+          'rateId',
+          'rateEffectiveFrom',
+          'pricePerUnitMinor',
+          'amountMinor',
+          'notes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'meterAssignmentId',
+          'meterId',
+          'meterCode',
+          'roomId',
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'billingMonth',
+          'readingDate',
+          'previousReading',
+          'currentReading',
+          'unitsConsumed',
+          'rateId',
+          'rateEffectiveFrom',
+          'pricePerUnitMinor',
+          'amountMinor',
+          'notes',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.meterAssignmentId is string
+        && data.meterAssignmentId.size() > 0
+        && data.meterId is string
+        && data.meterId.size() > 0
+        && data.meterCode.matches('^M[0-9]{4}$')
+        && data.meterCode != 'M0000'
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.propertyCode != 'P00'
+        && validElectricityMonth(data.billingMonth)
+        && validElectricityDate(data.readingDate)
+        && data.readingDate[0:7] == data.billingMonth
+        && validElectricityNumber(data.previousReading)
+        && validElectricityNumber(data.currentReading)
+        && data.currentReading >= data.previousReading
+        && validElectricityNumber(data.unitsConsumed)
+        && data.unitsConsumed <= data.currentReading - data.previousReading + 0.000001
+        && data.unitsConsumed >= data.currentReading - data.previousReading - 0.000001
+        && data.rateId is string
+        && data.rateEffectiveFrom is string
+        && validElectricityDate(data.rateEffectiveFrom)
+        && (
+          data.rateId == 'rate__' + data.rateEffectiveFrom
+          || data.rateId == 'rate__' + data.roomId + '__' + data.rateEffectiveFrom
+        )
+        && data.rateEffectiveFrom <= data.readingDate
+        && data.pricePerUnitMinor is int
+        && data.pricePerUnitMinor >= 1
+        && data.pricePerUnitMinor <= 10000000
+        && data.amountMinor is int
+        && data.amountMinor >= 0
+        && data.amountMinor <= 9000000000000000
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && readingId == data.meterAssignmentId + '__' + data.billingMonth
+        && exists(assignmentPath)
+        && get(assignmentPath).data.meterId == data.meterId
+        && get(assignmentPath).data.meterCode == data.meterCode
+        && get(assignmentPath).data.roomId == data.roomId
+        && get(assignmentPath).data.roomCode == data.roomCode
+        && get(assignmentPath).data.propertyId == data.propertyId
+        && get(assignmentPath).data.propertyCode == data.propertyCode
+        && data.readingDate >= get(assignmentPath).data.assignedOn
+        && (
+          get(assignmentPath).data.status == 'current'
+          || (
+            get(assignmentPath).data.status == 'ended'
+            && get(assignmentPath).data.endedOn is string
+            && data.readingDate <= get(assignmentPath).data.endedOn
+          )
+        )
+        && exists(ratePath)
+        && get(ratePath).data.effectiveFrom == data.rateEffectiveFrom
+        && get(ratePath).data.pricePerUnitMinor == data.pricePerUnitMinor
+        && (
+          (
+            ('roomId' in get(ratePath).data)
+            && get(ratePath).data.roomId == data.roomId
+            && get(ratePath).data.roomCode == data.roomCode
+            && data.rateId == 'rate__' + data.roomId + '__' + data.rateEffectiveFrom
+          )
+          || (
+            !('roomId' in get(ratePath).data)
+            && data.rateId == 'rate__' + data.rateEffectiveFrom
+          )
+        )
+        && (
+          (
+            exists(statePath)
+            && get(statePath).data.meterAssignmentId == data.meterAssignmentId
+            && get(statePath).data.lastReadingValue == data.previousReading
+            && data.readingDate > get(statePath).data.lastReadingDate
+          )
+          || (
+            !exists(statePath)
+            && data.previousReading == get(assignmentPath).data.initialReading
+          )
+        )
+        && existsAfter(billPath)
+        && getAfter(billPath).data.readingId == readingId
+        && getAfter(billPath).data.meterAssignmentId == data.meterAssignmentId
+        && getAfter(billPath).data.currentReading == data.currentReading
+        && getAfter(billPath).data.amountMinor == data.amountMinor
+        && existsAfter(statePath)
+        && getAfter(statePath).data.lastReadingId == readingId
+        && getAfter(statePath).data.lastReadingValue == data.currentReading
+        && getAfter(statePath).data.lastReadingDate == data.readingDate;
+    }
+
+    match /users/{userId}/electricityRates/{rateId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && validElectricityRate(userId, rateId, request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /users/{userId}/electricityReadings/{readingId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && validElectricityReading(userId, readingId, request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 27. ISSUED ELECTRICITY BILLS
+    // ==================================================
+
+    function validElectricityBill(userId, billId, data) {
+      let readingPath =
+        /databases/$(database)/documents/users/$(userId)/electricityReadings/$(data.readingId);
+
+      return data.keys().hasAll([
+          'readingId',
+          'meterAssignmentId',
+          'meterId',
+          'meterCode',
+          'roomId',
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'billingMonth',
+          'readingDate',
+          'previousReading',
+          'currentReading',
+          'unitsConsumed',
+          'rateId',
+          'rateEffectiveFrom',
+          'pricePerUnitMinor',
+          'amountMinor',
+          'notes',
+          'currency',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'readingId',
+          'meterAssignmentId',
+          'meterId',
+          'meterCode',
+          'roomId',
+          'roomCode',
+          'propertyId',
+          'propertyCode',
+          'billingMonth',
+          'readingDate',
+          'previousReading',
+          'currentReading',
+          'unitsConsumed',
+          'rateId',
+          'rateEffectiveFrom',
+          'pricePerUnitMinor',
+          'amountMinor',
+          'notes',
+          'currency',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.readingId == billId
+        && data.meterAssignmentId is string
+        && data.meterId is string
+        && data.meterCode is string
+        && validElectricityMonth(data.billingMonth)
+        && billId == data.meterAssignmentId + '__' + data.billingMonth
+        && data.currency == 'BDT'
+        && data.status == 'issued'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && existsAfter(readingPath)
+        && getAfter(readingPath).data.meterAssignmentId == data.meterAssignmentId
+        && getAfter(readingPath).data.meterId == data.meterId
+        && getAfter(readingPath).data.meterCode == data.meterCode
+        && getAfter(readingPath).data.roomId == data.roomId
+        && getAfter(readingPath).data.roomCode == data.roomCode
+        && getAfter(readingPath).data.propertyId == data.propertyId
+        && getAfter(readingPath).data.propertyCode == data.propertyCode
+        && getAfter(readingPath).data.billingMonth == data.billingMonth
+        && getAfter(readingPath).data.readingDate == data.readingDate
+        && getAfter(readingPath).data.previousReading == data.previousReading
+        && getAfter(readingPath).data.currentReading == data.currentReading
+        && getAfter(readingPath).data.unitsConsumed == data.unitsConsumed
+        && getAfter(readingPath).data.rateId == data.rateId
+        && getAfter(readingPath).data.rateEffectiveFrom == data.rateEffectiveFrom
+        && getAfter(readingPath).data.pricePerUnitMinor == data.pricePerUnitMinor
+        && getAfter(readingPath).data.amountMinor == data.amountMinor
+        && getAfter(readingPath).data.notes == data.notes;
+    }
+
+    match /users/{userId}/electricityBills/{billId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && validElectricityBill(userId, billId, request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 28. LATEST ELECTRICITY READING STATE
+    // ==================================================
+
+    function validElectricityReadingState(userId, assignmentId, data) {
+      let readingPath =
+        /databases/$(database)/documents/users/$(userId)/electricityReadings/$(data.lastReadingId);
+      let billPath =
+        /databases/$(database)/documents/users/$(userId)/electricityBills/$(data.lastReadingId);
+
+      return data.keys().hasAll([
+          'meterAssignmentId',
+          'lastReadingId',
+          'lastReadingDate',
+          'lastReadingValue',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'meterAssignmentId',
+          'lastReadingId',
+          'lastReadingDate',
+          'lastReadingValue',
+          'createdAt',
+          'updatedAt',
+          'createdBy',
+          'updatedBy'
+        ])
+        && data.meterAssignmentId == assignmentId
+        && data.lastReadingId is string
+        && data.lastReadingId.size() > 0
+        && validElectricityDate(data.lastReadingDate)
+        && validElectricityNumber(data.lastReadingValue)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && existsAfter(readingPath)
+        && getAfter(readingPath).data.meterAssignmentId == assignmentId
+        && getAfter(readingPath).data.readingDate == data.lastReadingDate
+        && getAfter(readingPath).data.currentReading == data.lastReadingValue
+        && existsAfter(billPath)
+        && getAfter(billPath).data.readingId == data.lastReadingId;
+    }
+
+    match /users/{userId}/electricityReadingState/{assignmentId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && validElectricityReadingState(userId, assignmentId, request.resource.data);
+      allow update: if isOwner(userId)
+        && validElectricityReadingState(userId, assignmentId, request.resource.data)
+        && request.resource.data.meterAssignmentId == resource.data.meterAssignmentId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.lastReadingDate > resource.data.lastReadingDate;
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // ==================================================
+    // 30. PAYMENT RECORDS (IMMUTABLE RECEIPTS)
+    // ==================================================
+
+    function validPaymentDate(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function validPaymentMonth(value) {
+      return value is string
+        && value.matches('^[0-9]{4}-(0[1-9]|1[0-2])$');
+    }
+
+    function validPaymentAllocation(data) {
+      return data is map
+        && data.keys().hasAll([
+          'billType', 'billId', 'billingMonth', 'referenceDate',
+          'amountMinor', 'billAmountMinor', 'tenantAssignmentId',
+          'tenantId', 'tenantCode', 'tenantName', 'roomId', 'roomCode',
+          'roomNumber', 'floorName', 'propertyId', 'propertyCode'
+        ])
+        && data.keys().hasOnly([
+          'billType', 'billId', 'billingMonth', 'referenceDate',
+          'amountMinor', 'billAmountMinor', 'tenantAssignmentId',
+          'tenantId', 'tenantCode', 'tenantName', 'roomId', 'roomCode',
+          'roomNumber', 'floorName', 'propertyId', 'propertyCode'
+        ])
+        && data.billType in ['rent', 'electricity']
+        && data.billId is string
+        && data.billId.size() > 0
+        && data.billId.size() <= 500
+        && validPaymentMonth(data.billingMonth)
+        && validPaymentDate(data.referenceDate)
+        && data.amountMinor is int
+        && data.amountMinor > 0
+        && data.billAmountMinor is int
+        && data.billAmountMinor > 0
+        && data.amountMinor <= data.billAmountMinor
+        && data.tenantAssignmentId is string
+        && data.tenantAssignmentId.size() > 0
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomNumber is string
+        && data.roomNumber.size() >= 1
+        && data.roomNumber.size() <= 30
+        && data.floorName is string
+        && data.floorName.size() >= 1
+        && data.floorName.size() <= 80
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$');
+    }
+
+    function paymentCreditLinkedAfter(userId, paymentId, data) {
+      let creditPath =
+        /databases/$(database)/documents/users/$(userId)/tenantCredits/$(data.tenantId);
+
+      return existsAfter(creditPath)
+        && getAfter(creditPath).data.tenantId == data.tenantId
+        && getAfter(creditPath).data.lastTransactionType == 'payment'
+        && getAfter(creditPath).data.lastTransactionId == paymentId
+        && getAfter(creditPath).data.lastTransactionAmountMinor == data.advanceAddedMinor
+        && getAfter(creditPath).data.creditMinor >= data.advanceAddedMinor
+        && data.creditUpdate.tenantId == data.tenantId
+        && data.creditUpdate.amountMinor == data.advanceAddedMinor;
+    }
+
+    function validPaymentRecord(userId, paymentId, data) {
+      let tenantPath =
+        /databases/$(database)/documents/users/$(userId)/tenants/$(data.tenantId);
+
+      return exists(tenantPath)
+        && get(tenantPath).data.tenantCode == data.tenantCode
+        && get(tenantPath).data.fullName == data.tenantName
+        && data.keys().hasAll([
+          'receiptNumber', 'tenantId', 'tenantCode', 'tenantName',
+          'paidOn', 'method', 'reference', 'notes', 'amountMinor',
+          'allocatedAmountMinor', 'advanceAddedMinor', 'creditUpdate',
+          'currency', 'status', 'allocations', 'balanceUpdates',
+          'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'receiptNumber', 'tenantId', 'tenantCode', 'tenantName',
+          'paidOn', 'method', 'reference', 'notes', 'amountMinor',
+          'allocatedAmountMinor', 'advanceAddedMinor', 'creditUpdate',
+          'currency', 'status', 'allocations', 'balanceUpdates',
+          'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.receiptNumber == 'PAY-' + paymentId
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && validPaymentDate(data.paidOn)
+        && data.method in ['cash', 'bank_transfer', 'mobile_banking', 'cheque', 'other']
+        && data.reference is string
+        && data.reference.size() <= 120
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.amountMinor is int
+        && data.amountMinor > 0
+        && data.amountMinor <= 10000000000000
+        && data.allocatedAmountMinor is int
+        && data.allocatedAmountMinor >= 0
+        && data.advanceAddedMinor is int
+        && data.advanceAddedMinor >= 0
+        && data.allocatedAmountMinor + data.advanceAddedMinor == data.amountMinor
+        && data.creditUpdate is map
+        && data.creditUpdate.keys().hasAll(['tenantId', 'amountMinor'])
+        && data.creditUpdate.keys().hasOnly(['tenantId', 'amountMinor'])
+        && data.creditUpdate.tenantId == data.tenantId
+        && data.creditUpdate.amountMinor == data.advanceAddedMinor
+        && data.currency == 'BDT'
+        && data.status == 'posted'
+        && data.allocations is list
+        && data.allocations.size() <= 20
+        && data.balanceUpdates is list
+        && data.balanceUpdates.size() == data.allocations.size()
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid
+        && (data.advanceAddedMinor == 0 || paymentCreditLinkedAfter(userId, paymentId, data));
+    }
+
+    // ==================================================
+    // 31. ATOMIC BILL BALANCES
+    // ==================================================
+
+    function validPaymentBillBalance(balanceId, data) {
+      return data.keys().hasAll([
+          'billType', 'billId', 'billingMonth', 'tenantAssignmentId',
+          'tenantId', 'tenantCode', 'tenantName', 'roomId', 'roomCode',
+          'roomNumber', 'floorName', 'propertyId', 'propertyCode',
+          'originalAmountMinor', 'paidAmountMinor', 'outstandingMinor',
+          'lastTransactionType', 'lastTransactionId',
+          'lastTransactionAmountMinor', 'createdAt', 'updatedAt',
+          'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'billType', 'billId', 'billingMonth', 'tenantAssignmentId',
+          'tenantId', 'tenantCode', 'tenantName', 'roomId', 'roomCode',
+          'roomNumber', 'floorName', 'propertyId', 'propertyCode',
+          'originalAmountMinor', 'paidAmountMinor', 'outstandingMinor',
+          'lastTransactionType', 'lastTransactionId',
+          'lastTransactionAmountMinor', 'createdAt', 'updatedAt',
+          'createdBy', 'updatedBy'
+        ])
+        && data.billType in ['rent', 'electricity']
+        && data.billId is string
+        && data.billId.size() > 0
+        && balanceId == data.billType + '__' + data.billId
+        && validPaymentMonth(data.billingMonth)
+        && data.tenantAssignmentId is string
+        && data.tenantAssignmentId.size() > 0
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomNumber is string
+        && data.roomNumber.size() >= 1
+        && data.roomNumber.size() <= 30
+        && data.floorName is string
+        && data.floorName.size() >= 1
+        && data.floorName.size() <= 80
+        && data.propertyId is string
+        && data.propertyId.size() > 0
+        && data.propertyCode is string
+        && data.propertyCode.matches('^P[0-9]{2}$')
+        && data.originalAmountMinor is int
+        && data.originalAmountMinor > 0
+        && data.originalAmountMinor <= 10000000000000
+        && data.paidAmountMinor is int
+        && data.paidAmountMinor >= 0
+        && data.paidAmountMinor <= data.originalAmountMinor
+        && data.outstandingMinor is int
+        && data.outstandingMinor >= 0
+        && data.paidAmountMinor + data.outstandingMinor == data.originalAmountMinor
+        && data.lastTransactionType in ['payment', 'credit_application']
+        && data.lastTransactionId is string
+        && data.lastTransactionId.size() > 0
+        && data.lastTransactionAmountMinor is int
+        && data.lastTransactionAmountMinor > 0
+        && data.lastTransactionAmountMinor <= data.originalAmountMinor
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    function paymentBalanceLinkedAfter(userId, data) {
+      let paymentPath =
+        /databases/$(database)/documents/users/$(userId)/payments/$(data.lastTransactionId);
+      let creditApplicationPath =
+        /databases/$(database)/documents/users/$(userId)/creditApplications/$(data.lastTransactionId);
+
+      return (
+        data.lastTransactionType == 'payment'
+        && existsAfter(paymentPath)
+        && getAfter(paymentPath).data.tenantId == data.tenantId
+        && getAfter(paymentPath).data.balanceUpdates is list
+        && getAfter(paymentPath).data.balanceUpdates.hasAny([
+          {
+            'billType': data.billType,
+            'billId': data.billId,
+            'amountMinor': data.lastTransactionAmountMinor
+          }
+        ])
+      ) || (
+        data.lastTransactionType == 'credit_application'
+        && existsAfter(creditApplicationPath)
+        && getAfter(creditApplicationPath).data.tenantId == data.tenantId
+        && getAfter(creditApplicationPath).data.billUpdates is list
+        && getAfter(creditApplicationPath).data.billUpdates.hasAny([
+          {
+            'billType': data.billType,
+            'billId': data.billId,
+            'amountMinor': data.lastTransactionAmountMinor
+          }
+        ])
+      );
+    }
+
+    match /users/{userId}/payments/{paymentId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && validPaymentRecord(userId, paymentId, request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /users/{userId}/billBalances/{balanceId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validPaymentBillBalance(balanceId, request.resource.data)
+        && request.resource.data.paidAmountMinor == request.resource.data.lastTransactionAmountMinor
+        && paymentBalanceLinkedAfter(userId, request.resource.data);
+
+      allow update: if isOwner(userId)
+        && validPaymentBillBalance(balanceId, request.resource.data)
+        && request.resource.data.billType == resource.data.billType
+        && request.resource.data.billId == resource.data.billId
+        && request.resource.data.billingMonth == resource.data.billingMonth
+        && request.resource.data.tenantAssignmentId == resource.data.tenantAssignmentId
+        && request.resource.data.tenantId == resource.data.tenantId
+        && request.resource.data.tenantCode == resource.data.tenantCode
+        && request.resource.data.tenantName == resource.data.tenantName
+        && request.resource.data.roomId == resource.data.roomId
+        && request.resource.data.roomCode == resource.data.roomCode
+        && request.resource.data.roomNumber == resource.data.roomNumber
+        && request.resource.data.floorName == resource.data.floorName
+        && request.resource.data.propertyId == resource.data.propertyId
+        && request.resource.data.propertyCode == resource.data.propertyCode
+        && request.resource.data.originalAmountMinor == resource.data.originalAmountMinor
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.lastTransactionAmountMinor <= resource.data.outstandingMinor
+        && request.resource.data.paidAmountMinor == resource.data.paidAmountMinor + request.resource.data.lastTransactionAmountMinor
+        && request.resource.data.outstandingMinor == resource.data.outstandingMinor - request.resource.data.lastTransactionAmountMinor
+        && request.resource.data.lastTransactionId != resource.data.lastTransactionId
+        && paymentBalanceLinkedAfter(userId, request.resource.data);
+
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 32. TENANT ADVANCE CREDIT
+    // ==================================================
+
+    function validTenantCredit(tenantId, data) {
+      return data.keys().hasAll([
+          'tenantId', 'tenantCode', 'tenantName', 'creditMinor',
+          'lastTransactionType', 'lastTransactionId', 'lastTransactionAmountMinor',
+          'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'tenantId', 'tenantCode', 'tenantName', 'creditMinor',
+          'lastTransactionType', 'lastTransactionId', 'lastTransactionAmountMinor',
+          'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.tenantId == tenantId
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.creditMinor is int
+        && data.creditMinor >= 0
+        && data.creditMinor <= 10000000000000
+        && data.lastTransactionType in ['payment', 'credit_application']
+        && data.lastTransactionId is string
+        && data.lastTransactionId.size() > 0
+        && data.lastTransactionAmountMinor is int
+        && data.lastTransactionAmountMinor > 0
+        && data.lastTransactionAmountMinor <= 10000000000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    function tenantCreditLinkedAfter(userId, tenantId, data) {
+      let paymentPath =
+        /databases/$(database)/documents/users/$(userId)/payments/$(data.lastTransactionId);
+      let creditApplicationPath =
+        /databases/$(database)/documents/users/$(userId)/creditApplications/$(data.lastTransactionId);
+
+      return (
+        data.lastTransactionType == 'payment'
+        && existsAfter(paymentPath)
+        && getAfter(paymentPath).data.tenantId == tenantId
+        && getAfter(paymentPath).data.advanceAddedMinor == data.lastTransactionAmountMinor
+        && getAfter(paymentPath).data.creditUpdate.tenantId == tenantId
+        && getAfter(paymentPath).data.creditUpdate.amountMinor == data.lastTransactionAmountMinor
+      ) || (
+        data.lastTransactionType == 'credit_application'
+        && existsAfter(creditApplicationPath)
+        && getAfter(creditApplicationPath).data.tenantId == tenantId
+        && getAfter(creditApplicationPath).data.amountMinor == data.lastTransactionAmountMinor
+        && getAfter(creditApplicationPath).data.tenantCreditUpdate.tenantId == tenantId
+        && getAfter(creditApplicationPath).data.tenantCreditUpdate.amountMinor == data.lastTransactionAmountMinor
+      );
+    }
+
+    match /users/{userId}/tenantCredits/{tenantId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validTenantCredit(tenantId, request.resource.data)
+        && request.resource.data.lastTransactionType == 'payment'
+        && request.resource.data.creditMinor == request.resource.data.lastTransactionAmountMinor
+        && tenantCreditLinkedAfter(userId, tenantId, request.resource.data);
+
+      allow update: if isOwner(userId)
+        && validTenantCredit(tenantId, request.resource.data)
+        && request.resource.data.tenantCode == resource.data.tenantCode
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && (
+          (
+            request.resource.data.lastTransactionType == 'payment'
+            && request.resource.data.creditMinor == resource.data.creditMinor + request.resource.data.lastTransactionAmountMinor
+          ) || (
+            request.resource.data.lastTransactionType == 'credit_application'
+            && resource.data.creditMinor >= request.resource.data.lastTransactionAmountMinor
+            && request.resource.data.creditMinor == resource.data.creditMinor - request.resource.data.lastTransactionAmountMinor
+          )
+        )
+        && tenantCreditLinkedAfter(userId, tenantId, request.resource.data);
+
+      allow delete: if false;
+    }
+
+    // ==================================================
+    // 33. IMMUTABLE ADVANCE APPLICATIONS
+    // ==================================================
+
+    function validCreditApplication(applicationId, data) {
+      return data.keys().hasAll([
+          'applicationNumber', 'tenantId', 'tenantCode', 'tenantName',
+          'allocation', 'billUpdates', 'tenantCreditUpdate', 'amountMinor',
+          'currency', 'status', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'applicationNumber', 'tenantId', 'tenantCode', 'tenantName',
+          'allocation', 'billUpdates', 'tenantCreditUpdate', 'amountMinor',
+          'currency', 'status', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.applicationNumber == 'ADV-' + applicationId
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && validPaymentAllocation(data.allocation)
+        && data.allocation.tenantId == data.tenantId
+        && data.allocation.tenantCode == data.tenantCode
+        && data.allocation.tenantName == data.tenantName
+        && data.amountMinor is int
+        && data.amountMinor == data.allocation.amountMinor
+        && data.billUpdates is list
+        && data.billUpdates.size() == 1
+        && data.billUpdates[0].billType == data.allocation.billType
+        && data.billUpdates[0].billId == data.allocation.billId
+        && data.billUpdates[0].amountMinor == data.amountMinor
+        && data.tenantCreditUpdate is map
+        && data.tenantCreditUpdate.keys().hasAll(['tenantId', 'amountMinor'])
+        && data.tenantCreditUpdate.keys().hasOnly(['tenantId', 'amountMinor'])
+        && data.tenantCreditUpdate.tenantId == data.tenantId
+        && data.tenantCreditUpdate.amountMinor == data.amountMinor
+        && data.currency == 'BDT'
+        && data.status == 'posted'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    function creditApplicationAtomicAfter(userId, applicationId, data) {
+      let creditPath =
+        /databases/$(database)/documents/users/$(userId)/tenantCredits/$(data.tenantId);
+      let balanceId = data.allocation.billType + '__' + data.allocation.billId;
+      let balancePath =
+        /databases/$(database)/documents/users/$(userId)/billBalances/$(balanceId);
+
+      return exists(creditPath)
+        && existsAfter(creditPath)
+        && get(creditPath).data.creditMinor >= data.amountMinor
+        && getAfter(creditPath).data.creditMinor == get(creditPath).data.creditMinor - data.amountMinor
+        && getAfter(creditPath).data.lastTransactionType == 'credit_application'
+        && getAfter(creditPath).data.lastTransactionId == applicationId
+        && getAfter(creditPath).data.lastTransactionAmountMinor == data.amountMinor
+        && existsAfter(balancePath)
+        && getAfter(balancePath).data.lastTransactionType == 'credit_application'
+        && getAfter(balancePath).data.lastTransactionId == applicationId
+        && getAfter(balancePath).data.lastTransactionAmountMinor == data.amountMinor
+        && getAfter(balancePath).data.billType == data.allocation.billType
+        && getAfter(balancePath).data.billId == data.allocation.billId
+        && getAfter(balancePath).data.tenantId == data.tenantId;
+    }
+
+    match /users/{userId}/creditApplications/{applicationId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validCreditApplication(applicationId, request.resource.data)
+        && creditApplicationAtomicAfter(userId, applicationId, request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+
+    // ==================================================
+    // 34. IMMUTABLE AUDIT EVENTS
+    // ==================================================
+
+    function validAuditEvent(data) {
+      return data.keys().hasAll([
+          'actorUid', 'action', 'entityType', 'entityId',
+          'entityLabel', 'summary', 'occurredAt'
+        ])
+        && data.keys().hasOnly([
+          'actorUid', 'action', 'entityType', 'entityId',
+          'entityLabel', 'summary', 'occurredAt'
+        ])
+        && data.actorUid == request.auth.uid
+        && data.action in [
+          'created', 'updated', 'assigned', 'moved_out', 'replaced',
+          'rate_added', 'bills_generated', 'bill_issued',
+          'payment_recorded', 'credit_applied'
+        ]
+        && data.entityType in [
+          'property', 'room', 'tenant', 'meter', 'tenant_assignment',
+          'meter_assignment', 'rent_rate', 'rent_bills',
+          'electricity_rate', 'electricity_bill', 'payment',
+          'credit_application'
+        ]
+        && data.entityId is string
+        && data.entityId.size() >= 1
+        && data.entityId.size() <= 200
+        && data.entityLabel is string
+        && data.entityLabel.size() >= 1
+        && data.entityLabel.size() <= 160
+        && data.summary is string
+        && data.summary.size() >= 1
+        && data.summary.size() <= 320
+        && data.occurredAt is timestamp;
+    }
+
+    match /users/{userId}/auditEvents/{eventId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validAuditEvent(request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+        // ==================================================
+    // MANUAL BACKUP RESTORE SESSION
+    // ==================================================
+    function validWorkspaceSettings(data) {
+      return data.keys().hasAll([
+          'houseName', 'contractNumber', 'paymentContact', 'address',
+          'supportEmail', 'statementFooter', 'createdAt', 'updatedAt',
+          'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'houseName', 'contractNumber', 'paymentContact', 'address',
+          'supportEmail', 'statementFooter', 'createdAt', 'updatedAt',
+          'createdBy', 'updatedBy'
+        ])
+        && data.houseName is string
+        && data.houseName.size() >= 1
+        && data.houseName.size() <= 100
+        && data.contractNumber is string
+        && data.contractNumber.size() <= 60
+        && data.paymentContact is string
+        && data.paymentContact.size() <= 80
+        && data.address is string
+        && data.address.size() <= 500
+        && data.supportEmail is string
+        && data.supportEmail.size() <= 200
+        && data.statementFooter is string
+        && data.statementFooter.size() <= 250
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy is string
+        && data.createdBy.size() > 0
+        && data.updatedBy == request.auth.uid;
+    }
+
+    // Workspace settings are private to the signed-in account.
+    // Existing settings cannot be deleted by the client.
+    match /users/{userId}/settings/{settingsId} {
+      allow read: if isOwner(userId) && settingsId == 'general';
+
+      allow create: if isOwner(userId)
+        && settingsId == 'general'
+        && validWorkspaceSettings(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow update: if isOwner(userId)
+        && settingsId == 'general'
+        && validWorkspaceSettings(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy;
+
+      allow delete: if false;
+    }
+    match /users/{userId}/system/restoreMode {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId)
+        && request.resource.data.keys().hasAll([
+          'active', 'ownerUid', 'sessionToken', 'expiresAt', 'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'active', 'ownerUid', 'sessionToken', 'expiresAt', 'createdAt'
+        ])
+        && request.resource.data.active == true
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.sessionToken is string
+        && request.resource.data.sessionToken.size() >= 32
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.expiresAt > request.time
+        && request.resource.data.createdAt is timestamp;
+      allow delete: if isOwner(userId);
+    }
+
+    // Only a signed-in owner may create missing records inside their own UID
+    // namespace while a short-lived restore session is active. Existing
+    // collection validators continue to govern ordinary creates.
+    match /users/{userId}/{collectionName}/{documentId} {
+      allow create: if isOwner(userId)
+        && isRestoreMode(userId)
+        && collectionName in [
+          'auditEvents', 'billBalances', 'creditApplications',
+          'currentAssignmentByMeter', 'currentMeterByRoom',
+          'currentRoomByTenant', 'currentTenantByRoom',
+          'electricityBills', 'electricityRates', 'electricityReadings',
+          'electricityReadingState', 'meterAssignments', 'meters',
+          'payments', 'properties', 'propertyNameIndex', 'rentBills',
+          'roomNameIndex', 'roomRentRates', 'rooms', 'tenantAssignments',
+          'settings', 'tenantCredits', 'tenants', 'system'
+        ];
+    }
+// 35. DENY EVERYTHING ELSE
+    // ==================================================
+
+    // No other client database access is granted.
+
+  }
+}
+

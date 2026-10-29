@@ -1,0 +1,580 @@
+.rent-page-heading {
+  align-items: center;
+}
+
+.rent-page-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.rent-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.rent-stat-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--panel-radius);
+}
+
+.rent-stat-icon,
+.rent-panel-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 11px;
+}
+
+.rent-stat-icon {
+  grid-row: span 3;
+}
+
+.rent-stat-icon--blue {
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.rent-stat-icon--green {
+  color: #16865b;
+  background: #e9f8ef;
+}
+
+.rent-stat-icon--purple {
+  color: #7c3aed;
+  background: #f3edff;
+}
+
+.rent-stat-card p,
+.rent-stat-card small {
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.rent-stat-card p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.rent-stat-card strong {
+  overflow-wrap: anywhere;
+  margin-top: 5px;
+  font-size: clamp(19px, 2vw, 25px);
+  letter-spacing: -0.6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rent-stat-card small {
+  margin-top: 4px;
+  color: #8490a2;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rent-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+  align-items: start;
+  gap: 18px;
+}
+
+.rent-generator-panel,
+.rent-rates-panel,
+.rent-bills-panel {
+  min-width: 0;
+}
+
+.rent-panel-icon {
+  color: var(--brand);
+  background: #eff6ff;
+}
+
+.rent-month-field {
+  margin-bottom: 4px;
+}
+
+.rent-help-text,
+.rent-confirm-copy {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.rent-help-text {
+  margin: 13px 0 17px;
+}
+
+.rent-full-button {
+  width: 100%;
+}
+
+.rent-generation-result {
+  margin-top: 18px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.rent-generation-result h3 {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+
+.rent-generation-result > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.rent-result-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.rent-result-counts span {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.rent-result-counts strong {
+  color: var(--text);
+  font-size: 17px;
+}
+
+.rent-result-counts .has-errors strong {
+  color: #b42318;
+}
+
+.rent-generation-errors {
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.rent-generation-errors summary,
+.rent-bill-breakdown summary {
+  cursor: pointer;
+  color: var(--brand);
+  font-weight: 650;
+}
+
+.rent-generation-errors ul {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding-left: 18px;
+}
+
+.rent-generation-errors li {
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.rent-generation-errors li span {
+  display: block;
+  margin-top: 3px;
+  color: #b42318;
+}
+
+.rent-rate-list,
+.rent-bill-list {
+  display: grid;
+  gap: 10px;
+}
+
+.rent-rate-item {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+
+.rent-rate-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rent-rate-heading > strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.rent-rate-heading > span {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.rent-rate-heading small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.rent-rate-main > p {
+  overflow-wrap: anywhere;
+  margin: 6px 0 9px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.rent-rate-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 10px;
+  color: #758197;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rent-rate-note {
+  overflow-wrap: anywhere;
+}
+
+.rent-empty-inline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 185px;
+  padding: 24px 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.rent-empty-inline > svg {
+  margin-bottom: 11px;
+  color: #94a3b8;
+}
+
+.rent-empty-inline > strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.rent-empty-inline p {
+  max-width: 360px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.rent-empty-inline > .button {
+  margin-top: 15px;
+}
+
+.rent-inline-state {
+  min-height: 185px;
+  border: 0;
+  background: transparent;
+}
+
+.rent-bills-heading {
+  align-items: center;
+}
+
+.rent-bill-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.rent-bills-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(145px, 190px);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.rent-bills-toolbar .search-input {
+  width: 100%;
+  max-width: none;
+}
+
+.rent-filter-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.rent-filter-field select {
+  width: 100%;
+  min-width: 0;
+  min-height: 43px;
+  padding: 9px 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+
+.rent-bill-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.rent-bill-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.rent-bill-person {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.rent-bill-person strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.rent-bill-person span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.rent-bill-amount {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.rent-bill-amount > strong {
+  overflow-wrap: anywhere;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rent-issued-status {
+  padding: 4px 8px;
+  color: #176b43;
+  background: #e8f5ee;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.rent-bill-details {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 12px;
+  padding: 14px 0;
+}
+
+.rent-bill-details > span {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.rent-bill-details small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.rent-bill-details strong {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.rent-bill-breakdown {
+  padding-top: 12px;
+  border-top: 1px solid #edf0f5;
+  font-size: 11px;
+}
+
+.rent-breakdown-list {
+  display: grid;
+  gap: 0;
+  margin-top: 10px;
+}
+
+.rent-breakdown-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 0;
+  border-top: 1px solid #edf0f5;
+}
+
+.rent-breakdown-row > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rent-breakdown-row > div strong,
+.rent-breakdown-row > strong {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.rent-breakdown-row > div span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rent-breakdown-row > strong {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.rent-success-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0 0 18px;
+  padding: 12px 13px;
+  color: #176b43;
+  background: #f0faf4;
+  border: 1px solid #cdebd8;
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.rent-success-message > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.rent-success-message span {
+  flex: 1;
+  min-width: 0;
+}
+
+.rent-dismiss-message {
+  display: grid;
+  flex: 0 0 auto;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  margin: -4px -5px 0 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.rent-form-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.rent-currency-hint {
+  margin-top: -8px;
+}
+
+.rent-confirm-copy {
+  margin: 0 0 22px;
+}
+
+.rent-spin {
+  animation: rent-spin 1s linear infinite;
+}
+
+@keyframes rent-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1150px) {
+  .rent-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .rent-page-heading {
+    align-items: stretch;
+  }
+
+  .rent-stats-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .rent-stat-card {
+    padding: 14px;
+  }
+
+  .rent-stat-card strong {
+    font-size: 21px;
+  }
+
+  .rent-bills-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rent-bill-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 10px;
+  }
+
+  .rent-bill-card {
+    padding: 13px;
+  }
+
+  .rent-bill-amount > strong {
+    font-size: 15px;
+  }
+
+  .rent-modal {
+    padding: 20px 16px;
+  }
+
+  .rent-modal .property-form-actions {
+    flex-direction: column-reverse;
+  }
+
+  .rent-modal .property-form-actions > .button {
+    width: 100%;
+  }
+
+  .rent-result-counts {
+    gap: 12px 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rent-spin {
+    animation: none;
+  }
+}
