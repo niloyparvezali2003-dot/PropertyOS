@@ -114,10 +114,15 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const authenticatedUser = user
-    const workspaceUid = ownerUid
+    // Capture primitive values before starting async work. This avoids stale
+    // React state references and keeps TypeScript's null/undefined checks
+    // valid inside the async function.
+    const authenticatedUid = user?.uid ?? ''
+    const isEmailVerified = user?.emailVerified === true
+    const workspaceUid = ownerUid ?? ''
+    const pendingInvitation = invitation
 
-    if (!authenticatedUser) {
+    if (!authenticatedUid) {
       setWorkspaceAccess('checking')
       setWorkspaceAccessError('')
       return
@@ -128,24 +133,24 @@ function App() {
     setWorkspaceAccess('checking')
     setWorkspaceAccessError('')
 
-    async function resolveAccess() {
+    async function resolveAccess(): Promise<void> {
       try {
-        if (invitation && invitation.workspaceUid !== workspaceUid) {
+        if (pendingInvitation && pendingInvitation.workspaceUid !== workspaceUid) {
           throw new Error('This invitation belongs to a different PropertyOS workspace.')
         }
 
-        if (authenticatedUser.uid === workspaceUid) {
+        if (authenticatedUid === workspaceUid) {
           await ensureWorkspaceOwnerMember(workspaceUid)
           if (!cancelled) setWorkspaceAccess('active')
           return
         }
 
-        if (invitation) {
-          if (!authenticatedUser.emailVerified) {
+        if (pendingInvitation) {
+          if (!isEmailVerified) {
             if (!cancelled) setWorkspaceAccess('verification')
             return
           }
-          await acceptWorkspaceInvitation(workspaceUid, invitation.token)
+          await acceptWorkspaceInvitation(workspaceUid, pendingInvitation.token)
           clearInvitationUrlState()
           if (!cancelled) {
             setInvitation(null)
@@ -154,7 +159,7 @@ function App() {
           return
         }
 
-        const membership = await getWorkspaceMembership(workspaceUid, authenticatedUser.uid)
+        const membership = await getWorkspaceMembership(workspaceUid, authenticatedUid)
         if (!membership || membership.status !== 'active') {
           if (!cancelled) setWorkspaceAccess('denied')
           return
