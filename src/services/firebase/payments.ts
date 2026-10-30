@@ -362,10 +362,13 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
     allocations: value.allocations,
   })
   const amountMinor = value.amountMinor
-  const openingBalanceAllocationMinor = value.openingBalanceAllocationMinor ?? 0
-  const allocatedAmountMinor = parsed.success
+  const rawOpeningBalanceAllocationMinor = value.openingBalanceAllocationMinor ?? 0
+  const openingBalanceAllocationMinor = isSafeNonNegativeInteger(rawOpeningBalanceAllocationMinor)
+    ? rawOpeningBalanceAllocationMinor
+    : -1
+  const allocatedAmountMinor = parsed.success && openingBalanceAllocationMinor >= 0
     ? parsed.data.allocations.reduce((total, allocation) => total + allocation.amountMinor, 0) +
-      (isSafeNonNegativeInteger(openingBalanceAllocationMinor) ? openingBalanceAllocationMinor : -1)
+      openingBalanceAllocationMinor
     : -1
   const advanceAddedMinor = isSafeNonNegativeInteger(amountMinor)
     ? amountMinor - allocatedAmountMinor
@@ -381,6 +384,7 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
 
   if (
     !parsed.success ||
+    openingBalanceAllocationMinor < 0 ||
     !isSafeNonNegativeInteger(amountMinor) ||
     amountMinor <= 0 ||
     value.receiptNumber !== `PAY-${id}` ||

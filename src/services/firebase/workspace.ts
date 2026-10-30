@@ -480,12 +480,14 @@ export async function revokeWorkspaceMember(workspaceUid: string, memberUid: str
     throw new Error('The workspace owner and your current account cannot be removed from this screen.')
   }
   const ref = memberRef(workspaceUid, memberUid)
+  let revokedMemberEmail = ''
   await runTransaction(getFirebaseServices().db, async (transaction) => {
     const snapshot = await transaction.get(ref)
     if (!snapshot.exists()) throw new Error('Workspace member not found.')
     const member = readMember(snapshot.id, snapshot.data() as Record<string, unknown>)
     if (member.isWorkspaceOwner) throw new Error('The original workspace owner cannot be removed.')
     if (member.status !== 'active') throw new Error('This member is already inactive.')
+    revokedMemberEmail = member.email
     transaction.update(ref, {
       status: 'revoked',
       revokedBy: actor.uid,
@@ -496,8 +498,8 @@ export async function revokeWorkspaceMember(workspaceUid: string, memberUid: str
     action: 'member_revoked',
     entityType: 'member',
     entityId: memberUid,
-    entityLabel: member.email,
-    summary: `${member.email} was removed from the shared workspace.`,
+    entityLabel: revokedMemberEmail,
+    summary: `${revokedMemberEmail} was removed from the shared workspace.`,
   })
 }
 

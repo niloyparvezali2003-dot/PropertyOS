@@ -114,12 +114,15 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!user) {
+    const authenticatedUser = user
+    const workspaceUid = ownerUid
+
+    if (!authenticatedUser) {
       setWorkspaceAccess('checking')
       setWorkspaceAccessError('')
       return
     }
-    if (!ownerUid || ownerUid === 'PASTE_YOUR_FIREBASE_USER_UID_HERE') return
+    if (!workspaceUid || workspaceUid === 'PASTE_YOUR_FIREBASE_USER_UID_HERE') return
 
     let cancelled = false
     setWorkspaceAccess('checking')
@@ -127,22 +130,22 @@ function App() {
 
     async function resolveAccess() {
       try {
-        if (invitation && invitation.workspaceUid !== ownerUid) {
+        if (invitation && invitation.workspaceUid !== workspaceUid) {
           throw new Error('This invitation belongs to a different PropertyOS workspace.')
         }
 
-        if (user.uid === ownerUid) {
-          await ensureWorkspaceOwnerMember(ownerUid)
+        if (authenticatedUser.uid === workspaceUid) {
+          await ensureWorkspaceOwnerMember(workspaceUid)
           if (!cancelled) setWorkspaceAccess('active')
           return
         }
 
         if (invitation) {
-          if (!user.emailVerified) {
+          if (!authenticatedUser.emailVerified) {
             if (!cancelled) setWorkspaceAccess('verification')
             return
           }
-          await acceptWorkspaceInvitation(ownerUid, invitation.token)
+          await acceptWorkspaceInvitation(workspaceUid, invitation.token)
           clearInvitationUrlState()
           if (!cancelled) {
             setInvitation(null)
@@ -151,7 +154,7 @@ function App() {
           return
         }
 
-        const membership = await getWorkspaceMembership(ownerUid, user.uid)
+        const membership = await getWorkspaceMembership(workspaceUid, authenticatedUser.uid)
         if (!membership || membership.status !== 'active') {
           if (!cancelled) setWorkspaceAccess('denied')
           return

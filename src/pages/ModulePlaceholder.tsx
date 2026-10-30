@@ -33,6 +33,12 @@ const descriptions: Record<ModulePage, string> = {
     'Download a local JSON archive of your existing Firestore records.',
   Settings:
     'Configure PropertyOS preferences and workspace settings.',
+  Note:
+    'Create and manage private workspace notes and checklists.',
+  'Opening Balance':
+    'Record and review each tenant’s previous outstanding balance.',
+  'Users & Access':
+    'Invite trusted people to access the shared property workspace.',
 }
 
 export function ModulePlaceholder({
