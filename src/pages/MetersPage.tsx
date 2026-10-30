@@ -387,7 +387,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
         <>
             <header className="page-heading">
                 <div>
-                    <p className="eyebrow">PROPERTY MANAGEMENT</p>
+                    <p className="eyebrow">Property management</p>
                     <h1>Meters</h1>
                     <p className="page-description">
                         Manage permanent meter IDs, room assignments, and replacements.
@@ -597,7 +597,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                     >
                         <header className="property-modal-heading">
                             <div>
-                                <p className="eyebrow">METER MANAGEMENT</p>
+                                <p className="eyebrow">Meter management</p>
                                 <h2 id="meter-dialog-title">
                                     {dialogMode === 'create'
                                         ? 'Register meter'

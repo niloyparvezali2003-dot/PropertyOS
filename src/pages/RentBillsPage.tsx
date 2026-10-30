@@ -135,7 +135,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     useState<RentBillGenerationResult | null>(null)
 
   const [billSearch, setBillSearch] = useState('')
-  const [billMonthFilter, setBillMonthFilter] = useState('all')
+  const [billMonthFilter, setBillMonthFilter] = useState(getCurrentBillingMonth)
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -190,7 +190,10 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   )
 
   const billMonths = useMemo(
-    () => [...new Set(bills.map((bill) => bill.billingMonth))].sort().reverse(),
+    () =>
+      [...new Set([getCurrentBillingMonth(), ...bills.map((bill) => bill.billingMonth)])]
+        .sort()
+        .reverse(),
     [bills],
   )
 
@@ -340,7 +343,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     <>
       <header className="page-heading rent-page-heading">
         <div>
-          <p className="eyebrow">FINANCE</p>
+          <p className="eyebrow">Finance</p>
           <h1>Rent &amp; Bills</h1>
           <p className="page-description">
             Set dated room rent rates, generate monthly bills, and review the saved billing history.
@@ -653,7 +656,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
           >
             <div className="property-modal-heading">
               <div>
-                <p className="eyebrow">RENT SETTINGS</p>
+                <p className="eyebrow">Rent settings</p>
                 <h2 id="rent-rate-dialog-title">Set room rent rate</h2>
               </div>
               <button
@@ -770,7 +773,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
           >
             <div className="property-modal-heading">
               <div>
-                <p className="eyebrow">BILL GENERATION</p>
+                <p className="eyebrow">Bill generation</p>
                 <h2 id="rent-generation-dialog-title">Generate {formatBillingMonth(billingMonth)} bills?</h2>
               </div>
               <button

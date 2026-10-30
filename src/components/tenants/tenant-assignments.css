@@ -183,8 +183,8 @@
 .tenant-assignment-field input:focus,
 .tenant-assignment-field select:focus,
 .tenant-assignment-field textarea:focus {
-  border-color: var(--accent, #7187ed);
-  box-shadow: 0 0 0 3px rgb(99 102 241 / 10%);
+  border-color: var(--color-gold);
+  box-shadow: 0 0 0 3px rgb(213 165 46 / 15%);
 }
 
 .tenant-assignment-input-with-icon {
@@ -236,7 +236,7 @@
 
 .tenant-assignment-danger-button {
   border-color: #f2d4d4;
-  background: #fff6f6;
+  background: var(--color-danger-soft);
   color: #a92f35;
 }
 
@@ -335,12 +335,12 @@
 }
 
 .tenant-assignment-status.is-current {
-  background: #eaf8f0;
+  background: var(--color-success-soft);
   color: #247247;
 }
 
 .tenant-assignment-status.is-ended {
-  background: #f0f2f5;
+  background: var(--surface-muted);
   color: #586274;
 }
 

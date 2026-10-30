@@ -1,3 +1,4 @@
+import { invalidateOwnerDataCache } from './listCache'
 import {
   Bytes,
   DocumentReference,
@@ -15,6 +16,7 @@ import {
 } from 'firebase/firestore'
 
 import { getFirebaseServices } from './client'
+import { resetPropertyCodeMigration } from './properties'
 
 type JsonValue =
   | null
@@ -77,6 +79,11 @@ const RESTORE_COLLECTIONS = [
   'auditEvents',
   'billBalances',
   'creditApplications',
+  'noteTasks',
+  'notes',
+  'openingBalanceAdjustments',
+  'openingBalanceCreditApplications',
+  'openingBalances',
   'currentAssignmentByMeter',
   'currentMeterByRoom',
   'currentRoomByTenant',
@@ -98,6 +105,7 @@ const RESTORE_COLLECTIONS = [
   'tenantAssignments',
   'tenantCredits',
   'tenants',
+  'transactionReferences',
   'system',
 ] as const
 
@@ -241,7 +249,24 @@ function validateArchive(raw: unknown): BackupArchive {
     throw new Error('Backup metadata is incomplete or uses an unsupported encoding.')
   }
 
-  const actualKeys = Object.keys(raw.collections).sort()
+  const archiveCollections = raw.collections as Record<string, unknown>
+  // Earlier version-1 archives may predate these newer workspace modules.
+  // Treat their missing collections as empty to keep old backups restorable.
+  for (const optionalCollection of [
+    'settings',
+    'transactionReferences',
+    'notes',
+    'noteTasks',
+    'openingBalances',
+    'openingBalanceAdjustments',
+    'openingBalanceCreditApplications',
+  ]) {
+    if (!(optionalCollection in archiveCollections)) {
+      archiveCollections[optionalCollection] = []
+    }
+  }
+
+  const actualKeys = Object.keys(archiveCollections).sort()
   const expectedKeys = [...RESTORE_COLLECTIONS].sort()
   if (stableStringify(actualKeys) !== stableStringify(expectedKeys)) {
     throw new Error('This backup does not contain the complete supported collection set. Nothing was restored.')
@@ -332,6 +357,15 @@ async function buildRestorePlan(
             raw: snapshot.data(),
           })
         }
+      }
+    } else if (collectionName === 'settings') {
+      // Firestore rules allow only a direct read of settings/general.
+      const snapshot = await getDoc(doc(db, 'users', destinationUid, 'settings', 'general'))
+      if (snapshot.exists()) {
+        existingById.set(snapshot.id, {
+          canonical: stableStringify(encodeFirestoreValue(snapshot.data())),
+          raw: snapshot.data(),
+        })
       }
     } else {
       const snapshot = await getDocs(collection(db, 'users', destinationUid, collectionName))
@@ -508,6 +542,9 @@ export async function restoreManualFirestoreBackup(
     // If the browser closes or network fails, the rule-side restore session expires automatically.
     await deleteDoc(sessionRef).catch(() => undefined)
   }
+
+  invalidateOwnerDataCache(destinationUid)
+  resetPropertyCodeMigration(destinationUid)
 
   return {
     restoredDocuments,

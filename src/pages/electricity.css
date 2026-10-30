@@ -7,14 +7,14 @@
 .electricity-alert { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--border, #dbe3ef); border-radius: 12px; padding: 12px 14px; font-size: 13px; line-height: 1.5; }
 .electricity-alert > span { flex: 1; min-width: 0; }
 .electricity-alert > button { border: 0; padding: 0; color: inherit; background: transparent; cursor: pointer; }
-.electricity-alert--error { color: #b42318; background: #fff5f4; border-color: #fecaca; }
-.electricity-alert--success { color: #067647; background: #f0fdf4; border-color: #bbf7d0; }
+.electricity-alert--error { color: var(--color-danger); background: #fff5f4; border-color: #fecaca; }
+.electricity-alert--success { color: #067647; background: var(--color-success-soft); border-color: #bbf7d0; }
 .electricity-stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .electricity-stat-card { display: flex; align-items: flex-start; gap: 12px; min-width: 0; padding: 18px; background: var(--surface, #fff); border: 1px solid var(--border, #dbe3ef); border-radius: 15px; box-shadow: 0 2px 5px rgb(15 23 42 / 3%); }
 .electricity-stat-icon, .electricity-panel-icon { display: grid; place-items: center; flex: 0 0 auto; width: 40px; height: 40px; border-radius: 12px; }
-.electricity-stat-icon--blue { color: #2563eb; background: #eff6ff; }
-.electricity-stat-icon--green { color: #059669; background: #ecfdf5; }
-.electricity-stat-icon--purple { color: #7c3aed; background: #f5f3ff; }
+.electricity-stat-icon--blue { color: var(--color-action); background: var(--color-action-soft); }
+.electricity-stat-icon--green { color: #059669; background: var(--color-success-soft); }
+.electricity-stat-icon--purple { color: var(--color-highlight); background: var(--color-highlight-soft); }
 .electricity-stat-card > div { display: grid; gap: 5px; min-width: 0; }
 .electricity-stat-card small { color: var(--muted, #64748b); font-size: 12px; }
 .electricity-stat-card strong { color: var(--text, #0f172a); font-size: clamp(20px, 2.4vw, 26px); line-height: 1.15; overflow-wrap: anywhere; }
@@ -24,7 +24,7 @@
 .electricity-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .electricity-panel-heading h2 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
 .electricity-panel-heading p { margin: 0; color: var(--muted, #64748b); font-size: 12px; line-height: 1.55; }
-.electricity-panel-icon { color: #2563eb; background: #eff6ff; }
+.electricity-panel-icon { color: var(--color-action); background: var(--color-action-soft); }
 .electricity-rate-list, .electricity-bill-list { display: grid; gap: 9px; }
 .electricity-rate-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 14px; border: 1px solid var(--border, #dbe3ef); border-radius: 12px; }
 .electricity-rate-card > div { display: grid; gap: 5px; min-width: 0; }
@@ -32,24 +32,24 @@
 .electricity-rate-card > div > span, .electricity-rate-card > div > small { color: var(--muted, #64748b); font-size: 11px; overflow-wrap: anywhere; }
 .electricity-rate-card > b { white-space: nowrap; font-size: 13px; text-align: right; }
 .electricity-rate-card > b small { color: var(--muted, #64748b); font-weight: 400; }
-.electricity-info-note { margin: 0 0 15px; padding: 11px 12px; border-radius: 10px; background: #f8fafc; color: #475569; font-size: 12px; line-height: 1.55; }
+.electricity-info-note { margin: 0 0 15px; padding: 11px 12px; border-radius: 10px; background: var(--surface-secondary); color: var(--text-primary); font-size: 12px; line-height: 1.55; }
 .electricity-quick-form { display: grid; gap: 13px; }
 .electricity-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .electricity-field { display: grid; gap: 7px; min-width: 0; }
 .electricity-field label { color: var(--text, #0f172a); font-size: 12px; font-weight: 600; }
-.electricity-field label span { color: #dc2626; }
+.electricity-field label span { color: var(--color-danger); }
 .electricity-field label small, .electricity-field > small { color: var(--muted, #64748b); font-weight: 400; }
 .electricity-field input, .electricity-field select, .electricity-field textarea { width: 100%; min-width: 0; border: 1px solid var(--border, #dbe3ef); border-radius: 10px; padding: 10px 11px; color: var(--text, #0f172a); background: var(--surface, #fff); font: inherit; font-size: 13px; outline: none; }
-.electricity-field input:focus, .electricity-field select:focus, .electricity-field textarea:focus { border-color: #93b4f8; box-shadow: 0 0 0 3px rgb(37 99 235 / 10%); }
+.electricity-field input:focus, .electricity-field select:focus, .electricity-field textarea:focus { border-color: var(--color-gold); box-shadow: 0 0 0 3px rgb(213 165 46 / 15%); }
 .electricity-field textarea { resize: vertical; min-height: 64px; }
 .electricity-preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.electricity-preview-grid > span { display: grid; gap: 5px; padding: 11px; border-radius: 10px; background: #f8fafc; min-width: 0; }
+.electricity-preview-grid > span { display: grid; gap: 5px; padding: 11px; border-radius: 10px; background: var(--surface-secondary); min-width: 0; }
 .electricity-preview-grid small { color: var(--muted, #64748b); font-size: 11px; }
 .electricity-preview-grid strong { font-size: 13px; overflow-wrap: anywhere; }
 .electricity-full-button { width: 100%; justify-content: center; }
-.electricity-form-error { margin: 0; color: #b42318; font-size: 12px; line-height: 1.5; }
+.electricity-form-error { margin: 0; color: var(--color-danger); font-size: 12px; line-height: 1.5; }
 .electricity-empty-inline, .electricity-empty-state { display: grid; justify-items: center; gap: 8px; padding: 28px 16px; color: var(--muted, #64748b); text-align: center; }
-.electricity-empty-inline > svg, .electricity-empty-state > svg { color: #94a3b8; }
+.electricity-empty-inline > svg, .electricity-empty-state > svg { color: var(--text-tertiary); }
 .electricity-empty-inline > strong, .electricity-empty-state > strong { color: var(--text, #0f172a); font-size: 13px; }
 .electricity-empty-inline p, .electricity-empty-state p { max-width: 440px; margin: 0; font-size: 12px; line-height: 1.6; }
 .electricity-bills-panel { display: grid; gap: 14px; }
@@ -67,7 +67,7 @@
 .electricity-bill-title > small { color: var(--muted, #64748b); font-size: 11px; }
 .electricity-bill-amount { display: grid; justify-items: end; gap: 4px; white-space: nowrap; }
 .electricity-bill-amount > strong { font-size: 14px; }
-.electricity-bill-amount > span { padding: 3px 8px; color: #047857; background: #ecfdf5; border-radius: 99px; font-size: 10px; }
+.electricity-bill-amount > span { padding: 3px 8px; color: var(--color-success); background: var(--color-success-soft); border-radius: 99px; font-size: 10px; }
 .electricity-bill-details { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border, #dbe3ef); }
 .electricity-bill-details > span { display: grid; gap: 5px; min-width: 0; }
 .electricity-bill-details small { color: var(--muted, #64748b); font-size: 10px; }

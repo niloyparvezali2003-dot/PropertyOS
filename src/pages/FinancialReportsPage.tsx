@@ -1,3 +1,4 @@
+import { invalidateOwnerDataCache } from '../services/firebase/listCache'
 import {
   useCallback,
   useEffect,
@@ -181,6 +182,19 @@ function buildMonthlyReport(
     }
   }
 
+  for (const application of data.openingBalanceCreditApplications) {
+    if (
+      application.status !== 'posted' ||
+      !Number.isSafeInteger(application.amountMinor) ||
+      application.amountMinor < 0
+    ) {
+      continue
+    }
+
+    const month = getTimestampMonth(application.createdAt)
+    if (month) ensureMonth(month).advancesAppliedMinor += application.amountMinor
+  }
+
   return Array.from(months.values()).sort(
     (a, b) => b.month.localeCompare(a.month),
   )
@@ -256,7 +270,12 @@ function calculateCurrentOutstanding(
     0,
   )
 
-  return rentDue + electricityDue
+  const openingDue = data.openingBalances.reduce((total, balance) => {
+    const due = balance.outstandingMinor
+    return total + (Number.isSafeInteger(due) && due > 0 ? due : 0)
+  }, 0)
+
+  return rentDue + electricityDue + openingDue
 }
 
 function escapeCsv(value: string | number): string {
@@ -328,6 +347,7 @@ export function FinancialReportsPage({
   const loadData = useCallback(async (
     refresh = false,
   ) => {
+    if (refresh) invalidateOwnerDataCache(ownerUid)
     setError('')
 
     if (refresh) {
@@ -538,7 +558,7 @@ export function FinancialReportsPage({
 
           <strong>{formatMoney(currentOutstanding)}</strong>
 
-          <small>Unpaid issued bills across all available months</small>
+          <small>Unpaid issued bills and tenant opening balances</small>
         </article>
 
         <article className="financial-report-card">

@@ -70,6 +70,12 @@ export const paymentFormSchema = z
     reference: z.string().trim().max(120, 'Reference cannot exceed 120 characters.'),
     notes: z.string().trim().max(1000, 'Notes cannot exceed 1,000 characters.'),
     amountReceivedMinor: positiveMinorAmountSchema,
+    // Tenant-level legacy due is tracked separately from issued rent/electricity bills.
+    // This defaults to zero so older callers and historical receipts remain compatible.
+    openingBalanceAllocationMinor: z.number().int().min(0).max(10_000_000_000_000).default(0),
+    // Receipt-time snapshot of the tenant's outstanding issued bills plus any opening due.
+    // Optional so historical receipts created before this field remain readable.
+    outstandingBeforeMinor: z.number().int().min(0).max(10_000_000_000_000).optional(),
     allocations: z.array(paymentAllocationSchema).max(20, 'A single receipt can allocate to at most 20 bills.'),
   })
   .strict()
@@ -106,11 +112,28 @@ export const paymentFormSchema = z
       }
     })
 
-    if (allocatedTotal > input.amountReceivedMinor) {
+    const totalAllocated = allocatedTotal + input.openingBalanceAllocationMinor
+    if (!Number.isSafeInteger(totalAllocated)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['allocations'],
+        message: 'The combined bill and opening-balance allocation exceeds the safe calculation limit.',
+      })
+    }
+
+    if (input.outstandingBeforeMinor !== undefined && totalAllocated > input.outstandingBeforeMinor) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['outstandingBeforeMinor'],
+        message: 'Combined allocations cannot exceed the tenant’s saved outstanding due before this receipt.',
+      })
+    }
+
+    if (totalAllocated > input.amountReceivedMinor) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['amountReceivedMinor'],
-        message: 'Amount received cannot be less than the total allocated to bills.',
+        message: 'Amount received cannot be less than the total bill and opening-balance allocations.',
       })
     }
   })

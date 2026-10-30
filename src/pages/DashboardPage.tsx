@@ -1,3 +1,4 @@
+import { invalidateOwnerDataCache } from '../services/firebase/listCache'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
@@ -59,6 +60,7 @@ import {
   type PaymentRecord,
   type PaymentBillBalanceRecord,
 } from '../services/firebase/payments'
+import { listOpeningBalances, type OpeningBalanceRecord } from '../services/firebase/openingBalances'
 
 import type { Timestamp } from 'firebase/firestore'
 import type { AppPage } from '../types/navigation'
@@ -80,6 +82,7 @@ type DashboardData = {
   electricityBills: ElectricityBillRecord[]
   payments: PaymentRecord[]
   billBalances: PaymentBillBalanceRecord[]
+  openingBalances: OpeningBalanceRecord[]
 }
 
 type ActivityTone = 'blue' | 'amber' | 'green' | 'purple'
@@ -192,7 +195,7 @@ function calculateOutstanding(data: DashboardData): number {
     total += safePositiveMinor(dueMinor)
   }
 
-  return total
+  return total + data.openingBalances.reduce((sum, balance) => sum + safePositiveMinor(balance.outstandingMinor), 0)
 }
 
 function makeActivity(
@@ -224,7 +227,7 @@ function buildRecentActivity(
         id: `payment:${payment.id}`,
         title: 'Payment received',
         detail:
-          `${payment.tenantName} · ${payment.receiptNumber}` +
+          `${payment.tenantName} · ${payment.transactionId ? `TRX ID: ${payment.transactionId}` : `Legacy receipt ID: ${payment.receiptNumber}`}` +
           (payment.reference ? ` · ${payment.reference}` : ''),
         date: payment.createdAt
           ? formatTimestamp(payment.createdAt)
@@ -378,6 +381,7 @@ export function DashboardPage({
   const loadDashboard = useCallback(async (
     refresh = false,
   ) => {
+    if (refresh) invalidateOwnerDataCache(ownerUid)
     setError('')
 
     if (refresh) {
@@ -397,6 +401,7 @@ export function DashboardPage({
         electricityBills,
         payments,
         billBalances,
+        openingBalances,
       ] = await Promise.all([
         listProperties(ownerUid),
         listRooms(ownerUid),
@@ -407,6 +412,7 @@ export function DashboardPage({
         listElectricityBills(ownerUid),
         listPayments(ownerUid),
         listPaymentBillBalances(ownerUid),
+        listOpeningBalances(ownerUid),
       ])
 
       setData({
@@ -419,6 +425,7 @@ export function DashboardPage({
         electricityBills,
         payments,
         billBalances,
+        openingBalances,
       })
     } catch (loadError: unknown) {
       setError(

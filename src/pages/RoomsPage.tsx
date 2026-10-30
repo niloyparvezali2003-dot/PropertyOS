@@ -272,7 +272,7 @@ export function RoomsPage({
         <>
             <header className="page-heading">
                 <div>
-                    <p className="eyebrow">PROPERTY MANAGEMENT</p>
+                    <p className="eyebrow">Property management</p>
                     <h1>Rooms & Floors</h1>
                     <p className="page-description">
                         Organize rooms by property and floor, with permanent room IDs.
@@ -460,7 +460,7 @@ export function RoomsPage({
                     >
                         <header className="property-modal-heading">
                             <div>
-                                <p className="eyebrow">ROOM DETAILS</p>
+                                <p className="eyebrow">Room details</p>
 
                                 <h2 id="room-dialog-title">
                                     {editingRoom ? 'Edit room' : 'Add room'}

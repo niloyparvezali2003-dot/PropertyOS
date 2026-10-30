@@ -1,3 +1,5 @@
+import { getCachedList } from './listCache'
+
 import {
   collection,
   doc,
@@ -718,49 +720,53 @@ function calculateRateBreakdown(
 export async function listRoomRentRates(
   ownerUid: string,
 ): Promise<RoomRentRateRecord[]> {
-  const { db } = getFirebaseServices()
+  return getCachedList(ownerUid, 'RoomRentRates', async () => {
+    const { db } = getFirebaseServices()
 
-  const ratesRef = collection(
-    db,
-    'users',
-    ownerUid,
-    'roomRentRates',
-  )
+    const ratesRef = collection(
+      db,
+      'users',
+      ownerUid,
+      'roomRentRates',
+    )
 
-  const snapshot = await getDocs(
-    query(ratesRef, orderBy('effectiveFrom', 'desc')),
-  )
+    const snapshot = await getDocs(
+      query(ratesRef, orderBy('effectiveFrom', 'desc')),
+    )
 
-  return snapshot.docs.map((rateDocument) =>
-    validateRoomRentRate(
-      rateDocument.id,
-      rateDocument.data() as UnknownRecord,
-    ),
-  )
+    return snapshot.docs.map((rateDocument) =>
+      validateRoomRentRate(
+        rateDocument.id,
+        rateDocument.data() as UnknownRecord,
+      ),
+    )
+  })
 }
 
 export async function listRentBills(
   ownerUid: string,
 ): Promise<RentBillRecord[]> {
-  const { db } = getFirebaseServices()
+  return getCachedList(ownerUid, 'RentBills', async () => {
+    const { db } = getFirebaseServices()
 
-  const billsRef = collection(
-    db,
-    'users',
-    ownerUid,
-    'rentBills',
-  )
+    const billsRef = collection(
+      db,
+      'users',
+      ownerUid,
+      'rentBills',
+    )
 
-  const snapshot = await getDocs(
-    query(billsRef, orderBy('billingMonth', 'desc')),
-  )
+    const snapshot = await getDocs(
+      query(billsRef, orderBy('billingMonth', 'desc')),
+    )
 
-  return snapshot.docs.map((billDocument) =>
-    validateRentBill(
-      billDocument.id,
-      billDocument.data() as UnknownRecord,
-    ),
-  )
+    return snapshot.docs.map((billDocument) =>
+      validateRentBill(
+        billDocument.id,
+        billDocument.data() as UnknownRecord,
+      ),
+    )
+  })
 }
 
 /* =========================================================

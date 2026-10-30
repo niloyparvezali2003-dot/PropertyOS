@@ -1,3 +1,5 @@
+import { getCachedList } from './listCache'
+
 import {
   collection,
   doc,
@@ -355,38 +357,42 @@ function validateAssignmentRecord(
 export async function listMeters(
   ownerUid: string,
 ): Promise<MeterRecord[]> {
-  const { db } = getFirebaseServices()
+  return getCachedList(ownerUid, 'Meters', async () => {
+    const { db } = getFirebaseServices()
 
-  const metersRef = collection(db, 'users', ownerUid, 'meters')
+    const metersRef = collection(db, 'users', ownerUid, 'meters')
 
-  const snapshot = await getDocs(
-    query(metersRef, orderBy('createdAt', 'desc')),
-  )
+    const snapshot = await getDocs(
+      query(metersRef, orderBy('createdAt', 'desc')),
+    )
 
-  return snapshot.docs.map((item) =>
-    validateMeterRecord(item.id, item.data()),
-  )
+    return snapshot.docs.map((item) =>
+      validateMeterRecord(item.id, item.data()),
+    )
+  })
 }
 
 export async function listMeterAssignments(
   ownerUid: string,
 ): Promise<MeterAssignmentRecord[]> {
-  const { db } = getFirebaseServices()
+  return getCachedList(ownerUid, 'MeterAssignments', async () => {
+    const { db } = getFirebaseServices()
 
-  const assignmentsRef = collection(
-    db,
-    'users',
-    ownerUid,
-    'meterAssignments',
-  )
+    const assignmentsRef = collection(
+      db,
+      'users',
+      ownerUid,
+      'meterAssignments',
+    )
 
-  const snapshot = await getDocs(
-    query(assignmentsRef, orderBy('createdAt', 'desc')),
-  )
+    const snapshot = await getDocs(
+      query(assignmentsRef, orderBy('createdAt', 'desc')),
+    )
 
-  return snapshot.docs.map((item) =>
-    validateAssignmentRecord(item.id, item.data()),
-  )
+    return snapshot.docs.map((item) =>
+      validateAssignmentRecord(item.id, item.data()),
+    )
+  })
 }
 
 export async function createMeter(

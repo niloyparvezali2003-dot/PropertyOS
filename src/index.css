@@ -1,22 +1,182 @@
 @import "tailwindcss";
 
 /* 1. Shared design tokens */
+/* Global PropertyOS color system */
 :root {
-  font-family: Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif;
-  color: #172033;
-  background: #f7f8fa;
+  color-scheme: light;
+  font-family: var(--font-family-ui);
+  color: var(--text-primary);
+  background: var(--surface-page);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 
-  --brand: #2563eb;
-  --text: #172033;
-  --muted: #64748b;
-  --surface: #fff;
-  --background: #f7f8fa;
-  --border: #e2e8f0;
+  /* T&N House's typography and text hierarchy */
+  --font-family-ui: "Inter", "Noto Serif Bengali", "Segoe UI", Roboto, Arial, sans-serif;
+  --text-heading: #102c50;
+  --text-primary: #26364a;
+  --text-secondary: #64748b;
+  --text-tertiary: #8793a5;
+
+  /* Primary brand: royal navy with restrained royal-gold accents */
+  --color-action: #102c50;
+  --color-action-hover: #0b2340;
+  --color-action-soft: #eef2f6;
+  --color-action-border: #d6dee8;
+  --color-gold: #d5a52e;
+  --color-gold-deep: #a97710;
+  --color-gold-soft: #fbf4e3;
+
+  /* Financial and workflow states remain semantically distinct */
+  --color-success: #15803d;
+  --color-success-soft: #ecfdf3;
+  --color-success-border: #bbf7d0;
+  --color-warning: #94630b;
+  --color-warning-soft: #fbf4e5;
+  --color-warning-border: #ead8a8;
+  --color-danger: #b42318;
+  --color-danger-soft: #fef2f2;
+  --color-danger-border: #fecaca;
+  --color-highlight: var(--color-gold-deep);
+  --color-highlight-soft: var(--color-gold-soft);
+
+  /* Quiet module identifiers, aligned with the brand palette */
+  --entity-room: #294766;
+  --entity-room-soft: #eef2f6;
+  --entity-tenant: #536982;
+  --entity-tenant-soft: #f0f3f6;
+  --entity-meter: #a97712;
+  --entity-meter-soft: #fbf4e5;
+
+  /* Shared surfaces: warm ivory canvas, white working surfaces */
+  --brand: var(--color-action);
+  --primary: var(--color-action);
+  --accent: var(--color-action);
+  --accent-bg: var(--color-action-soft);
+  --accent-border: var(--color-action-border);
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-h: var(--text-heading);
+  --muted: var(--text-secondary);
+  --surface: #ffffff;
+  --surface-page: #f6f3eb;
+  --background: var(--surface-page);
+  --surface-secondary: #f0ece3;
+  --surface-muted: #e9e3d7;
+  --surface-hover: #f3efe7;
+  --border: #e8e1d5;
+  --border-color: var(--border);
   --radius: 10px;
   --panel-radius: 14px;
+}
+
+
+/* Consistent text hierarchy and semantic color utilities */
+:where(h1, h2, h3, h4, h5, h6) {
+  color: var(--text-heading);
+}
+
+:where(a:not([class])) {
+  color: var(--color-action);
+}
+
+.text-heading {
+  color: var(--text-heading) !important;
+}
+
+.text-primary {
+  color: var(--text-primary) !important;
+}
+
+.text-secondary {
+  color: var(--text-secondary) !important;
+}
+
+.text-tertiary {
+  color: var(--text-tertiary) !important;
+}
+
+.text-success {
+  color: var(--color-success) !important;
+}
+
+.text-warning {
+  color: var(--color-warning) !important;
+}
+
+.text-danger {
+  color: var(--color-danger) !important;
+}
+
+.text-action {
+  color: var(--color-action) !important;
+}
+
+.text-highlight {
+  color: var(--color-highlight) !important;
+}
+
+/* A shared, readable type scale across all modules. */
+body {
+  font-family: var(--font-family-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+:lang(bn) {
+  font-family: "Noto Serif Bengali", "Nirmala UI", serif;
+}
+
+:where(button, input, select, textarea) {
+  font-family: inherit;
+}
+
+.page-content h1 {
+  color: var(--text-heading);
+  font-size: clamp(26px, 2.7vw, 31px) !important;
+  font-weight: 760;
+  line-height: 1.2;
+  letter-spacing: -0.045em;
+}
+
+.page-content h2 {
+  color: var(--text-heading);
+  font-size: 17px !important;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.025em;
+}
+
+.page-content h3 {
+  color: var(--text-heading);
+  font-size: 14px !important;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.page-content :where(p, li) {
+  line-height: 1.55;
+}
+
+.page-content :where(input, select, textarea) {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.page-content :where(th) {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.page-content :where(td) {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.page-content :where(small) {
+  line-height: 1.45;
 }
 
 /* 2. Global styles */
@@ -26,6 +186,7 @@
 
 body {
   min-width: 320px;
+  background: var(--surface-page);
   min-height: 100vh;
   margin: 0;
 }
@@ -45,7 +206,7 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible {
-  outline: 3px solid #93c5fd;
+  outline: 3px solid color-mix(in srgb, var(--color-gold) 58%, white);
   outline-offset: 2px;
 }
 
@@ -67,8 +228,8 @@ input:focus-visible {
   flex-direction: column;
   height: 100vh;
   padding: 24px 16px 16px;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  background: #102c50;
+  border-right: 1px solid rgb(255 255 255 / 9%);
 }
 
 .sidebar-brand,
@@ -82,12 +243,19 @@ input:focus-visible {
 .brand-mark {
   display: grid;
   flex: 0 0 auto;
-  width: 42px;
-  height: 42px;
+  width: 46px;
+  height: 46px;
   place-items: center;
-  color: #fff;
-  background: var(--brand);
-  border-radius: 12px;
+  overflow: hidden;
+  background: transparent;
+  border-radius: 50%;
+}
+
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .brand-copy,
@@ -98,20 +266,29 @@ input:focus-visible {
 }
 
 .brand-copy strong {
-  font-size: 18px;
-  letter-spacing: -0.6px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.35px;
 }
 
 .brand-copy span,
-.nav-group-label,
+.nav-group-label {
+  color: rgb(255 255 255 / 62%);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.075em;
+}
+
 .eyebrow {
   color: var(--muted);
   font-size: 10px;
   font-weight: 750;
-  letter-spacing: 1px;
+  letter-spacing: 0.075em;
 }
 
 .brand-copy span {
+  color: #e4c16c;
   font-size: 9px;
 }
 
@@ -138,7 +315,7 @@ input:focus-visible {
   width: 100%;
   min-height: 43px;
   padding: 10px 12px;
-  color: #596579;
+  color: rgb(255 255 255 / 78%);
   background: transparent;
   border: 0;
   border-radius: var(--radius);
@@ -148,12 +325,15 @@ input:focus-visible {
 }
 
 .nav-link:hover {
-  background: #f4f6fa;
+  color: #fff;
+  background: rgb(255 255 255 / 8%);
 }
 
 .nav-link.is-active {
-  color: var(--brand);
-  background: #eff5ff;
+  position: relative;
+  color: #f0c85f;
+  background: rgb(213 165 46 / 14%);
+  box-shadow: inset 3px 0 0 var(--color-gold);
   font-weight: 700;
 }
 
@@ -161,7 +341,7 @@ input:focus-visible {
   gap: 10px;
   margin-top: auto;
   padding: 16px 7px 4px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid rgb(255 255 255 / 13%);
 }
 
 .workspace-avatar {
@@ -170,9 +350,12 @@ input:focus-visible {
   width: 36px;
   height: 36px;
   place-items: center;
-  background: #e9eef5;
+  color: #f3d98f;
+  background: rgb(213 165 46 / 17%);
+  border: 1px solid rgb(213 165 46 / 28%);
   border-radius: 50%;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .workspace-copy strong {
@@ -180,7 +363,7 @@ input:focus-visible {
 }
 
 .workspace-copy span {
-  color: var(--muted);
+  color: rgb(255 255 255 / 62%);
   font-size: 11px;
 }
 
@@ -242,7 +425,7 @@ input:focus-visible {
 }
 
 .button-primary:hover {
-  background: #1d4ed8;
+  background: var(--color-action-hover);
 }
 
 .button-secondary {
@@ -252,7 +435,7 @@ input:focus-visible {
 }
 
 .button-secondary:hover {
-  background: #f8fafc;
+  background: var(--surface-secondary);
 }
 
 .search-input {
@@ -262,14 +445,14 @@ input:focus-visible {
   width: min(100%, 350px);
   min-height: 43px;
   padding: 0 12px;
-  color: #8490a2;
+  color: var(--text-tertiary);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
 .search-input:focus-within {
-  border-color: #93b4f8;
+  border-color: var(--color-gold);
 }
 
 .search-input input {
@@ -294,8 +477,8 @@ input:focus-visible {
   gap: 10px;
   margin-bottom: 22px;
   padding: 12px 14px;
-  background: #eff6ff;
-  border: 1px solid #dbeafe;
+  background: var(--color-action-soft);
+  border: 1px solid var(--color-action-border);
   border-radius: var(--radius);
 }
 
@@ -310,7 +493,7 @@ input:focus-visible {
 
 .demo-notice p {
   margin: 0;
-  color: #334b71;
+  color: var(--text-primary);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -358,25 +541,25 @@ input:focus-visible {
 
 .stat-card--blue .stat-icon,
 .activity-icon--blue {
-  color: #2563eb;
-  background: #eff6ff;
+  color: var(--color-action);
+  background: var(--color-action-soft);
 }
 
 .stat-card--green .stat-icon,
 .activity-icon--green {
-  color: #16865b;
-  background: #e9f8ef;
+  color: var(--color-success);
+  background: var(--color-success-soft);
 }
 
 .stat-card--purple .stat-icon {
-  color: #7c3aed;
-  background: #f3edff;
+  color: var(--color-highlight);
+  background: var(--color-highlight-soft);
 }
 
 .stat-card--amber .stat-icon,
 .activity-icon--amber {
-  color: #b77912;
-  background: #fff7e6;
+  color: var(--color-warning);
+  background: var(--entity-meter-soft);
 }
 
 .stat-note {
@@ -509,8 +692,8 @@ input:focus-visible {
 .quick-action-icon {
   width: 38px;
   height: 38px;
-  color: #475569;
-  background: #f1f5f9;
+  color: var(--text-primary);
+  background: var(--surface-muted);
 }
 
 .quick-action-copy {
@@ -519,7 +702,7 @@ input:focus-visible {
 
 .quick-action-arrow {
   flex: 0 0 auto;
-  color: #94a0b1;
+  color: var(--text-tertiary);
 }
 
 .quick-action:hover .quick-action-arrow {
@@ -595,18 +778,21 @@ input:focus-visible {
     gap: 10px;
     min-height: 62px;
     padding: 10px 16px;
-    background: #fff;
-    border-bottom: 1px solid var(--border);
+    background: #102c50;
+    border-bottom: 1px solid rgb(255 255 255 / 10%);
   }
 
   .mobile-header .brand-mark {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
   }
 
   .mobile-header>strong {
-    font-size: 16px;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 750;
+    letter-spacing: -0.2px;
   }
 
   .mobile-header-label {
@@ -703,7 +889,7 @@ input:focus-visible {
     min-width: 0;
     min-height: 48px;
     padding: 5px 2px;
-    color: #758197;
+    color: var(--text-secondary);
     background: transparent;
     border: 0;
     border-radius: 9px;
@@ -719,8 +905,9 @@ input:focus-visible {
   }
 
   .mobile-nav-link.is-active {
-    color: var(--brand);
-    background: #eff5ff;
+    color: var(--text-heading);
+    background: var(--color-gold-soft);
+    box-shadow: inset 0 2px 0 var(--color-gold);
   }
 }
 
@@ -759,8 +946,8 @@ input:focus-visible {
   padding: 24px;
   background:
     radial-gradient(ellipse at top left,
-      #eaf1ff 0,
-      transparent 52%),
+      rgb(213 165 46 / 10%) 0,
+      transparent 48%),
     var(--background);
 }
 
@@ -805,7 +992,7 @@ input:focus-visible {
 .auth-intro h1,
 .auth-status-card h1 {
   margin: 8px 0;
-  color: var(--text);
+  color: var(--text-heading);
   font-size: 27px;
   letter-spacing: -0.8px;
   line-height: 1.25;
@@ -852,12 +1039,12 @@ input:focus-visible {
 }
 
 .auth-field input::placeholder {
-  color: #94a0b1;
+  color: var(--text-tertiary);
 }
 
 .auth-field>input:focus,
 .password-control:focus-within {
-  border-color: #93b4f8;
+  border-color: var(--color-gold);
 }
 
 .password-control {
@@ -899,7 +1086,7 @@ input:focus-visible {
 
 .password-toggle:hover {
   color: var(--text);
-  background: #f1f5f9;
+  background: var(--surface-muted);
 }
 
 .password-toggle:disabled {
@@ -922,8 +1109,8 @@ input:focus-visible {
 .auth-error {
   margin: 0;
   padding: 11px 12px;
-  color: #b42318;
-  background: #fff1f0;
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
   border: 1px solid #ffd9d6;
   border-radius: var(--radius);
   font-size: 12px;
@@ -957,8 +1144,8 @@ input:focus-visible {
 .auth-help {
   margin: 14px 0 0;
   padding: 13px;
-  color: #475569;
-  background: #f8fafc;
+  color: var(--text-primary);
+  background: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   font-size: 12px;
@@ -998,7 +1185,7 @@ input:focus-visible {
   gap: 7px;
   min-height: 36px;
   padding: 8px 11px;
-  color: #475569;
+  color: var(--text-primary);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -1008,7 +1195,7 @@ input:focus-visible {
 
 .sign-out-button:hover {
   color: var(--text);
-  background: #f8fafc;
+  background: var(--surface-secondary);
 }
 
 .mobile-sign-out {
@@ -1106,14 +1293,14 @@ input:focus-visible {
   height: 42px;
   place-items: center;
   color: var(--brand);
-  background: #eff6ff;
+  background: var(--color-action-soft);
   border-radius: 12px;
 }
 
 .property-status {
   padding: 5px 9px;
-  color: #16865b;
-  background: #e9f8ef;
+  color: var(--color-success);
+  background: var(--color-success-soft);
   border-radius: 999px;
   font-size: 10px;
   font-weight: 700;
@@ -1149,7 +1336,7 @@ input:focus-visible {
 .property-notes {
   overflow-wrap: anywhere;
   margin: 12px 0 0;
-  color: #596579;
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.65;
 }
@@ -1165,7 +1352,7 @@ input:focus-visible {
 
 .property-id {
   overflow: hidden;
-  color: #8490a2;
+  color: var(--text-tertiary);
   font-size: 10px;
   text-overflow: ellipsis;
 }
@@ -1223,14 +1410,14 @@ input:focus-visible {
   gap: 14px;
   margin-bottom: 18px;
   padding: 14px;
-  background: #fff1f0;
+  background: var(--color-danger-soft);
   border: 1px solid #ffd9d6;
   border-radius: var(--radius);
 }
 
 .properties-error p {
   margin: 0;
-  color: #b42318;
+  color: var(--color-danger);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -1278,7 +1465,7 @@ input:focus-visible {
   height: 38px;
   place-items: center;
   color: var(--muted);
-  background: #f8fafc;
+  background: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: 10px;
 }
@@ -1288,7 +1475,7 @@ input:focus-visible {
   margin-bottom: 18px;
   padding: 11px 12px;
   color: var(--muted);
-  background: #f8fafc;
+  background: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   font-size: 11px;
@@ -1313,7 +1500,7 @@ input:focus-visible {
 }
 
 .property-form-field label span {
-  color: #dc2626;
+  color: var(--color-danger);
 }
 
 .property-form-field input,
@@ -1336,12 +1523,12 @@ input:focus-visible {
 
 .property-form-field input::placeholder,
 .property-form-field textarea::placeholder {
-  color: #94a0b1;
+  color: var(--text-tertiary);
 }
 
 .property-form-field input:focus,
 .property-form-field textarea:focus {
-  border-color: #93b4f8;
+  border-color: var(--color-gold);
 }
 
 .property-form-actions {
@@ -1448,8 +1635,8 @@ input:focus-visible {
   width: 42px;
   height: 42px;
   place-items: center;
-  color: var(--brand);
-  background: #eff6ff;
+  color: var(--entity-room);
+  background: var(--entity-room-soft);
   border-radius: 12px;
 }
 
@@ -1461,18 +1648,18 @@ input:focus-visible {
 }
 
 .room-status--vacant {
-  color: #16865b;
-  background: #e9f8ef;
+  color: var(--color-success);
+  background: var(--color-success-soft);
 }
 
 .room-status--maintenance {
-  color: #a16207;
-  background: #fef3c7;
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
 }
 
 .room-status--inactive {
-  color: #64748b;
-  background: #f1f5f9;
+  color: var(--text-secondary);
+  background: var(--surface-muted);
 }
 
 .room-title-row {
@@ -1486,13 +1673,13 @@ input:focus-visible {
 .room-title-row h2 {
   overflow-wrap: anywhere;
   margin: 0 0 8px;
-  color: var(--text);
+  color: var(--text-heading);
   font-size: 17px;
   line-height: 1.4;
 }
 
 .room-code {
-  color: var(--brand);
+  color: var(--entity-room);
   font-size: 11px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
@@ -1501,7 +1688,7 @@ input:focus-visible {
 .room-property-name {
   overflow-wrap: anywhere;
   margin: 0 0 9px;
-  color: #475569;
+  color: var(--text-primary);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -1524,7 +1711,7 @@ input:focus-visible {
 .room-notes {
   overflow-wrap: anywhere;
   margin: 12px 0 0;
-  color: #596579;
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.65;
 }
@@ -1540,7 +1727,7 @@ input:focus-visible {
 
 .room-internal-id {
   min-width: 0;
-  color: #8490a2;
+  color: var(--text-tertiary);
   font-size: 10px;
 }
 
@@ -1563,12 +1750,12 @@ input:focus-visible {
 }
 
 .property-form-field select:focus {
-  border-color: #93b4f8;
+  border-color: var(--color-gold);
 }
 
 .property-form-field select:disabled {
   color: var(--muted);
-  background: #f8fafc;
+  background: var(--surface-secondary);
   cursor: not-allowed;
 }
 
@@ -1677,8 +1864,8 @@ input:focus-visible {
   width: 42px;
   height: 42px;
   place-items: center;
-  color: var(--brand);
-  background: #eff6ff;
+  color: var(--entity-tenant);
+  background: var(--entity-tenant-soft);
   border-radius: 12px;
   font-size: 17px;
   font-weight: 750;
@@ -1692,13 +1879,13 @@ input:focus-visible {
 }
 
 .tenant-status--active {
-  color: #16865b;
-  background: #e9f8ef;
+  color: var(--color-success);
+  background: var(--color-success-soft);
 }
 
 .tenant-status--archived {
-  color: #64748b;
-  background: #f1f5f9;
+  color: var(--text-secondary);
+  background: var(--surface-muted);
 }
 
 .tenant-name-row {
@@ -1713,14 +1900,14 @@ input:focus-visible {
 .tenant-name-row h2 {
   overflow-wrap: anywhere;
   margin: 0;
-  color: var(--text);
+  color: var(--text-heading);
   font-size: 16px;
   line-height: 1.45;
 }
 
 .tenant-code {
   flex: 0 0 auto;
-  color: var(--brand);
+  color: var(--entity-tenant);
   font-size: 11px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
@@ -1731,7 +1918,7 @@ input:focus-visible {
   align-items: flex-start;
   gap: 7px;
   margin: 0 0 9px;
-  color: #475569;
+  color: var(--text-primary);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -1757,7 +1944,7 @@ input:focus-visible {
 .tenant-notes {
   overflow-wrap: anywhere;
   margin: 7px 0 0;
-  color: #596579;
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.65;
 }
@@ -1773,7 +1960,7 @@ input:focus-visible {
 
 .tenant-permanent-label {
   min-width: 0;
-  color: #8490a2;
+  color: var(--text-tertiary);
   font-size: 10px;
 }
 
@@ -1871,8 +2058,8 @@ input:focus-visible {
   width: 42px;
   height: 42px;
   place-items: center;
-  color: #b77912;
-  background: #fff7e6;
+  color: var(--entity-meter);
+  background: var(--entity-meter-soft);
   border-radius: 12px;
 }
 
@@ -1884,18 +2071,18 @@ input:focus-visible {
 }
 
 .meter-status--available {
-  color: #2563eb;
-  background: #eff6ff;
+  color: var(--color-action);
+  background: var(--color-action-soft);
 }
 
 .meter-status--assigned {
-  color: #16865b;
-  background: #e9f8ef;
+  color: var(--color-success);
+  background: var(--color-success-soft);
 }
 
 .meter-status--retired {
-  color: #64748b;
-  background: #f1f5f9;
+  color: var(--text-secondary);
+  background: var(--surface-muted);
 }
 
 .meter-title-row {
@@ -1909,7 +2096,7 @@ input:focus-visible {
 
 .meter-title-row h2 {
   margin: 0;
-  color: var(--text);
+  color: var(--text-heading);
   font-size: 19px;
   letter-spacing: -0.4px;
   font-variant-numeric: tabular-nums;
@@ -1926,13 +2113,13 @@ input:focus-visible {
   gap: 5px;
   margin-top: 4px;
   padding: 12px;
-  background: #f8fafc;
+  background: var(--surface-secondary);
   border: 1px solid #edf0f5;
   border-radius: var(--radius);
 }
 
 .meter-assignment-summary strong {
-  color: #475569;
+  color: var(--text-primary);
   font-size: 11px;
 }
 
@@ -1959,7 +2146,7 @@ input:focus-visible {
 .meter-notes {
   overflow-wrap: anywhere;
   margin: 12px 0 0;
-  color: #596579;
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.65;
 }
@@ -1975,7 +2162,7 @@ input:focus-visible {
 
 .meter-history-label {
   min-width: 0;
-  color: #8490a2;
+  color: var(--text-tertiary);
   font-size: 10px;
 }
 
@@ -2021,8 +2208,8 @@ input:focus-visible {
 }
 
 .room-status--occupied {
-  background: #e8f5ee;
-  color: #176b43;
+  background: var(--color-success-soft);
+  color: var(--color-success);
   border-color: #bfe3ce;
 }
 
@@ -2110,7 +2297,7 @@ input:focus-visible {
     grid-column: 1 / -1;
     margin: 0;
     padding: 2px 4px 8px;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 1px;
@@ -2129,16 +2316,16 @@ input:focus-visible {
     border: 1px solid #edf1f6;
     border-radius: 11px;
     background: #fff;
-    color: #475569;
+    color: var(--text-primary);
 
     font-size: 10px;
     font-weight: 650;
   }
 
   .mobile-nav-more-panel .mobile-nav-link.is-active {
-    border-color: #bfdbfe;
-    background: #eff6ff;
-    color: #1d4ed8;
+    border-color: var(--color-gold);
+    background: var(--color-action-soft);
+    color: var(--color-action-hover);
   }
 
   .page-content {
@@ -2425,7 +2612,7 @@ input:focus-visible {
 .page-content textarea:focus-visible,
 .sidebar button:focus-visible,
 .mobile-bottom-nav button:focus-visible {
-  outline: 3px solid #93c5fd;
+  outline: 3px solid color-mix(in srgb, var(--color-gold) 58%, white);
   outline-offset: 3px;
 }
 
@@ -2493,8 +2680,8 @@ input:focus-visible {
 .dashboard-load-error {
   align-items: center;
   border-color: #fecaca;
-  background: #fff7f7;
-  color: #991b1b;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
 }
 
 .dashboard-load-error p {
@@ -2515,14 +2702,14 @@ input:focus-visible {
   gap: 9px;
   min-height: 130px;
   padding: 20px 14px;
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.6;
   text-align: center;
 }
 
 .dashboard-empty-state strong {
-  color: #334155;
+  color: var(--text-primary);
 }
 
 .dashboard-empty-state span {
@@ -2557,5 +2744,148 @@ input:focus-visible {
 @media (max-width: 360px) {
   .dashboard-heading-actions {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* PropertyOS: Mobile More menu - vertical list */
+@media (max-width: 760px) {
+  .mobile-nav-more-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+
+  .mobile-nav-more-heading {
+    margin: 0;
+    padding: 2px 4px 8px;
+  }
+
+  .mobile-nav-more-panel .mobile-nav-link {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 12px;
+
+    width: 100%;
+    min-width: 0;
+    min-height: 48px;
+    padding: 10px 12px;
+
+    border: 0;
+    border-bottom: 1px solid #edf1f6;
+    border-radius: 8px;
+
+    background: #fff;
+    color: var(--text-primary);
+
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+  }
+
+  .mobile-nav-more-panel .mobile-nav-link svg {
+    flex: 0 0 19px;
+  }
+
+  .mobile-nav-more-panel .mobile-nav-link span {
+    flex: 1;
+    max-width: none;
+    overflow: visible;
+    text-align: left;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+
+  .mobile-nav-more-panel .mobile-nav-link.is-active {
+    background: var(--color-action-soft);
+    color: var(--color-action-hover);
+  }
+}
+
+/* T&N House's brand finish and shared typography refinements. */
+.sidebar .brand-copy strong {
+  color: #fff;
+}
+
+.sidebar .brand-copy span {
+  color: #e4c16c;
+}
+
+.sidebar .nav-group-label {
+  color: rgb(255 255 255 / 56%);
+}
+
+.sidebar .workspace-copy strong {
+  color: #fff;
+}
+
+.sidebar .workspace-copy span {
+  color: rgb(255 255 255 / 62%);
+}
+
+.sidebar .workspace-avatar {
+  color: #f3d98f;
+}
+
+.mobile-header {
+  background: #102c50;
+}
+
+.mobile-header .brand-mark {
+  background: transparent;
+}
+
+.mobile-header .brand-mark img {
+  object-fit: contain;
+}
+
+.mobile-header .mobile-sign-out {
+  color: #fff;
+  border-color: rgb(255 255 255 / 22%);
+  background: rgb(255 255 255 / 8%);
+}
+
+.mobile-header .mobile-sign-out:hover {
+  background: rgb(255 255 255 / 14%);
+}
+
+.auth-brand .brand-mark {
+  width: 48px;
+  height: 48px;
+}
+
+.auth-brand strong {
+  color: var(--text-heading);
+}
+
+.auth-brand>div>span {
+  color: var(--color-gold-deep);
+}
+
+.button-primary:hover {
+  background: var(--color-action-hover);
+}
+
+.button:focus-visible,
+.search-input:focus-within,
+.page-content input:focus,
+.page-content select:focus,
+.page-content textarea:focus {
+  border-color: var(--color-gold);
+}
+
+@media (max-width: 760px) {
+  .mobile-header {
+    background: #102c50;
+  }
+
+  .mobile-header .brand-mark {
+    width: 38px;
+    height: 38px;
+  }
+
+  .mobile-header>strong {
+    color: #fff;
   }
 }

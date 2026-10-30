@@ -1,3 +1,5 @@
+import { getCachedList } from './listCache'
+
 import {
   collection,
   doc,
@@ -136,55 +138,57 @@ function getRoomIndexRef(
 export async function listRooms(
   ownerUid: string,
 ): Promise<RoomRecord[]> {
-  const { db } = getFirebaseServices()
+  return getCachedList(ownerUid, 'Rooms', async () => {
+    const { db } = getFirebaseServices()
 
-  const roomsRef = collection(db, 'users', ownerUid, 'rooms')
+    const roomsRef = collection(db, 'users', ownerUid, 'rooms')
 
-  const snapshot = await getDocs(
-    query(roomsRef, orderBy('createdAt', 'desc')),
-  )
+    const snapshot = await getDocs(
+      query(roomsRef, orderBy('createdAt', 'desc')),
+    )
 
-  return snapshot.docs.map((roomDocument) => {
-    const data = roomDocument.data()
+    return snapshot.docs.map((roomDocument) => {
+      const data = roomDocument.data()
 
-    if (
-      typeof data.roomCode !== 'string' ||
-      parseIdentifierNumber('room', data.roomCode) === null ||
-      typeof data.propertyId !== 'string' ||
-      typeof data.propertyCode !== 'string' ||
-      parseIdentifierNumber('property', data.propertyCode) === null ||
-      typeof data.floorName !== 'string' ||
-      typeof data.roomNumber !== 'string' ||
-      typeof data.normalizedFloorName !== 'string' ||
-      typeof data.normalizedRoomNumber !== 'string' ||
-      typeof data.notes !== 'string' ||
-      typeof data.createdBy !== 'string' ||
-      typeof data.updatedBy !== 'string' ||
-      !['vacant', 'maintenance', 'inactive'].includes(data.status)
-    ) {
-      throw new Error(
-        `Room ${roomDocument.id} contains invalid stored data.`,
-      )
-    }
+      if (
+        typeof data.roomCode !== 'string' ||
+        parseIdentifierNumber('room', data.roomCode) === null ||
+        typeof data.propertyId !== 'string' ||
+        typeof data.propertyCode !== 'string' ||
+        parseIdentifierNumber('property', data.propertyCode) === null ||
+        typeof data.floorName !== 'string' ||
+        typeof data.roomNumber !== 'string' ||
+        typeof data.normalizedFloorName !== 'string' ||
+        typeof data.normalizedRoomNumber !== 'string' ||
+        typeof data.notes !== 'string' ||
+        typeof data.createdBy !== 'string' ||
+        typeof data.updatedBy !== 'string' ||
+        !['vacant', 'maintenance', 'inactive'].includes(data.status)
+      ) {
+        throw new Error(
+          `Room ${roomDocument.id} contains invalid stored data.`,
+        )
+      }
 
-    return {
-      id: roomDocument.id,
-      roomCode: data.roomCode,
-      propertyId: data.propertyId,
-      propertyCode: data.propertyCode,
-      floorName: data.floorName,
-      roomNumber: data.roomNumber,
-      normalizedFloorName: data.normalizedFloorName,
-      normalizedRoomNumber: data.normalizedRoomNumber,
-      notes: data.notes,
-      status: data.status as RoomStatus,
-      createdAt:
-        data.createdAt instanceof Timestamp ? data.createdAt : null,
-      updatedAt:
-        data.updatedAt instanceof Timestamp ? data.updatedAt : null,
-      createdBy: data.createdBy,
-      updatedBy: data.updatedBy,
-    }
+      return {
+        id: roomDocument.id,
+        roomCode: data.roomCode,
+        propertyId: data.propertyId,
+        propertyCode: data.propertyCode,
+        floorName: data.floorName,
+        roomNumber: data.roomNumber,
+        normalizedFloorName: data.normalizedFloorName,
+        normalizedRoomNumber: data.normalizedRoomNumber,
+        notes: data.notes,
+        status: data.status as RoomStatus,
+        createdAt:
+          data.createdAt instanceof Timestamp ? data.createdAt : null,
+        updatedAt:
+          data.updatedAt instanceof Timestamp ? data.updatedAt : null,
+        createdBy: data.createdBy,
+        updatedBy: data.updatedBy,
+      }
+    })
   })
 }
 

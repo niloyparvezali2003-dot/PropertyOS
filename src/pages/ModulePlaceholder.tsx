@@ -41,7 +41,7 @@ export function ModulePlaceholder({
 }: ModulePlaceholderProps) {
   return (
     <section className="module-placeholder">
-      <p className="eyebrow">WORKSPACE MODULE</p>
+      <p className="eyebrow">Workspace module</p>
       <h1>{page}</h1>
       <p className="page-description">{descriptions[page]}</p>
 

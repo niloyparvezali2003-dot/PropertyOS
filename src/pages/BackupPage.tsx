@@ -299,7 +299,7 @@ export function BackupPage({ ownerUid }: BackupPageProps) {
             <section className="backup-restore-card">
                 <div className="backup-restore-heading">
                     <div>
-                        <p className="backup-eyebrow">RECOVERY</p>
+                        <p className="backup-eyebrow">Recovery</p>
                         <h2>Restore a JSON backup</h2>
                         <p>Preview the archive and destination conflicts before importing anything.</p>
                     </div>

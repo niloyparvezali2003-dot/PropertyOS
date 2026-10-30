@@ -36,6 +36,12 @@ import {
   listTenants,
   type TenantRecord,
 } from './tenants'
+import {
+  listOpeningBalances,
+  listOpeningBalanceAdjustments,
+  type OpeningBalanceAdjustmentRecord,
+  type OpeningBalanceRecord,
+} from './openingBalances'
 
 export type LedgerSourceData = {
   tenants: TenantRecord[]
@@ -47,6 +53,8 @@ export type LedgerSourceData = {
   electricityBills: ElectricityBillRecord[]
   payments: PaymentRecord[]
   creditApplications: CreditApplicationRecord[]
+  openingBalances: OpeningBalanceRecord[]
+  openingBalanceAdjustments: OpeningBalanceAdjustmentRecord[]
 }
 
 /**
@@ -68,6 +76,8 @@ export async function loadLedgerSourceData(
     electricityBills,
     payments,
     creditApplications,
+    openingBalances,
+    openingBalanceAdjustments,
   ] = await Promise.all([
     listTenants(ownerUid),
     listRooms(ownerUid),
@@ -78,6 +88,8 @@ export async function loadLedgerSourceData(
     listElectricityBills(ownerUid),
     listPayments(ownerUid),
     listCreditApplications(ownerUid),
+    listOpeningBalances(ownerUid),
+    listOpeningBalanceAdjustments(ownerUid),
   ])
 
   return {
@@ -90,5 +102,7 @@ export async function loadLedgerSourceData(
     electricityBills,
     payments,
     creditApplications,
+    openingBalances,
+    openingBalanceAdjustments,
   }
 }

@@ -1,0 +1,89 @@
+/* T&N House's — full-height mobile More / All Modules panel.
+   Header and bottom navigation remain unchanged. */
+@media (max-width: 760px) {
+  .mobile-nav-more-panel {
+    position: fixed;
+    z-index: 29;
+    top: 62px;
+    right: 0;
+    bottom: calc(65px + env(safe-area-inset-bottom));
+    left: 0;
+
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+
+    width: 100%;
+    max-height: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+
+    padding: 16px max(16px, env(safe-area-inset-left)) 20px
+      max(16px, env(safe-area-inset-right));
+    border: 0;
+    border-top: 1px solid var(--border, #e8e1d5);
+    border-radius: 0;
+    background: var(--surface-page, #f6f3eb);
+    box-shadow: none;
+  }
+
+  .mobile-nav-more-panel[hidden] {
+    display: none !important;
+  }
+
+  .mobile-nav-more-heading {
+    flex: 0 0 auto;
+    margin: 0 0 2px;
+    padding: 2px 2px 8px;
+    color: var(--text-secondary, #64748b);
+    font-size: 11px;
+    font-weight: 750;
+    letter-spacing: 0.09em;
+  }
+
+  .mobile-nav-more-panel .mobile-nav-link {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 12px;
+
+    width: 100%;
+    min-width: 0;
+    min-height: 49px;
+    padding: 11px 14px;
+
+    border: 1px solid var(--border, #e8e1d5);
+    border-radius: 10px;
+    background: #fff;
+    color: var(--text-primary, #26364a);
+    box-shadow: 0 1px 2px rgb(16 44 80 / 4%);
+
+    font-size: 14px;
+    font-weight: 600;
+    text-align: left;
+  }
+
+  .mobile-nav-more-panel .mobile-nav-link svg {
+    flex: 0 0 20px;
+    color: var(--text-heading, #102c50);
+  }
+
+  .mobile-nav-more-panel .mobile-nav-link span {
+    flex: 1;
+    max-width: none;
+    overflow: visible;
+    text-align: left;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+
+  .mobile-nav-more-panel .mobile-nav-link.is-active {
+    border-color: var(--color-gold, #d5a52e);
+    background: var(--color-gold-soft, #fbf4e3);
+    color: var(--text-heading, #102c50);
+  }
+}

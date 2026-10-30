@@ -218,7 +218,7 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
         <>
             <header className="page-heading">
                 <div>
-                    <p className="eyebrow">PROPERTY MANAGEMENT</p>
+                    <p className="eyebrow">Property management</p>
                     <h1>Tenants</h1>
                     <p className="page-description">
                         Maintain tenant profiles and permanent tenant IDs.
@@ -394,7 +394,7 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
                     >
                         <header className="property-modal-heading">
                             <div>
-                                <p className="eyebrow">TENANT PROFILE</p>
+                                <p className="eyebrow">Tenant profile</p>
 
                                 <h2 id="tenant-dialog-title">
                                     {editingTenant ? 'Edit tenant' : 'Add tenant'}

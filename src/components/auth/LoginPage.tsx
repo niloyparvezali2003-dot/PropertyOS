@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react'
 import {
-  Building2,
   Eye,
   EyeOff,
   LoaderCircle,
@@ -43,17 +42,17 @@ export function LoginPage() {
       <section className="auth-card" aria-labelledby="login-title">
         <div className="auth-brand">
           <span className="brand-mark">
-            <Building2 size={24} aria-hidden="true" />
+            <img src="/icon-192.png" alt="T&N House's" />
           </span>
 
           <div>
-            <strong>PropertyOS</strong>
-            <span>PROPERTY MANAGEMENT</span>
+            <strong>T&N House's</strong>
+            <span>PROPERTYOS MANAGEMENT</span>
           </div>
         </div>
 
         <div className="auth-intro">
-          <p className="eyebrow">OWNER WORKSPACE</p>
+          <p className="eyebrow">Owner workspace</p>
           <h1 id="login-title">Welcome back</h1>
           <p>
             Sign in to manage your properties, tenants, bills,

@@ -1,3 +1,5 @@
+import { getCachedList } from './listCache'
+
 import {
   collection,
   doc,
@@ -89,7 +91,7 @@ export class ElectricityAssignmentNotFoundError extends Error {
 
 export class ElectricityReadingAlreadyExistsError extends Error {
   constructor() {
-    super('An electricity bill already exists for this meter assignment and month. Existing bills are never overwritten.')
+    super('A meter reading already exists for this assignment and date. Existing readings and bills are never overwritten.')
     this.name = 'ElectricityReadingAlreadyExistsError'
   }
 }
@@ -217,7 +219,7 @@ function validateReading(id: string, raw: unknown): ElectricityReadingRecord {
     isSafeNonNegativeInteger(raw.amountMinor) && typeof raw.notes === 'string' &&
     raw.notes.length <= 1000 && raw.createdAt instanceof Timestamp && raw.updatedAt instanceof Timestamp &&
     typeof raw.createdBy === 'string' && typeof raw.updatedBy === 'string' &&
-    id === `${raw.meterAssignmentId}__${readingMonth}` &&
+    (id === `${raw.meterAssignmentId}__${readingMonth}` || id === `${raw.meterAssignmentId}__${raw.readingDate}`) &&
     (raw.rateId === `rate__${raw.rateEffectiveFrom}` ||
       raw.rateId === `rate__${raw.roomId}__${raw.rateEffectiveFrom}`)
   if (!valid) throw new InvalidElectricityDataError(`Electricity reading ${id} has invalid saved fields.`)
@@ -258,24 +260,31 @@ function validateBill(id: string, raw: unknown): ElectricityBillRecord {
 }
 
 export async function listElectricityRates(ownerUid: string): Promise<ElectricityRateRecord[]> {
-  const { db } = getFirebaseServices()
-  const ref = collection(db, 'users', ownerUid, 'electricityRates')
-  const snapshot = await getDocs(query(ref, orderBy('effectiveFrom', 'desc')))
-  return snapshot.docs.map((item) => validateRate(item.id, item.data()))
+  return getCachedList(ownerUid, 'ElectricityRates', async () => {
+    const { db } = getFirebaseServices()
+    const ref = collection(db, 'users', ownerUid, 'electricityRates')
+    const snapshot = await getDocs(query(ref, orderBy('effectiveFrom', 'desc')))
+    return snapshot.docs.map((item) => validateRate(item.id, item.data()))
+  })
 }
 
 export async function listElectricityReadings(ownerUid: string): Promise<ElectricityReadingRecord[]> {
-  const { db } = getFirebaseServices()
-  const ref = collection(db, 'users', ownerUid, 'electricityReadings')
-  const snapshot = await getDocs(query(ref, orderBy('readingDate', 'desc')))
-  return snapshot.docs.map((item) => validateReading(item.id, item.data()))
+  return getCachedList(ownerUid, 'ElectricityReadings', async () => {
+    const { db } = getFirebaseServices()
+    const ref = collection(db, 'users', ownerUid, 'electricityReadings')
+    const snapshot = await getDocs(query(ref, orderBy('readingDate', 'desc')))
+    return snapshot.docs.map((item) => validateReading(item.id, item.data()))
+  })
 }
 
 export async function listElectricityBills(ownerUid: string): Promise<ElectricityBillRecord[]> {
-  const { db } = getFirebaseServices()
-  const ref = collection(db, 'users', ownerUid, 'electricityBills')
-  const snapshot = await getDocs(query(ref, orderBy('billingMonth', 'desc')))
-  return snapshot.docs.map((item) => validateBill(item.id, item.data()))
+  return getCachedList(ownerUid, 'ElectricityBills', async () => {
+    const { db } = getFirebaseServices()
+    const ref = collection(db, 'users', ownerUid, 'electricityBills')
+    const snapshot = await getDocs(query(ref, orderBy('billingMonth', 'desc')))
+    return snapshot.docs.map((item) => validateBill(item.id, item.data()))
+      .sort((left, right) => right.readingDate.localeCompare(left.readingDate) || right.id.localeCompare(left.id))
+  })
 }
 
 export async function createElectricityRate(ownerUid: string, rawInput: ElectricityRateFormValues): Promise<string> {
@@ -351,7 +360,9 @@ export async function createElectricityBillFromReading(
   const applicableRate = roomRate ?? legacyFallbackRate
   if (!applicableRate) throw new MissingElectricityRateError(input.readingDate)
 
-  const readingId = `${assignment.id}__${readingMonth}`
+  // Date-based IDs allow multiple immutable readings/bills within one billing month.
+  // The legacy month-based IDs remain readable and are never overwritten.
+  const readingId = `${assignment.id}__${input.readingDate}`
   const billId = readingId
   const { db } = getFirebaseServices()
   const targetReadingRef = readingRef(ownerUid, readingId)
@@ -405,8 +416,8 @@ export async function createElectricityBillFromReading(
       previousReading = state.lastReadingValue
     }
 
-    if (input.currentReading < previousReading) {
-      throw new ElectricityReadingOrderError('The current reading cannot be lower than the previous reading. For a replaced meter, select its separate assignment and saved final reading.')
+    if (input.currentReading <= previousReading) {
+      throw new ElectricityReadingOrderError('The current reading must be higher than the previous reading. For a replaced meter, select its separate assignment and saved final reading.')
     }
 
     const unitsConsumed = Math.round((input.currentReading - previousReading) * 1_000_000) / 1_000_000

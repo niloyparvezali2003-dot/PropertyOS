@@ -15,7 +15,7 @@
 
 .ledger-eyebrow {
   margin: 0 0 7px;
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 1.25px;
@@ -30,7 +30,7 @@
 
 .ledger-subtitle {
   margin: 8px 0 0;
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 14px;
   line-height: 1.55;
 }
@@ -45,14 +45,14 @@
   border: 1px solid #dbe3ee;
   border-radius: 10px;
   background: #fff;
-  color: #334155;
+  color: var(--text-primary);
   font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
 }
 
 .ledger-refresh-button:hover:not(:disabled) {
-  background: #f8fafc;
+  background: var(--surface-secondary);
   border-color: #b9c7da;
 }
 
@@ -89,9 +89,9 @@
 
 .ledger-scope-tab.is-active {
   border-color: #a9c6fa;
-  background: #eff6ff;
-  color: #1d4ed8;
-  box-shadow: inset 0 0 0 1px #dbeafe;
+  background: var(--color-action-soft);
+  color: var(--color-action-hover);
+  box-shadow: inset 0 0 0 1px var(--color-action-border);
 }
 
 .ledger-filter-panel {
@@ -112,7 +112,7 @@
 }
 
 .ledger-field > span {
-  color: #475569;
+  color: var(--text-primary);
   font-size: 11px;
   font-weight: 750;
 }
@@ -127,14 +127,14 @@
   border-radius: 9px;
   outline: none;
   background: #fff;
-  color: #172033;
+  color: var(--text-primary);
   font-size: 12px;
 }
 
 .ledger-field select:focus,
 .ledger-field input:focus {
-  border-color: #80a9f8;
-  box-shadow: 0 0 0 3px #dbeafe;
+  border-color: var(--color-gold);
+  box-shadow: 0 0 0 3px rgb(213 165 46 / 16%);
 }
 
 .ledger-input-with-icon {
@@ -147,12 +147,12 @@
   border: 1px solid #d8e1ed;
   border-radius: 9px;
   background: #fff;
-  color: #94a3b8;
+  color: var(--text-tertiary);
 }
 
 .ledger-input-with-icon:focus-within {
-  border-color: #80a9f8;
-  box-shadow: 0 0 0 3px #dbeafe;
+  border-color: var(--color-gold);
+  box-shadow: 0 0 0 3px rgb(213 165 46 / 16%);
 }
 
 .ledger-input-with-icon input {
@@ -163,7 +163,7 @@
   box-shadow: none;
   outline: none;
   background: transparent;
-  color: #172033;
+  color: var(--text-primary);
 }
 
 .ledger-input-with-icon input:focus {
@@ -192,13 +192,13 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 11px;
   font-weight: 750;
 }
 
 .ledger-summary-card > span svg {
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .ledger-summary-card > strong {
@@ -210,17 +210,17 @@
 }
 
 .ledger-summary-card > small {
-  color: #94a3b8;
+  color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1.4;
 }
 
 .ledger-summary-card.is-due > strong {
-  color: #b45309;
+  color: var(--color-warning);
 }
 
 .ledger-summary-card.is-credit > strong {
-  color: #047857;
+  color: var(--color-success);
 }
 
 .ledger-table-card {
@@ -245,7 +245,7 @@
 
 .ledger-table-heading p {
   margin: 5px 0 0;
-  color: #64748b;
+  color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -255,8 +255,8 @@
   flex: 0 0 auto;
   padding: 5px 9px;
   border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--surface-muted);
+  color: var(--text-primary);
   font-size: 10px;
   font-weight: 750;
 }
@@ -276,8 +276,8 @@
 .ledger-table th {
   padding: 12px;
   border-bottom: 1px solid #e8edf4;
-  background: #f8fafc;
-  color: #64748b;
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
   font-size: 10px;
   font-weight: 800;
   white-space: nowrap;
@@ -286,7 +286,7 @@
 .ledger-table td {
   padding: 13px 12px;
   border-bottom: 1px solid #edf1f6;
-  color: #334155;
+  color: var(--text-primary);
   font-size: 11px;
   vertical-align: top;
 }
@@ -296,7 +296,7 @@
 }
 
 .ledger-table tbody tr:hover td {
-  background: #fbfdff;
+  background: var(--surface-secondary);
 }
 
 .ledger-table .align-right {
@@ -314,7 +314,7 @@
 .ledger-time-cell {
   min-width: 72px;
   white-space: nowrap;
-  color: #64748b !important;
+  color: var(--text-secondary) !important;
 }
 
 .ledger-type-pill {
@@ -323,7 +323,7 @@
   max-width: 155px;
   padding: 5px 8px;
   border-radius: 999px;
-  background: #fff7ed;
+  background: var(--color-warning-soft);
   color: #9a3412;
   font-size: 10px;
   font-weight: 750;
@@ -331,13 +331,13 @@
 }
 
 .ledger-type-pill.is-credit {
-  background: #ecfdf5;
-  color: #047857;
+  background: var(--color-success-soft);
+  color: var(--color-success);
 }
 
 .ledger-reference {
   max-width: 220px;
-  color: #1e293b;
+  color: var(--text-primary);
   font-size: 11px;
   font-weight: 750;
   overflow-wrap: anywhere;
@@ -346,7 +346,7 @@
 .ledger-description {
   max-width: 260px;
   margin-top: 4px;
-  color: #94a3b8;
+  color: var(--text-tertiary);
   font-size: 10px;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -358,17 +358,17 @@
 }
 
 .ledger-money.debit {
-  color: #b45309 !important;
+  color: var(--color-warning) !important;
 }
 
 .ledger-money.credit,
 .ledger-mobile-amounts .credit {
-  color: #047857 !important;
+  color: var(--color-success) !important;
 }
 
 .ledger-money.due,
 .ledger-mobile-amounts .due {
-  color: #b45309 !important;
+  color: var(--color-warning) !important;
 }
 
 .ledger-mobile-list {
@@ -383,13 +383,13 @@
   gap: 10px;
   min-height: 180px;
   padding: 28px 18px;
-  color: #64748b;
+  color: var(--text-secondary);
   text-align: center;
   font-size: 13px;
 }
 
 .ledger-state small {
-  color: #94a3b8;
+  color: var(--text-tertiary);
 }
 
 .ledger-error {
@@ -399,8 +399,8 @@
   padding: 13px 14px;
   border: 1px solid #fecaca;
   border-radius: 12px;
-  background: #fff7f7;
-  color: #991b1b;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
 }
 
 .ledger-error > div {
@@ -424,14 +424,14 @@
   border: 1px solid #fecaca;
   border-radius: 8px;
   background: #fff;
-  color: #991b1b;
+  color: var(--color-danger);
   font-size: 11px;
   font-weight: 750;
 }
 
 .ledger-footnote {
   margin: -5px 0 0;
-  color: #94a3b8;
+  color: var(--text-tertiary);
   font-size: 10px;
   line-height: 1.6;
 }
@@ -571,7 +571,7 @@
   }
 
   .ledger-mobile-entry-top time {
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 10px;
     text-align: right;
   }
@@ -584,7 +584,7 @@
 
   .ledger-mobile-entry p {
     margin: -4px 0 0;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 10px;
     line-height: 1.5;
     overflow-wrap: anywhere;
@@ -605,12 +605,12 @@
   }
 
   .ledger-mobile-amounts small {
-    color: #94a3b8;
+    color: var(--text-tertiary);
     font-size: 9px;
   }
 
   .ledger-mobile-amounts b {
-    color: #334155;
+    color: var(--text-primary);
     font-size: 10px;
     font-variant-numeric: tabular-nums;
     overflow-wrap: anywhere;
@@ -655,5 +655,225 @@
 
   .ledger-scope-tab {
     transition: none;
+  }
+}
+
+/* Shared transaction table context column and tenant occupancy lifecycle. */
+.ledger-table {
+  min-width: 930px;
+}
+
+.ledger-context-cell {
+  min-width: 105px;
+  max-width: 145px;
+  color: var(--text-primary) !important;
+  font-size: 11px !important;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ledger-mobile-context {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 9px;
+  border: 1px solid #e7edf5;
+  border-radius: 8px;
+  background: var(--surface-secondary);
+}
+
+.ledger-mobile-context small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ledger-mobile-context strong {
+  color: var(--text-primary);
+  font-size: 11px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.ledger-occupancy-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.ledger-occupancy-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 18px;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.ledger-occupancy-heading h2 {
+  margin: 0;
+  color: var(--text-heading);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.ledger-occupancy-heading p {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ledger-occupancy-heading > span {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.ledger-occupancy-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.ledger-occupancy-table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.ledger-occupancy-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e8edf4;
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.ledger-occupancy-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid #edf1f6;
+  color: var(--text-primary);
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+.ledger-occupancy-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ledger-occupancy-table td:first-child strong,
+.ledger-occupancy-table td:first-child small {
+  display: block;
+}
+
+.ledger-occupancy-table td:first-child strong {
+  color: var(--text-primary);
+}
+
+.ledger-occupancy-table td:first-child small {
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.ledger-occupancy-status {
+  display: inline-flex;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: capitalize;
+}
+
+.ledger-occupancy-status.is-current {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.ledger-occupancy-empty {
+  padding: 22px 16px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .ledger-table {
+    min-width: 0;
+  }
+
+  .ledger-occupancy-heading {
+    padding: 13px;
+  }
+
+  .ledger-occupancy-heading h2 {
+    font-size: 13px;
+  }
+
+  .ledger-occupancy-heading p {
+    font-size: 10px;
+  }
+}
+
+
+@media (max-width: 760px) {
+  .ledger-occupancy-table-wrap {
+    overflow: visible;
+  }
+
+  .ledger-occupancy-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .ledger-occupancy-table thead {
+    display: none;
+  }
+
+  .ledger-occupancy-table tbody {
+    display: grid;
+  }
+
+  .ledger-occupancy-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    padding: 12px;
+    border-bottom: 1px solid #edf1f6;
+  }
+
+  .ledger-occupancy-table td {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ledger-occupancy-table td::before {
+    content: attr(data-label);
+    color: var(--text-tertiary);
+    font-size: 9px;
+    font-weight: 750;
+  }
+
+  .ledger-occupancy-table td:first-child strong,
+  .ledger-occupancy-table td:first-child small {
+    display: block;
   }
 }

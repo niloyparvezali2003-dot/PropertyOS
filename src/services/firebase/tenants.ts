@@ -1,3 +1,5 @@
+import { getCachedList } from './listCache'
+
 import {
   collection,
   doc,
@@ -71,65 +73,67 @@ function prepareTenantInput(
 export async function listTenants(
   ownerUid: string,
 ): Promise<TenantRecord[]> {
-  const { db } = getFirebaseServices()
+  return getCachedList(ownerUid, 'Tenants', async () => {
+    const { db } = getFirebaseServices()
 
-  const tenantsRef = collection(
-    db,
-    'users',
-    ownerUid,
-    'tenants',
-  )
+    const tenantsRef = collection(
+      db,
+      'users',
+      ownerUid,
+      'tenants',
+    )
 
-  const snapshot = await getDocs(
-    query(tenantsRef, orderBy('createdAt', 'desc')),
-  )
+    const snapshot = await getDocs(
+      query(tenantsRef, orderBy('createdAt', 'desc')),
+    )
 
-  const codes = new Set<string>()
+    const codes = new Set<string>()
 
-  return snapshot.docs.map((tenantDocument) => {
-    const data = tenantDocument.data()
+    return snapshot.docs.map((tenantDocument) => {
+      const data = tenantDocument.data()
 
-    if (
-      typeof data.tenantCode !== 'string' ||
-      parseIdentifierNumber('tenant', data.tenantCode) === null ||
-      typeof data.fullName !== 'string' ||
-      typeof data.phone !== 'string' ||
-      typeof data.email !== 'string' ||
-      typeof data.address !== 'string' ||
-      typeof data.notes !== 'string' ||
-      typeof data.createdBy !== 'string' ||
-      typeof data.updatedBy !== 'string' ||
-      (data.status !== 'active' && data.status !== 'archived')
-    ) {
-      throw new Error(
-        `Tenant record ${tenantDocument.id} contains invalid stored data.`,
-      )
-    }
+      if (
+        typeof data.tenantCode !== 'string' ||
+        parseIdentifierNumber('tenant', data.tenantCode) === null ||
+        typeof data.fullName !== 'string' ||
+        typeof data.phone !== 'string' ||
+        typeof data.email !== 'string' ||
+        typeof data.address !== 'string' ||
+        typeof data.notes !== 'string' ||
+        typeof data.createdBy !== 'string' ||
+        typeof data.updatedBy !== 'string' ||
+        (data.status !== 'active' && data.status !== 'archived')
+      ) {
+        throw new Error(
+          `Tenant record ${tenantDocument.id} contains invalid stored data.`,
+        )
+      }
 
-    if (codes.has(data.tenantCode)) {
-      throw new Error(
-        `Duplicate tenant code ${data.tenantCode} detected. No tenant records were changed.`,
-      )
-    }
+      if (codes.has(data.tenantCode)) {
+        throw new Error(
+          `Duplicate tenant code ${data.tenantCode} detected. No tenant records were changed.`,
+        )
+      }
 
-    codes.add(data.tenantCode)
+      codes.add(data.tenantCode)
 
-    return {
-      id: tenantDocument.id,
-      tenantCode: data.tenantCode,
-      fullName: data.fullName,
-      phone: data.phone,
-      email: data.email,
-      address: data.address,
-      notes: data.notes,
-      status: data.status as TenantStatus,
-      createdAt:
-        data.createdAt instanceof Timestamp ? data.createdAt : null,
-      updatedAt:
-        data.updatedAt instanceof Timestamp ? data.updatedAt : null,
-      createdBy: data.createdBy,
-      updatedBy: data.updatedBy,
-    }
+      return {
+        id: tenantDocument.id,
+        tenantCode: data.tenantCode,
+        fullName: data.fullName,
+        phone: data.phone,
+        email: data.email,
+        address: data.address,
+        notes: data.notes,
+        status: data.status as TenantStatus,
+        createdAt:
+          data.createdAt instanceof Timestamp ? data.createdAt : null,
+        updatedAt:
+          data.updatedAt instanceof Timestamp ? data.updatedAt : null,
+        createdBy: data.createdBy,
+        updatedBy: data.updatedBy,
+      }
+    })
   })
 }
 

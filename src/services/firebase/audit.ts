@@ -1,3 +1,5 @@
+import { getCachedList, invalidateOwnerDataCache } from './listCache'
+
 import {
   addDoc,
   collection,
@@ -24,6 +26,8 @@ export type AuditAction =
   | 'bill_issued'
   | 'payment_recorded'
   | 'credit_applied'
+  | 'opening_balance_added'
+  | 'opening_balance_adjusted'
 
 export type AuditEntityType =
   | 'property'
@@ -38,6 +42,7 @@ export type AuditEntityType =
   | 'electricity_bill'
   | 'payment'
   | 'credit_application'
+  | 'opening_balance'
 
 export type AuditEventInput = {
   action: AuditAction
@@ -66,6 +71,8 @@ const allowedActions = new Set<AuditAction>([
   'bill_issued',
   'payment_recorded',
   'credit_applied',
+  'opening_balance_added',
+  'opening_balance_adjusted',
 ])
 
 const allowedEntityTypes = new Set<AuditEntityType>([
@@ -81,6 +88,7 @@ const allowedEntityTypes = new Set<AuditEntityType>([
   'electricity_bill',
   'payment',
   'credit_application',
+  'opening_balance',
 ])
 
 function isNonEmptyString(value: unknown, maximumLength: number): value is string {
@@ -127,6 +135,8 @@ export async function recordAuditEvent(
   ownerUid: string,
   input: AuditEventInput,
 ): Promise<boolean> {
+  // Called after committed business writes; clear list data before it is reloaded.
+  invalidateOwnerDataCache(ownerUid)
   const { dedupeKey, ...eventInput } = input
   const entityId = eventInput.entityId.trim().slice(0, 200)
   const entityLabel = eventInput.entityLabel.trim().slice(0, 160)
@@ -156,6 +166,9 @@ export async function recordAuditEvent(
     } else {
       await addDoc(eventsRef, eventData)
     }
+    // Invalidate again after commit so an overlapping read cannot cache the
+    // pre-audit snapshot while this append-only write is still in flight.
+    invalidateOwnerDataCache(ownerUid)
     return true
   } catch (error: unknown) {
     console.error(
@@ -167,18 +180,20 @@ export async function recordAuditEvent(
 }
 
 export async function listAuditEvents(ownerUid: string): Promise<AuditEventRecord[]> {
-  const { db } = getFirebaseServices()
-  const eventsRef = collection(db, 'users', ownerUid, 'auditEvents')
-  const snapshot = await getDocs(
-    query(eventsRef, orderBy('occurredAt', 'desc'), limit(500)),
-  )
+  return getCachedList(ownerUid, 'AuditEvents', async () => {
+    const { db } = getFirebaseServices()
+    const eventsRef = collection(db, 'users', ownerUid, 'auditEvents')
+    const snapshot = await getDocs(
+      query(eventsRef, orderBy('occurredAt', 'desc'), limit(500)),
+    )
 
-  const events: AuditEventRecord[] = []
-  for (const document of snapshot.docs) {
-    const event = readAuditEvent(document.id, document.data())
-    if (event) events.push(event)
-  }
-  return events
+    const events: AuditEventRecord[] = []
+    for (const document of snapshot.docs) {
+      const event = readAuditEvent(document.id, document.data())
+      if (event) events.push(event)
+    }
+    return events
+  })
 }
 
 export function getAuditErrorMessage(error: unknown): string {

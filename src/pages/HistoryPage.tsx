@@ -45,6 +45,7 @@ const entityOptions: { value: 'all' | AuditEntityType; label: string }[] = [
   { value: 'electricity_bill', label: 'Electricity bills' },
   { value: 'payment', label: 'Payments' },
   { value: 'credit_application', label: 'Advance applications' },
+  { value: 'opening_balance', label: 'Opening balances' },
 ]
 
 const actionLabels: Record<AuditEventRecord['action'], string> = {
@@ -58,6 +59,8 @@ const actionLabels: Record<AuditEventRecord['action'], string> = {
   bill_issued: 'Bill issued',
   payment_recorded: 'Payment recorded',
   credit_applied: 'Advance applied',
+  opening_balance_added: 'Opening balance added',
+  opening_balance_adjusted: 'Opening balance adjusted',
 }
 
 function eventIcon(entityType: AuditEntityType): LucideIcon {
@@ -74,6 +77,7 @@ function eventIcon(entityType: AuditEntityType): LucideIcon {
     case 'electricity_bill': return Bolt
     case 'payment':
     case 'credit_application': return Wallet
+    case 'opening_balance': return Wallet
     default: return Activity
   }
 }
@@ -173,7 +177,7 @@ export function HistoryPage({ ownerUid }: HistoryPageProps) {
     <div className="history-page">
       <header className="page-heading history-heading">
         <div>
-          <p className="eyebrow">MANAGEMENT</p>
+          <p className="eyebrow">Management</p>
           <h1>History &amp; Audit Trail</h1>
           <p className="page-description">
             Search an append-only timeline of changes recorded by this version of PropertyOS.

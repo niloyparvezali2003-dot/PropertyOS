@@ -43,6 +43,11 @@ const COLLECTIONS = [
   'auditEvents',
   'billBalances',
   'creditApplications',
+  'noteTasks',
+  'notes',
+  'openingBalanceAdjustments',
+  'openingBalanceCreditApplications',
+  'openingBalances',
   'currentAssignmentByMeter',
   'currentMeterByRoom',
   'currentRoomByTenant',
@@ -60,10 +65,10 @@ const COLLECTIONS = [
   'roomNameIndex',
   'roomRentRates',
   'rooms',
-  'settings',
   'tenantAssignments',
   'tenantCredits',
   'tenants',
+  'transactionReferences',
 ] as const
 
 // These are the only system document IDs allowed by the current rules.
@@ -200,7 +205,7 @@ export async function createManualFirestoreBackup(
   const collections: Record<string, BackupDocument[]> = {}
   const collectionCounts: Record<string, number> = {}
 
-  const totalTasks = COLLECTIONS.length + 1
+  const totalTasks = COLLECTIONS.length + 2
   let current = 0
   let documentCount = 0
 
@@ -211,9 +216,17 @@ export async function createManualFirestoreBackup(
       collectionName,
     })
 
-    const snapshot = await getDocs(
-      collection(db, 'users', ownerUid, collectionName),
-    )
+    let snapshot
+    try {
+      snapshot = await getDocs(
+        collection(db, 'users', ownerUid, collectionName),
+      )
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `Backup could not read collection "${collectionName}". ${detail}`,
+      )
+    }
 
     const records: BackupDocument[] = snapshot.docs.map(
       (snapshotDocument) => ({
@@ -226,6 +239,34 @@ export async function createManualFirestoreBackup(
     collectionCounts[collectionName] = records.length
     documentCount += records.length
     current += 1
+  }
+
+  // Workspace settings are restricted by Firestore rules to the exact
+  // users/{uid}/settings/general document. Do not query the whole collection.
+  onProgress?.({
+    current: current + 1,
+    total: totalTasks,
+    collectionName: 'settings',
+  })
+
+  try {
+    const settingsSnapshot = await getDoc(
+      doc(db, 'users', ownerUid, 'settings', 'general'),
+    )
+    const settingsRecords: BackupDocument[] = settingsSnapshot.exists()
+      ? [{
+          id: settingsSnapshot.id,
+          data: encodeFirestoreValue(settingsSnapshot.data()),
+        }]
+      : []
+
+    collections.settings = settingsRecords
+    collectionCounts.settings = settingsRecords.length
+    documentCount += settingsRecords.length
+    current += 1
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`Backup could not read workspace settings. ${detail}`)
   }
 
   // Query known sequence documents individually. The security rules do not

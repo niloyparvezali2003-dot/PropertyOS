@@ -196,7 +196,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
     <section className="tenant-assignment-panel" aria-labelledby="tenant-assignment-heading">
       <div className="tenant-assignment-heading-row">
         <div>
-          <p className="tenant-assignment-eyebrow">OCCUPANCY MANAGEMENT</p>
+          <p className="tenant-assignment-eyebrow">Occupancy management</p>
           <h2 id="tenant-assignment-heading">Tenant–Room Assignments</h2>
           <p className="tenant-assignment-intro">
             Record move-ins and move-outs while keeping permanent tenant and room IDs unchanged.

@@ -1,3 +1,5 @@
+import { getCachedList } from './listCache'
+
 import {
   collection,
   doc,
@@ -94,6 +96,14 @@ function getCreationTime(value: unknown): number {
     : Number.MAX_SAFE_INTEGER
 }
 
+// The legacy property-code migration is complete for the active app session.
+// New properties already receive codes in their normal creation transaction.
+const propertyCodeMigrationComplete = new Set<string>()
+
+export function resetPropertyCodeMigration(ownerUid: string): void {
+  propertyCodeMigrationComplete.delete(ownerUid)
+}
+
 /**
  * One-time, transaction-safe migration for properties without
  * propertyCode. Existing Firestore document IDs remain untouched.
@@ -101,6 +111,8 @@ function getCreationTime(value: unknown): number {
 async function ensurePropertyCodes(
   ownerUid: string,
 ): Promise<void> {
+  if (propertyCodeMigrationComplete.has(ownerUid)) return
+
   const { db } = getFirebaseServices()
 
   const propertiesRef = collection(
@@ -257,64 +269,68 @@ async function ensurePropertyCodes(
       })
     }
   })
+
+  propertyCodeMigrationComplete.add(ownerUid)
 }
 
 export async function listProperties(
   ownerUid: string,
 ): Promise<PropertyRecord[]> {
-  await ensurePropertyCodes(ownerUid)
+  return getCachedList(ownerUid, 'Properties', async () => {
+    await ensurePropertyCodes(ownerUid)
 
-  const { db } = getFirebaseServices()
+    const { db } = getFirebaseServices()
 
-  const propertiesRef = collection(
-    db,
-    'users',
-    ownerUid,
-    'properties',
-  )
+    const propertiesRef = collection(
+      db,
+      'users',
+      ownerUid,
+      'properties',
+    )
 
-  const snapshot = await getDocs(
-    query(propertiesRef, orderBy('createdAt', 'desc')),
-  )
+    const snapshot = await getDocs(
+      query(propertiesRef, orderBy('createdAt', 'desc')),
+    )
 
-  return snapshot.docs.map((document) => {
-    const data = document.data()
+    return snapshot.docs.map((document) => {
+      const data = document.data()
 
-    if (
-      typeof data.propertyCode !== 'string' ||
-      parseIdentifierNumber('property', data.propertyCode) === null ||
-      typeof data.name !== 'string' ||
-      typeof data.normalizedName !== 'string' ||
-      typeof data.address !== 'string' ||
-      typeof data.notes !== 'string' ||
-      typeof data.createdBy !== 'string' ||
-      typeof data.updatedBy !== 'string' ||
-      (data.status !== 'active' && data.status !== 'archived')
-    ) {
-      throw new Error(
-        `Property ${document.id} contains invalid stored data.`,
-      )
-    }
+      if (
+        typeof data.propertyCode !== 'string' ||
+        parseIdentifierNumber('property', data.propertyCode) === null ||
+        typeof data.name !== 'string' ||
+        typeof data.normalizedName !== 'string' ||
+        typeof data.address !== 'string' ||
+        typeof data.notes !== 'string' ||
+        typeof data.createdBy !== 'string' ||
+        typeof data.updatedBy !== 'string' ||
+        (data.status !== 'active' && data.status !== 'archived')
+      ) {
+        throw new Error(
+          `Property ${document.id} contains invalid stored data.`,
+        )
+      }
 
-    return {
-      id: document.id,
-      propertyCode: data.propertyCode,
-      name: data.name,
-      normalizedName: data.normalizedName,
-      address: data.address,
-      notes: data.notes,
-      status: data.status,
-      createdAt:
-        data.createdAt instanceof Timestamp
-          ? data.createdAt
-          : null,
-      updatedAt:
-        data.updatedAt instanceof Timestamp
-          ? data.updatedAt
-          : null,
-      createdBy: data.createdBy,
-      updatedBy: data.updatedBy,
-    }
+      return {
+        id: document.id,
+        propertyCode: data.propertyCode,
+        name: data.name,
+        normalizedName: data.normalizedName,
+        address: data.address,
+        notes: data.notes,
+        status: data.status,
+        createdAt:
+          data.createdAt instanceof Timestamp
+            ? data.createdAt
+            : null,
+        updatedAt:
+          data.updatedAt instanceof Timestamp
+            ? data.updatedAt
+            : null,
+        createdBy: data.createdBy,
+        updatedBy: data.updatedBy,
+      }
+    })
   })
 }
 

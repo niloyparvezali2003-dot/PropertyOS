@@ -196,7 +196,7 @@ export function PropertiesPage({
     <>
       <header className="page-heading">
         <div>
-          <p className="eyebrow">WORKSPACE</p>
+          <p className="eyebrow">Workspace</p>
           <h1>Properties</h1>
           <p className="page-description">
             Manage your properties and their basic information.

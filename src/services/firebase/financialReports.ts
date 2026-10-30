@@ -8,6 +8,8 @@ import {
   listPaymentBillBalances,
   listTenantCredits,
   listCreditApplications,
+  listOpeningBalanceCreditApplications,
+  type OpeningBalanceCreditApplicationRecord,
   type PaymentRecord,
   type PaymentBillBalanceRecord,
   type TenantCreditRecord,
@@ -18,6 +20,10 @@ import {
   listRentBills,
   type RentBillRecord,
 } from './rentBills'
+import {
+  listOpeningBalances,
+  type OpeningBalanceRecord,
+} from './openingBalances'
 
 export type FinancialReportsData = {
   rentBills: RentBillRecord[]
@@ -26,6 +32,8 @@ export type FinancialReportsData = {
   billBalances: PaymentBillBalanceRecord[]
   tenantCredits: TenantCreditRecord[]
   creditApplications: CreditApplicationRecord[]
+  openingBalances: OpeningBalanceRecord[]
+  openingBalanceCreditApplications: OpeningBalanceCreditApplicationRecord[]
 }
 
 /**
@@ -42,6 +50,8 @@ export async function loadFinancialReportsData(
     billBalances,
     tenantCredits,
     creditApplications,
+    openingBalances,
+    openingBalanceCreditApplications,
   ] = await Promise.all([
     listRentBills(ownerUid),
     listElectricityBills(ownerUid),
@@ -49,6 +59,8 @@ export async function loadFinancialReportsData(
     listPaymentBillBalances(ownerUid),
     listTenantCredits(ownerUid),
     listCreditApplications(ownerUid),
+    listOpeningBalances(ownerUid),
+    listOpeningBalanceCreditApplications(ownerUid),
   ])
 
   return {
@@ -58,5 +70,7 @@ export async function loadFinancialReportsData(
     billBalances,
     tenantCredits,
     creditApplications,
+    openingBalances,
+    openingBalanceCreditApplications,
   }
 }

@@ -1,3 +1,4 @@
+import { invalidateOwnerDataCache } from '../services/firebase/listCache'
 import {
   useCallback,
   useEffect,
@@ -46,6 +47,7 @@ import type {
 import type { RentBillRecord } from '../services/firebase/rentBills'
 import type { RoomRecord } from '../services/firebase/rooms'
 import type { TenantRecord } from '../services/firebase/tenants'
+import type { TenantAssignmentRecord } from '../services/firebase/tenantAssignments'
 
 import './ledgers.css'
 
@@ -65,6 +67,7 @@ type LedgerEntry = {
   type: string
   reference: string
   description: string
+  contextLabel: string
   debitMinor: number
   creditMinor: number
   balanceMinor: number
@@ -77,6 +80,19 @@ type LedgerPageProps = {
 
 // Refreshed from the signed-in account immediately before each PDF is generated.
 let activeStatementSettings: WorkspaceSettings = { ...DEFAULT_WORKSPACE_SETTINGS }
+
+// T&N House's statement palette. These are deliberately kept local to PDF
+// generation so the exported document remains branded even when browser CSS
+// or the user's display theme changes.
+const STATEMENT_COLORS = {
+  navy: [16, 44, 80] as [number, number, number],
+  gold: [213, 165, 46] as [number, number, number],
+  ivory: [246, 243, 235] as [number, number, number],
+  ink: [38, 54, 74] as [number, number, number],
+  muted: [100, 116, 139] as [number, number, number],
+  border: [232, 225, 213] as [number, number, number],
+  white: [255, 255, 255] as [number, number, number],
+}
 
 function pad(value: number): string {
   return String(value).padStart(2, '0')
@@ -171,24 +187,157 @@ function buildEntities(
 
   if (scope === 'room') {
     return data.rooms
-      .map((room: RoomRecord) => ({
-        id: room.id,
-        title: `Room ${room.roomNumber}`,
-        subtitle:
-          `${room.roomCode} · ${room.floorName} · ${room.propertyCode}`,
-      }))
+      .map((room: RoomRecord) => {
+        const currentAssignments = data.tenantAssignments.filter(
+          (assignment) =>
+            assignment.roomId === room.id &&
+            assignment.status === 'current' &&
+            assignment.moveOutDate === null,
+        )
+        const currentTenantLabel = currentAssignments.length === 1
+          ? `Current tenant: ${currentAssignments[0].tenantName}`
+          : currentAssignments.length > 1
+            ? 'Current tenant: Multiple assignments — review'
+            : 'Current tenant: None / vacant'
+
+        return {
+          id: room.id,
+          title: `Room ${room.roomNumber}`,
+          subtitle: [
+            room.roomCode,
+            room.floorName,
+            room.propertyCode,
+            currentTenantLabel,
+          ].filter(Boolean).join(' · '),
+        }
+      })
       .sort((a, b) => a.title.localeCompare(b.title))
   }
 
   return data.meters
-    .map((meter: MeterRecord) => ({
-      id: meter.id,
-      title: meter.meterCode,
-      subtitle: meter.serialNumber
-        ? `Serial: ${meter.serialNumber}`
-        : `Status: ${meter.status}`,
-    }))
+    .map((meter: MeterRecord) => {
+      const currentMeterAssignments = data.meterAssignments.filter(
+        (assignment) =>
+          assignment.meterId === meter.id &&
+          assignment.status === 'current' &&
+          assignment.endedOn === null,
+      )
+      const currentMeterAssignment = currentMeterAssignments.length === 1
+        ? currentMeterAssignments[0]
+        : null
+      const currentRoom = currentMeterAssignment
+        ? data.rooms.find((room) => room.id === currentMeterAssignment.roomId)
+        : undefined
+      const currentTenantAssignments = currentMeterAssignment
+        ? data.tenantAssignments.filter(
+            (assignment) =>
+              assignment.roomId === currentMeterAssignment.roomId &&
+              assignment.status === 'current' &&
+              assignment.moveOutDate === null,
+          )
+        : []
+      const currentTenantLabel = currentTenantAssignments.length === 1
+        ? `Current tenant: ${currentTenantAssignments[0].tenantName}`
+        : currentTenantAssignments.length > 1
+          ? 'Current tenant: Multiple assignments — review'
+          : currentMeterAssignment
+            ? 'Current tenant: None / vacant'
+            : currentMeterAssignments.length > 1
+              ? 'Current room: Multiple assignments — review'
+              : 'Not currently assigned'
+
+      return {
+        id: meter.id,
+        title: meter.meterCode,
+        subtitle: [
+          meter.serialNumber ? `Serial: ${meter.serialNumber}` : `Status: ${meter.status}`,
+          currentMeterAssignment
+            ? `Room ${currentRoom?.roomNumber ?? currentMeterAssignment.roomCode}`
+            : null,
+          currentMeterAssignment ? `Property ${currentMeterAssignment.propertyCode}` : null,
+          currentTenantLabel,
+        ].filter(Boolean).join(' · '),
+      }
+    })
     .sort((a, b) => a.title.localeCompare(b.title))
+}
+
+function findTenantAssignmentForElectricityBill(
+  data: LedgerSourceData,
+  bill: ElectricityBillRecord,
+): TenantAssignmentRecord | null {
+  // The reading is tied to an immutable meter-assignment snapshot. Use that
+  // assignment's room whenever available, then resolve the tenant on the
+  // actual meter-reading date (not the tenant's current room today).
+  const meterAssignment = data.meterAssignments.find(
+    (assignment) =>
+      assignment.id === bill.meterAssignmentId &&
+      assignment.meterId === bill.meterId,
+  )
+  const roomId = meterAssignment?.roomId ?? bill.roomId
+  const candidates = data.tenantAssignments.filter(
+    (assignment) =>
+      assignment.roomId === roomId &&
+      assignment.moveInDate <= bill.readingDate &&
+      (assignment.moveOutDate === null || assignment.moveOutDate >= bill.readingDate),
+  )
+
+  if (candidates.length === 1) return candidates[0] ?? null
+  if (candidates.length === 0) return null
+
+  // If data contains overlapping historical assignments, prefer one unique
+  // current record. Otherwise prefer the uniquely latest move-in date. A tie
+  // remains unresolved rather than assigning a bill to the wrong tenant.
+  const currentCandidates = candidates.filter(
+    (assignment) => assignment.status === 'current' && assignment.moveOutDate === null,
+  )
+  if (currentCandidates.length === 1) return currentCandidates[0] ?? null
+  if (currentCandidates.length > 1) return null
+
+  const latestMoveInDate = candidates.reduce(
+    (latest, assignment) => assignment.moveInDate > latest ? assignment.moveInDate : latest,
+    candidates[0].moveInDate,
+  )
+  const latestCandidates = candidates.filter(
+    (assignment) => assignment.moveInDate === latestMoveInDate,
+  )
+  return latestCandidates.length === 1 ? latestCandidates[0] ?? null : null
+}
+
+function electricityBillTenantLabel(
+  data: LedgerSourceData,
+  bill: ElectricityBillRecord,
+): string {
+  const tenantAssignment = findTenantAssignmentForElectricityBill(data, bill)
+  if (tenantAssignment) return tenantAssignment.tenantName
+
+  const meterAssignment = data.meterAssignments.find(
+    (assignment) => assignment.id === bill.meterAssignmentId && assignment.meterId === bill.meterId,
+  )
+  const roomId = meterAssignment?.roomId ?? bill.roomId
+  const candidates = data.tenantAssignments.filter(
+    (assignment) =>
+      assignment.roomId === roomId &&
+      assignment.moveInDate <= bill.readingDate &&
+      (assignment.moveOutDate === null || assignment.moveOutDate >= bill.readingDate),
+  )
+  return candidates.length > 1 ? 'Multiple assignments — review' : 'Unassigned'
+}
+
+function roomLabel(data: LedgerSourceData, roomId: string, fallbackCode: string): string {
+  const room = data.rooms.find((item) => item.id === roomId)
+  return room ? `Room ${room.roomNumber}` : `Room ${fallbackCode}`
+}
+
+function tenantPaymentRoomLabel(payment: PaymentRecord): string {
+  const roomNumbers = [...new Set(
+    payment.allocations
+      .filter((allocation) => allocation.roomNumber)
+      .map((allocation) => allocation.roomNumber),
+  )]
+  if (roomNumbers.length === 1) return `Room ${roomNumbers[0]}`
+  if (roomNumbers.length > 1) return `Rooms ${roomNumbers.join(', ')}`
+  return 'Unallocated / advance'
 }
 
 function safeMinor(value: number): number {
@@ -234,6 +383,7 @@ function entrySearchText(
     entry.type,
     entry.reference,
     entry.description,
+    entry.contextLabel,
     entry.date,
   ].join(' ').toLocaleLowerCase()
 }
@@ -341,7 +491,10 @@ function formatHumanReference(
     }
     case 'electricity': {
       const code = registry.electricityByMeterAssignmentId.get(sourceId) ?? fallbackCode
-      return `EB-${code}-${monthCode || '000000'}`
+      // Each dated meter reading is a separate immutable bill, including when
+      // multiple readings are recorded in the same billing month.
+      const readingDateCode = (billingMonth ?? '').replace(/\D/g, '').slice(0, 8)
+      return `EB-${code}-${readingDateCode || monthCode || '00000000'}`
     }
     case 'payment':
       return `P-${registry.paymentById.get(sourceId) ?? fallbackCode}`
@@ -359,32 +512,18 @@ function buildEntries(
   const entries: LedgerEntry[] = []
   const references = createTransactionReferenceRegistry(data)
 
-  const electricityById =
-    new Map<string, ElectricityBillRecord>(
-      data.electricityBills.map(
-        (bill) => [bill.id, bill] as const,
-      ),
-    )
+  const electricityById = new Map<string, ElectricityBillRecord>(
+    data.electricityBills.map((bill) => [bill.id, bill] as const),
+  )
 
   const add = (
-    entry: Omit<
-      LedgerEntry,
-      'balanceMinor' | 'searchableText'
-    >,
+    entry: Omit<LedgerEntry, 'balanceMinor' | 'searchableText'>,
   ) => {
     const debitMinor = safeMinor(entry.debitMinor)
     const creditMinor = safeMinor(entry.creditMinor)
+    if (debitMinor === 0 && creditMinor === 0) return
 
-    if (debitMinor === 0 && creditMinor === 0) {
-      return
-    }
-
-    const normalized = {
-      ...entry,
-      debitMinor,
-      creditMinor,
-    }
-
+    const normalized = { ...entry, debitMinor, creditMinor }
     entries.push({
       ...normalized,
       balanceMinor: 0,
@@ -392,21 +531,47 @@ function buildEntries(
     })
   }
 
-  // Rent bills.
-  for (const bill of data.rentBills) {
-    if (
-      bill.status !== 'issued' ||
-      !safeMinor(bill.totalMinor)
-    ) {
-      continue
+  // TENANT: include both rent and electricity charges.
+  // ROOM: include rent charges only.
+  // An opening balance belongs to the tenant across their historical rooms.
+  if (scope === 'tenant') {
+    const openingBalance = data.openingBalances.find((item) => item.tenantId === entityId)
+    if (openingBalance) {
+      add({
+        id: `opening-balance:${openingBalance.id}`,
+        date: openingBalance.effectiveDate,
+        time: '—',
+        sortMinute: 0,
+        type: 'Opening balance',
+        reference: `OB-${openingBalance.tenantCode}`,
+        description: openingBalance.note || 'Previous outstanding before PropertyOS',
+        contextLabel: 'Tenant-level previous due',
+        debitMinor: openingBalance.originalAmountMinor,
+        creditMinor: 0,
+      })
     }
+    for (const adjustment of data.openingBalanceAdjustments) {
+      if (adjustment.tenantId !== entityId) continue
+      add({
+        id: `opening-balance-adjustment:${adjustment.id}`,
+        date: adjustment.effectiveDate,
+        time: getTimeFromTimestamp(adjustment.createdAt),
+        sortMinute: getSortMinute(adjustment.createdAt),
+        type: adjustment.direction === 'increase' ? 'Opening balance increase' : 'Opening balance reduction',
+        reference: adjustment.adjustmentNumber,
+        description: adjustment.note,
+        contextLabel: 'Opening balance adjustment',
+        debitMinor: adjustment.direction === 'increase' ? adjustment.amountMinor : 0,
+        creditMinor: adjustment.direction === 'decrease' ? adjustment.amountMinor : 0,
+      })
+    }
+  }
 
+  for (const bill of data.rentBills) {
+    if (bill.status !== 'issued' || !safeMinor(bill.totalMinor)) continue
     const matches =
-      scope === 'tenant'
-        ? bill.tenantId === entityId
-        : scope === 'room' &&
-          bill.roomId === entityId
-
+      (scope === 'tenant' && bill.tenantId === entityId) ||
+      (scope === 'room' && bill.roomId === entityId)
     if (!matches) continue
 
     add({
@@ -416,81 +581,50 @@ function buildEntries(
       sortMinute: getSortMinute(bill.createdAt),
       type: 'Rent bill',
       reference: formatHumanReference(references, 'rent', bill.assignmentId, bill.billingMonth),
-      description:
-        `${formatMonth(bill.billingMonth)} · ` +
-        `Room ${bill.roomNumber} · ${bill.tenantName}`,
+      description: `${formatMonth(bill.billingMonth)} · ${bill.tenantName} · ${bill.roomCode}`,
+      contextLabel: scope === 'tenant' ? `Room ${bill.roomNumber}` : bill.tenantName,
       debitMinor: bill.totalMinor,
       creditMinor: 0,
     })
   }
 
-  // Electricity bills do not contain a tenant snapshot.
-  // Match them to exactly one assignment by room and reading date.
-  // This follows the assignment matching approach used by Payments.
+  // TENANT: include electricity bills for the tenant assigned on reading date.
+  // METER: include only electricity charges for the selected meter.
+  // ROOM: intentionally excludes electricity calculations.
   for (const bill of data.electricityBills) {
-    if (
-      bill.status !== 'issued' ||
-      !safeMinor(bill.amountMinor)
-    ) {
-      continue
-    }
+    if (bill.status !== 'issued' || !safeMinor(bill.amountMinor)) continue
+    if (scope === 'room') continue
 
-    const linkedTenantAssignments =
-      data.tenantAssignments.filter((assignment) =>
-        assignment.roomId === bill.roomId &&
-        assignment.moveInDate <= bill.readingDate &&
-        (
-          assignment.moveOutDate === null ||
-          assignment.moveOutDate >= bill.readingDate
-        ),
-      )
-
-    const linkedTenantAssignment =
-      linkedTenantAssignments.length === 1
-        ? linkedTenantAssignments[0]
-        : null
-
+    const linkedTenantAssignment = findTenantAssignmentForElectricityBill(data, bill)
+    const linkedTenantLabel = electricityBillTenantLabel(data, bill)
     const matches =
-      scope === 'tenant'
-        ? linkedTenantAssignment?.tenantId === entityId
-        : scope === 'room'
-          ? bill.roomId === entityId
-          : bill.meterId === entityId
-
+      (scope === 'tenant' && linkedTenantAssignment?.tenantId === entityId) ||
+      (scope === 'meter' && bill.meterId === entityId)
     if (!matches) continue
 
+    const roomText = roomLabel(data, bill.roomId, bill.roomCode)
     add({
       id: `electricity:${bill.id}`,
       date: electricityDate(bill),
       time: getTimeFromTimestamp(bill.createdAt),
       sortMinute: getSortMinute(bill.createdAt),
       type: 'Electricity bill',
-      reference: formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.billingMonth),
-      description:
-        `${formatMonth(bill.billingMonth)} · ` +
-        `${bill.roomCode} · ${bill.meterCode} · ` +
-        `${bill.unitsConsumed} units` +
-        (
-          linkedTenantAssignment
-            ? ` · ${linkedTenantAssignment.tenantName}`
-            : ''
-        ),
+      reference: formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.readingDate),
+      description: `${formatMonth(bill.billingMonth)} · ${roomText} · ${bill.meterCode} · Property ${bill.propertyCode} · ${bill.unitsConsumed} units`,
+      contextLabel: scope === 'tenant' ? roomText : linkedTenantLabel,
       debitMinor: bill.amountMinor,
       creditMinor: 0,
     })
   }
 
-  // Payments:
-  // - Tenant ledger credits the full receipt once.
-  // - Room ledger credits only allocations belonging to that room.
-  // - Meter ledger credits only electricity allocations belonging to that meter.
+  // Tenant ledger: credit each receipt exactly once, including its unallocated
+  // advance portion. Its room context comes from the actual allocations.
+  // Room ledger: credit rent allocations only.
+  // Meter ledger: credit electricity allocations for the selected meter only.
   for (const payment of data.payments) {
     if (payment.status !== 'posted') continue
 
-    if (
-      scope === 'tenant' &&
-      payment.tenantId === entityId
-    ) {
+    if (scope === 'tenant' && payment.tenantId === entityId) {
       add({
         id: `payment:${payment.id}`,
         date: payment.paidOn,
@@ -498,47 +632,26 @@ function buildEntries(
         sortMinute: paymentSortMinute(payment),
         type: 'Payment received',
         reference: formatHumanReference(references, 'payment', payment.id),
-        description:
-          `${payment.tenantName} · ` +
-          `${payment.method.replaceAll('_', ' ')}` +
-          (
-            payment.reference
-              ? ` · ${payment.reference}`
-              : ''
-          ),
+        description: `${payment.method.replaceAll('_', ' ')}${payment.reference ? ` · ${payment.reference}` : ''}`,
+        contextLabel: tenantPaymentRoomLabel(payment),
         debitMinor: 0,
         creditMinor: payment.amountMinor,
       })
-
       continue
     }
 
     if (scope === 'room') {
       for (const allocation of payment.allocations) {
-        if (allocation.roomId !== entityId) continue
-
-        const linkedBill =
-          allocation.billType === 'electricity'
-            ? electricityById.get(allocation.billId)
-            : undefined
-
+        if (allocation.billType !== 'rent' || allocation.roomId !== entityId) continue
         add({
-          id:
-            `payment:${payment.id}:` +
-            `${allocation.billType}:${allocation.billId}`,
+          id: `payment:${payment.id}:rent:${allocation.billId}`,
           date: payment.paidOn,
           time: paymentTime(payment),
           sortMinute: paymentSortMinute(payment),
           type: 'Payment allocated',
           reference: formatHumanReference(references, 'payment', payment.id),
-          description:
-            `${allocation.billType === 'rent' ? 'Rent' : 'Electricity'} bill · ` +
-            `Room ${allocation.roomNumber} · ${payment.tenantName}` +
-            (
-              linkedBill
-                ? ` · ${linkedBill.meterCode}`
-                : ''
-            ),
+          description: `Rent bill · ${allocation.billingMonth} · ${payment.method.replaceAll('_', ' ')}`,
+          contextLabel: allocation.tenantName,
           debitMinor: 0,
           creditMinor: allocation.amountMinor,
         })
@@ -547,28 +660,19 @@ function buildEntries(
 
     if (scope === 'meter') {
       for (const allocation of payment.allocations) {
-        if (allocation.billType !== 'electricity') {
-          continue
-        }
-
+        if (allocation.billType !== 'electricity') continue
         const bill = electricityById.get(allocation.billId)
-
-        if (!bill || bill.meterId !== entityId) {
-          continue
-        }
+        if (!bill || bill.meterId !== entityId) continue
 
         add({
-          id:
-            `payment:${payment.id}:` +
-            `electricity:${allocation.billId}`,
+          id: `payment:${payment.id}:electricity:${allocation.billId}`,
           date: payment.paidOn,
           time: paymentTime(payment),
           sortMinute: paymentSortMinute(payment),
           type: 'Payment allocated',
           reference: formatHumanReference(references, 'payment', payment.id),
-          description:
-            `Electricity bill · ${bill.roomCode} · ` +
-            `${bill.billingMonth} · ${payment.tenantName}`,
+          description: `Electricity bill · ${roomLabel(data, bill.roomId, bill.roomCode)} · ${bill.billingMonth} · ${bill.meterCode}`,
+          contextLabel: allocation.tenantName,
           debitMinor: 0,
           creditMinor: allocation.amountMinor,
         })
@@ -576,64 +680,40 @@ function buildEntries(
     }
   }
 
-  /*
-   * Advance applications are shown in room/meter ledgers when the advance
-   * is actually applied to that room or meter.
-   *
-   * They are deliberately NOT added as another credit to the tenant ledger:
-   * the original receipt already credited the full payment amount there.
-   * This avoids counting one payment twice.
-   */
+  // Advance applications are already represented by the original receipt in
+  // the tenant ledger. Show them only in their matching rent-room or meter view.
   if (scope !== 'tenant') {
     for (const application of data.creditApplications) {
       if (application.status !== 'posted') continue
+      const allocation = application.allocation as PaymentAllocationFormValues
 
-      const allocation =
-        application.allocation as PaymentAllocationFormValues
-
-      if (
-        scope === 'room' &&
-        allocation.roomId === entityId
-      ) {
+      if (scope === 'room' && allocation.billType === 'rent' && allocation.roomId === entityId) {
         add({
           id: `credit-application:${application.id}`,
-          date:
-            getDateFromTimestamp(application.createdAt) ??
-            allocation.referenceDate,
+          date: getDateFromTimestamp(application.createdAt) ?? allocation.referenceDate,
           time: getTimeFromTimestamp(application.createdAt),
           sortMinute: getSortMinute(application.createdAt),
           type: 'Advance applied',
           reference: formatHumanReference(references, 'advance', application.id),
-          description:
-            `${allocation.billType === 'rent' ? 'Rent' : 'Electricity'} bill · ` +
-            `Room ${allocation.roomNumber} · ${application.tenantName}`,
+          description: `Rent bill · ${allocation.billingMonth}`,
+          contextLabel: application.tenantName,
           debitMinor: 0,
           creditMinor: application.amountMinor,
         })
       }
 
-      if (
-        scope === 'meter' &&
-        allocation.billType === 'electricity'
-      ) {
+      if (scope === 'meter' && allocation.billType === 'electricity') {
         const bill = electricityById.get(allocation.billId)
-
-        if (!bill || bill.meterId !== entityId) {
-          continue
-        }
-
+        if (!bill || bill.meterId !== entityId) continue
         add({
           id: `credit-application:${application.id}`,
-          date:
-            getDateFromTimestamp(application.createdAt) ??
-            allocation.referenceDate,
+          date: getDateFromTimestamp(application.createdAt) ?? allocation.referenceDate,
           time: getTimeFromTimestamp(application.createdAt),
           sortMinute: getSortMinute(application.createdAt),
           type: 'Advance applied',
           reference: formatHumanReference(references, 'advance', application.id),
-          description:
-            `Electricity bill · ${bill.roomCode} · ` +
-            `${bill.billingMonth} · ${application.tenantName}`,
+          description: `Electricity bill · ${roomLabel(data, bill.roomId, bill.roomCode)} · ${bill.billingMonth} · ${bill.meterCode}`,
+          contextLabel: application.tenantName,
           debitMinor: 0,
           creditMinor: application.amountMinor,
         })
@@ -641,35 +721,22 @@ function buildEntries(
     }
   }
 
-  // Oldest transactions first, so each balance is cumulative.
+  // Oldest transactions first, so every scope gets a cumulative balance for
+  // its own financial category (tenant = rent + electricity, room = rent,
+  // meter = electricity).
   entries.sort((a, b) => {
     const byDate = a.date.localeCompare(b.date)
-
     if (byDate !== 0) return byDate
-
-    if (a.sortMinute !== b.sortMinute) {
-      return a.sortMinute - b.sortMinute
-    }
-
-    const typeOrder =
-      (a.debitMinor > 0 ? 0 : 1) -
-      (b.debitMinor > 0 ? 0 : 1)
-
+    if (a.sortMinute !== b.sortMinute) return a.sortMinute - b.sortMinute
+    const typeOrder = (a.debitMinor > 0 ? 0 : 1) - (b.debitMinor > 0 ? 0 : 1)
     if (typeOrder !== 0) return typeOrder
-
     return a.id.localeCompare(b.id)
   })
 
   let runningBalance = 0
-
   return entries.map((entry) => {
-    runningBalance +=
-      entry.debitMinor - entry.creditMinor
-
-    return {
-      ...entry,
-      balanceMinor: runningBalance,
-    }
+    runningBalance += entry.debitMinor - entry.creditMinor
+    return { ...entry, balanceMinor: runningBalance }
   })
 }
 
@@ -751,20 +818,25 @@ function drawStatementHeader(
   const pageWidth = pdf.internal.pageSize.getWidth()
   const margin = 32
 
+  // Consistent navy masthead on every continuation page.
+  pdf.setFillColor(...STATEMENT_COLORS.navy)
+  pdf.rect(0, 0, pageWidth, 70, 'F')
+
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(16)
-  pdf.setTextColor(28, 42, 62)
+  pdf.setTextColor(...STATEMENT_COLORS.white)
   pdf.text('ACCOUNT STATEMENT', margin, 27)
 
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(9)
+  pdf.setTextColor(...STATEMENT_COLORS.white)
   pdf.text(`${scopeLabel(scope)} - ${entity.title}`, margin, 43, {
     maxWidth: pageWidth - margin * 2 - 180,
   })
 
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(7.5)
-  pdf.setTextColor(90, 100, 114)
+  pdf.setTextColor(226, 232, 240)
   pdf.text(entity.subtitle, margin, 55, {
     maxWidth: pageWidth - margin * 2 - 180,
   })
@@ -775,9 +847,8 @@ function drawStatementHeader(
     { align: 'right' },
   )
 
-  pdf.setDrawColor(211, 216, 224)
-  pdf.setLineWidth(0.7)
-  pdf.line(margin, 63, pageWidth - margin, 63)
+  pdf.setFillColor(...STATEMENT_COLORS.gold)
+  pdf.rect(0, 68, pageWidth, 2, 'F')
 }
 
 function drawFirstPageBranding(
@@ -788,10 +859,16 @@ function drawFirstPageBranding(
 ): void {
   const pageWidth = pdf.internal.pageSize.getWidth()
   const margin = 32
+  const logoSize = 52
+  const brandTextX = margin + logoSize + 10
+
+  // The branded first-page masthead matches continuation pages.
+  pdf.setFillColor(...STATEMENT_COLORS.navy)
+  pdf.rect(0, 0, pageWidth, 79, 'F')
 
   if (logoDataUrl) {
     try {
-      pdf.addImage(logoDataUrl, 'PNG', margin, 10, 40, 40)
+      pdf.addImage(logoDataUrl, 'PNG', margin, 13, logoSize, logoSize)
     } catch {
       // Keep the text branding even if the image format is unsupported.
     }
@@ -799,47 +876,49 @@ function drawFirstPageBranding(
 
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(16)
-  pdf.setTextColor(28, 42, 62)
-  pdf.text(activeStatementSettings.houseName, margin + 49, 25)
+  pdf.setTextColor(...STATEMENT_COLORS.white)
+  pdf.text(activeStatementSettings.houseName || "T&N House's", brandTextX, 27)
 
   pdf.setFontSize(8)
-  pdf.setTextColor(36, 48, 65)
-  pdf.text('ACCOUNT STATEMENT', margin + 49, 41)
+  pdf.setTextColor(243, 217, 143)
+  pdf.text('ACCOUNT STATEMENT', brandTextX, 43)
 
   pdf.setFontSize(8.5)
-  pdf.text(scopeLabel(scope) + ' - ' + entity.title, margin + 49, 54, {
+  pdf.setTextColor(...STATEMENT_COLORS.white)
+  pdf.text(scopeLabel(scope) + ' - ' + entity.title, brandTextX, 55, {
     maxWidth: pageWidth - margin * 2 - 225,
   })
 
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(7)
-  pdf.setTextColor(90, 100, 114)
-  pdf.text(entity.subtitle, margin + 49, 66, {
+  pdf.setTextColor(226, 232, 240)
+  pdf.text(entity.subtitle, brandTextX, 67, {
     maxWidth: pageWidth - margin * 2 - 225,
   })
 
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(7.5)
-  pdf.setTextColor(44, 55, 70)
+  pdf.setTextColor(243, 217, 143)
   pdf.text('Contract Number: ' + activeStatementSettings.contractNumber, pageWidth - margin, 18, {
     align: 'right',
   })
 
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(7.2)
+  pdf.setTextColor(...STATEMENT_COLORS.white)
   pdf.text('Bkash/Nagad/Rocket/Upay: ' + activeStatementSettings.paymentContact, pageWidth - margin, 30, {
     align: 'right',
   })
 
-  pdf.setTextColor(90, 100, 114)
+  pdf.setTextColor(226, 232, 240)
   pdf.text('Generated ' + new Date().toLocaleString('en-GB'), pageWidth - margin, 43, {
     align: 'right',
   })
 
-  pdf.setDrawColor(211, 216, 224)
-  pdf.setLineWidth(0.7)
-  pdf.line(margin, 77, pageWidth - margin, 77)
+  pdf.setFillColor(...STATEMENT_COLORS.gold)
+  pdf.rect(0, 77, pageWidth, 2, 'F')
 }
+
 function readingRecordedOnDate(
   data: LedgerSourceData,
   roomId: string,
@@ -890,8 +969,11 @@ function addStatementHistoryTable(
   drawStatementHeader(pdf, scope, entity)
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(10)
-  pdf.setTextColor(36, 48, 65)
+  pdf.setTextColor(...STATEMENT_COLORS.navy)
   pdf.text(title, 32, 81)
+  pdf.setDrawColor(...STATEMENT_COLORS.gold)
+  pdf.setLineWidth(0.8)
+  pdf.line(32, 86, pdf.internal.pageSize.getWidth() - 32, 86)
 
   autoTable(pdf, {
     head: table.head,
@@ -904,23 +986,34 @@ function addStatementHistoryTable(
       cellPadding: 4,
       overflow: 'linebreak',
       valign: 'middle',
-      textColor: [40, 48, 59],
-      lineColor: [225, 228, 233],
+      textColor: STATEMENT_COLORS.ink,
+      lineColor: STATEMENT_COLORS.border,
       lineWidth: 0.35,
     },
     headStyles: {
-      fillColor: [38, 55, 79],
-      textColor: [255, 255, 255],
+      fillColor: STATEMENT_COLORS.navy,
+      textColor: STATEMENT_COLORS.white,
       fontStyle: 'bold',
     },
-    alternateRowStyles: { fillColor: [247, 248, 250] },
+    alternateRowStyles: { fillColor: STATEMENT_COLORS.ivory },
+    didDrawCell: (hookData) => {
+      if (hookData.section === 'head' && hookData.row.index === 0) {
+        const { x, y, width, height } = hookData.cell
+        pdf.setDrawColor(...STATEMENT_COLORS.gold)
+        pdf.setLineWidth(1.1)
+        pdf.line(x, y + height, x + width, y + height)
+      }
+    },
     didDrawPage: (hookData) => {
       drawStatementHeader(pdf, scope, entity)
       if (hookData.pageNumber > 1) {
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10)
-        pdf.setTextColor(36, 48, 65)
+        pdf.setTextColor(...STATEMENT_COLORS.navy)
         pdf.text(title, 32, 81)
+        pdf.setDrawColor(...STATEMENT_COLORS.gold)
+        pdf.setLineWidth(0.8)
+        pdf.line(32, 86, pdf.internal.pageSize.getWidth() - 32, 86)
       }
     },
   })
@@ -966,16 +1059,18 @@ async function downloadLedgerStatementPdf(
 
   summaryCards.forEach((card, index) => {
     const x = margin + index * (cardWidth + gap)
-    pdf.setFillColor(246, 247, 249)
-    pdf.setDrawColor(230, 233, 237)
+    pdf.setFillColor(...STATEMENT_COLORS.ivory)
+    pdf.setDrawColor(...STATEMENT_COLORS.border)
     pdf.roundedRect(x, summaryY, cardWidth, summaryHeight, 4, 4, 'FD')
+    pdf.setFillColor(...STATEMENT_COLORS.gold)
+    pdf.rect(x + 1, summaryY + 5, 2.5, summaryHeight - 10, 'F')
     pdf.setFont('helvetica', 'normal')
     pdf.setFontSize(7)
-    pdf.setTextColor(88, 98, 112)
+    pdf.setTextColor(...STATEMENT_COLORS.muted)
     pdf.text(card.label, x + 9, summaryY + 12)
     pdf.setFont('helvetica', 'bold')
     pdf.setFontSize(10)
-    pdf.setTextColor(29, 42, 60)
+    pdf.setTextColor(...STATEMENT_COLORS.navy)
     pdf.text(card.value, x + 9, summaryY + 28, {
       maxWidth: cardWidth - 18,
     })
@@ -983,8 +1078,11 @@ async function downloadLedgerStatementPdf(
 
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(10)
-  pdf.setTextColor(36, 48, 65)
+  pdf.setTextColor(...STATEMENT_COLORS.navy)
   pdf.text('TRANSACTION HISTORY', margin, 141)
+  pdf.setDrawColor(...STATEMENT_COLORS.gold)
+  pdf.setLineWidth(0.8)
+  pdf.line(margin, 145, pageWidth - margin, 145)
 
   const transactionRows = entries.length > 0
     ? entries.map((entry) => {
@@ -992,18 +1090,20 @@ async function downloadLedgerStatementPdf(
       return [
         `${formatDate(entry.date)}${time}`,
         entry.type,
+        entry.contextLabel,
         `${entry.reference}\n${entry.description}`,
         entry.debitMinor ? statementMoney(entry.debitMinor) : '-',
         entry.creditMinor ? statementMoney(entry.creditMinor) : '-',
         statementBalance(entry.balanceMinor),
       ]
     })
-    : [['-', '-', 'No financial transactions recorded', '-', '-', '-']]
+    : [['-', '-', '-', 'No financial transactions recorded', '-', '-', '-']]
 
   autoTable(pdf, {
     head: [[
       'Date & Time',
       'Transaction Type',
+      scope === 'tenant' ? 'Room' : 'Tenant',
       'Transaction Details / Reference',
       'Debit',
       'Credit',
@@ -1018,37 +1118,52 @@ async function downloadLedgerStatementPdf(
       cellPadding: 4.5,
       overflow: 'linebreak',
       valign: 'middle',
-      textColor: [40, 48, 59],
-      lineColor: [225, 228, 233],
+      textColor: STATEMENT_COLORS.ink,
+      lineColor: STATEMENT_COLORS.border,
       lineWidth: 0.35,
     },
     headStyles: {
-      fillColor: [38, 55, 79],
-      textColor: [255, 255, 255],
+      fillColor: STATEMENT_COLORS.navy,
+      textColor: STATEMENT_COLORS.white,
       fontStyle: 'bold',
     },
-    alternateRowStyles: { fillColor: [247, 248, 250] },
+    alternateRowStyles: { fillColor: STATEMENT_COLORS.ivory },
     columnStyles: {
-      0: { cellWidth: 88 },
-      1: { cellWidth: 100 },
-      2: { cellWidth: 330 },
-      3: { cellWidth: 78, halign: 'right' },
+      0: { cellWidth: 78 },
+      1: { cellWidth: 88 },
+      2: { cellWidth: 92 },
+      3: { cellWidth: 270 },
       4: { cellWidth: 78, halign: 'right' },
-      5: { cellWidth: 94, halign: 'right' },
+      5: { cellWidth: 78, halign: 'right' },
+      6: { cellWidth: 94, halign: 'right' },
+    },
+    didDrawCell: (hookData) => {
+      if (hookData.section === 'head' && hookData.row.index === 0) {
+        const { x, y, width, height } = hookData.cell
+        pdf.setDrawColor(...STATEMENT_COLORS.gold)
+        pdf.setLineWidth(1.1)
+        pdf.line(x, y + height, x + width, y + height)
+      }
     },
     didDrawPage: (hookData) => {
       if (hookData.pageNumber === 1) {
         drawFirstPageBranding(pdf, scope, entity, logoDataUrl)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10)
-        pdf.setTextColor(36, 48, 65)
+        pdf.setTextColor(...STATEMENT_COLORS.navy)
         pdf.text('TRANSACTION HISTORY', margin, 141)
+        pdf.setDrawColor(...STATEMENT_COLORS.gold)
+        pdf.setLineWidth(0.8)
+        pdf.line(margin, 145, pageWidth - margin, 145)
       } else {
         drawStatementHeader(pdf, scope, entity)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10)
-        pdf.setTextColor(36, 48, 65)
+        pdf.setTextColor(...STATEMENT_COLORS.navy)
         pdf.text('TRANSACTION HISTORY', margin, 81)
+        pdf.setDrawColor(...STATEMENT_COLORS.gold)
+        pdf.setLineWidth(0.8)
+        pdf.line(margin, 86, pageWidth - margin, 86)
       }
     },
   })
@@ -1122,27 +1237,7 @@ async function downloadLedgerStatementPdf(
       ]),
     })
 
-    const roomReadings = data.electricityBills
-      .filter((bill) => bill.roomId === entity.id)
-      .sort((a, b) => a.readingDate.localeCompare(b.readingDate))
 
-    addStatementHistoryTable(pdf, scope, entity, 'RECORDED ELECTRICITY READINGS', {
-      head: [[
-        'Reading date', 'Month', 'Meter', 'Previous', 'Current',
-        'Units', 'Rate / unit', 'Amount', 'Bill reference',
-      ]],
-      body: roomReadings.map((bill) => [
-        bill.readingDate,
-        bill.billingMonth,
-        bill.meterCode,
-        bill.previousReading.toLocaleString('en-BD'),
-        bill.currentReading.toLocaleString('en-BD'),
-        bill.unitsConsumed.toLocaleString('en-BD'),
-        statementMoney(bill.pricePerUnitMinor),
-        statementMoney(bill.amountMinor),
-        formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.billingMonth),
-      ]),
-    })
   }
 
   if (scope === 'meter') {
@@ -1152,13 +1247,20 @@ async function downloadLedgerStatementPdf(
 
     addStatementHistoryTable(pdf, scope, entity, 'METER ASSIGNMENT HISTORY', {
       head: [[
-        'Reference', 'Assigned on', 'Room', 'Property', 'Initial reading',
+        'Reference', 'Assigned on', 'Room', 'Tenant history', 'Property', 'Initial reading',
         'Ended on', 'Final reading', 'End reason', 'Status',
       ]],
       body: meterAssignments.map((assignment) => [
         formatHumanReference(references, 'meter', assignment.id),
         assignment.assignedOn || '-',
         assignment.roomCode,
+        [...new Set(data.tenantAssignments
+          .filter((tenantAssignment) =>
+            tenantAssignment.roomId === assignment.roomId &&
+            tenantAssignment.moveInDate <= (assignment.endedOn ?? '9999-12-31') &&
+            (tenantAssignment.moveOutDate === null || tenantAssignment.moveOutDate >= assignment.assignedOn),
+          )
+          .map((tenantAssignment) => tenantAssignment.tenantName))].join(', ') || 'Unassigned',
         assignment.propertyCode,
         assignment.initialReading.toLocaleString('en-BD'),
         assignment.endedOn || 'Current',
@@ -1176,19 +1278,20 @@ async function downloadLedgerStatementPdf(
 
     addStatementHistoryTable(pdf, scope, entity, 'RECORDED METER READINGS', {
       head: [[
-        'Reading date', 'Month', 'Room', 'Previous', 'Current',
+        'Reading date', 'Month', 'Room', 'Tenant on reading date', 'Previous', 'Current',
         'Units', 'Rate / unit', 'Amount', 'Bill reference',
       ]],
       body: meterReadings.map((bill) => [
         bill.readingDate,
         bill.billingMonth,
-        bill.roomCode,
+        roomLabel(data, bill.roomId, bill.roomCode),
+        electricityBillTenantLabel(data, bill),
         bill.previousReading.toLocaleString('en-BD'),
         bill.currentReading.toLocaleString('en-BD'),
         bill.unitsConsumed.toLocaleString('en-BD'),
         statementMoney(bill.pricePerUnitMinor),
         statementMoney(bill.amountMinor),
-        formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.billingMonth),
+        formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.readingDate),
       ]),
     })
   }
@@ -1196,12 +1299,12 @@ async function downloadLedgerStatementPdf(
   const totalPages = pdf.getNumberOfPages()
   for (let page = 1; page <= totalPages; page++) {
     pdf.setPage(page)
-    pdf.setDrawColor(211, 216, 224)
-    pdf.setLineWidth(0.5)
+    pdf.setDrawColor(...STATEMENT_COLORS.border)
+    pdf.setLineWidth(0.55)
     pdf.line(margin, pageHeight - 27, pageWidth - margin, pageHeight - 27)
     pdf.setFont('helvetica', 'normal')
     pdf.setFontSize(7.5)
-    pdf.setTextColor(95, 103, 115)
+    pdf.setTextColor(...STATEMENT_COLORS.muted)
     pdf.text(`Page ${page} of ${totalPages}`, pageWidth - margin, pageHeight - 12, {
       align: 'right',
     })
@@ -1247,6 +1350,7 @@ export function LedgersPage({
   const loadData = useCallback(async (
     isRefresh = false,
   ) => {
+    if (isRefresh) invalidateOwnerDataCache(ownerUid)
     setError('')
 
     if (isRefresh) {
@@ -1555,6 +1659,49 @@ export function LedgersPage({
         </article>
       </div>
 
+      {scope === 'tenant' && selectedEntityId && data && (
+        <section className="ledger-occupancy-card" aria-label="Tenant occupancy history">
+          <div className="ledger-occupancy-heading">
+            <div>
+              <h2>Tenant occupancy history</h2>
+              <p>Every room this tenant has occupied, in chronological order.</p>
+            </div>
+            <span>{data.tenantAssignments.filter((assignment) => assignment.tenantId === selectedEntityId).length} stays</span>
+          </div>
+          {data.tenantAssignments.filter((assignment) => assignment.tenantId === selectedEntityId).length === 0 ? (
+            <div className="ledger-occupancy-empty">No occupancy history is recorded for this tenant.</div>
+          ) : (
+            <div className="ledger-occupancy-table-wrap">
+              <table className="ledger-occupancy-table">
+                <thead>
+                  <tr>
+                    <th>Room</th>
+                    <th>Floor / Property</th>
+                    <th>Move-in</th>
+                    <th>Move-out</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.tenantAssignments
+                    .filter((assignment) => assignment.tenantId === selectedEntityId)
+                    .sort((a, b) => a.moveInDate.localeCompare(b.moveInDate))
+                    .map((assignment) => (
+                      <tr key={assignment.id}>
+                        <td data-label="Room"><strong>Room {assignment.roomNumber}</strong><small>{assignment.roomCode}</small></td>
+                        <td data-label="Floor / Property">{assignment.floorName} · {assignment.propertyCode}</td>
+                        <td data-label="Move-in">{formatDate(assignment.moveInDate)}</td>
+                        <td data-label="Move-out">{assignment.moveOutDate ? formatDate(assignment.moveOutDate) : 'Current'}</td>
+                        <td data-label="Status"><span className={assignment.status === 'current' ? 'ledger-occupancy-status is-current' : 'ledger-occupancy-status'}>{assignment.status === 'current' ? 'Current' : 'Ended'}</span></td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
       <section
         className="ledger-table-card"
         aria-label={scopeLabel(scope)}
@@ -1605,6 +1752,7 @@ export function LedgersPage({
                     <th>Date</th>
                     <th>Time</th>
                     <th>Type</th>
+                    <th>{scope === 'tenant' ? 'Room' : 'Tenant'}</th>
                     <th>Reference / Details</th>
                     <th className="align-right">Debit</th>
                     <th className="align-right">Credit</th>
@@ -1634,6 +1782,9 @@ export function LedgersPage({
                         >
                           {entry.type}
                         </span>
+                      </td>
+                      <td className="ledger-context-cell">
+                        {entry.contextLabel}
                       </td>
                       <td>
                         <div className="ledger-reference">
@@ -1711,6 +1862,11 @@ export function LedgersPage({
                     {entry.reference}
                   </strong>
 
+                  <div className="ledger-mobile-context">
+                    <small>{scope === 'tenant' ? 'Room' : 'Tenant'}</small>
+                    <strong>{entry.contextLabel}</strong>
+                  </div>
+
                   <p>{entry.description}</p>
 
                   <div className="ledger-mobile-amounts">
@@ -1760,11 +1916,13 @@ export function LedgersPage({
       </section>
 
       <p className="ledger-footnote">
-        Balances are calculated from saved issued bills and posted
-        receipts/credit applications. This screen is read-only and
-        does not modify financial records. Date filters change the
-        displayed rows; the current balance always reflects the full
-        available history.
+        {scope === 'tenant'
+          ? 'Tenant ledger combines rent and electricity bills across every room this tenant has occupied.'
+          : scope === 'room'
+            ? 'Room ledger shows rent charges and rent payments for this room only. Electricity calculations are kept in Meter ledger.'
+            : 'Meter ledger shows electricity readings, electricity bills, and their payments for this meter only.'
+        }{' '}
+        Balances are calculated from saved issued bills and posted receipts/credit applications. This screen is read-only and does not modify financial records. Date filters change displayed rows; the current balance reflects the full available history.
       </p>
     </section>
   )

@@ -6,7 +6,7 @@ import {
 } from 'react'
 import type { ReactNode } from 'react'
 import type { User } from 'firebase/auth'
-import { Building2, LogOut } from 'lucide-react'
+import { LogOut } from 'lucide-react'
 
 import {
   MobileNavigation,
@@ -93,11 +93,25 @@ const SettingsPage = lazy(() =>
   })),
 )
 
+const NotePage = lazy(() =>
+  import('./pages/NotePage').then((m) => ({
+    default: m.NotePage,
+  })),
+)
+
+const OpeningBalancePage = lazy(() =>
+  import('./pages/OpeningBalancePage').then((m) => ({
+    default: m.OpeningBalancePage,
+  })),
+)
+
 const ModulePlaceholder = lazy(() =>
   import('./pages/ModulePlaceholder').then((m) => ({
     default: m.ModulePlaceholder,
   })),
 )
+
+import { clearAllCachedLists } from './services/firebase/listCache'
 
 import {
   observeAuthState,
@@ -124,12 +138,12 @@ function StatusCard({
       <section className="auth-card auth-status-card">
         <div className="auth-brand">
           <span className="brand-mark">
-            <Building2 size={24} aria-hidden="true" />
+            <img src="/icon-192.png" alt="T&N House's" />
           </span>
 
           <div>
-            <strong>PropertyOS</strong>
-            <span>PROPERTY MANAGEMENT</span>
+            <strong>T&N House's</strong>
+            <span>PROPERTYOS MANAGEMENT</span>
           </div>
         </div>
 
@@ -167,6 +181,7 @@ function App() {
     try {
       unsubscribe = observeAuthState(
         (nextUser) => {
+          if (!nextUser) clearAllCachedLists()
           setUser(nextUser)
           setIsAuthReady(true)
           setAuthProblem('')
@@ -200,6 +215,7 @@ function App() {
     setIsSigningOut(true)
 
     try {
+      clearAllCachedLists()
       await signOutCurrentUser()
     } catch {
       setSessionError(
@@ -277,10 +293,10 @@ function App() {
       <div className="app-main">
         <header className="mobile-header">
           <span className="brand-mark">
-            <Building2 size={21} aria-hidden="true" />
+            <img src="/icon-192.png" alt="T&N House's" />
           </span>
 
-          <strong>PropertyOS</strong>
+          <strong>T&N House's</strong>
 
           <button
             className="sign-out-button mobile-sign-out"
@@ -356,6 +372,10 @@ function App() {
               <LedgersPage ownerUid={user.uid} />
             ) : activePage === 'Reports' ? (
               <FinancialReportsPage ownerUid={user.uid} />
+            ) : activePage === 'Note' ? (
+              <NotePage ownerUid={user.uid} />
+            ) : activePage === 'Opening Balance' ? (
+              <OpeningBalancePage ownerUid={user.uid} />
             ) : activePage === 'History' ? (
               <HistoryPage ownerUid={user.uid} />
             ) : activePage === 'Backup' ? (

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Building2, MoreHorizontal, X } from 'lucide-react'
+import { MoreHorizontal, X } from 'lucide-react'
 
 import {
   mobileNavigationItems,
@@ -14,11 +14,16 @@ type NavigationProps = {
   onNavigate: (page: AppPage) => void
 }
 
-const compactMobileLabels: Partial<Record<AppPage, string>> = {
+const mobileLabels: Partial<Record<AppPage, string>> = {
   Dashboard: 'Home',
   Properties: 'Property',
-  Tenants: 'Tenants',
+  Rooms: 'Room',
+  Meters: 'Meter',
+  Tenants: 'Tenant',
   Payments: 'Pay',
+  Settings: 'Setting',
+  Note: 'Note',
+  'Opening Balance': 'Opening',
 }
 
 function NavigationButton({
@@ -26,21 +31,18 @@ function NavigationButton({
   activePage,
   onNavigate,
   mobile = false,
-  compactMobileLabel = false,
 }: {
   item: NavigationItem
   activePage: AppPage
   onNavigate: (page: AppPage) => void
   mobile?: boolean
-  compactMobileLabel?: boolean
 }) {
   const Icon = item.icon
   const active = activePage === item.label
 
-  const label =
-    mobile && compactMobileLabel
-      ? compactMobileLabels[item.label] ?? item.label
-      : item.label
+  const label = mobile
+    ? mobileLabels[item.label] ?? item.label
+    : item.label
 
   return (
     <button
@@ -69,11 +71,11 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-brand">
         <div className="brand-mark">
-          <Building2 size={23} />
+          <img src="/icon-192.png" alt="T&N House's" />
         </div>
 
         <div className="brand-copy">
-          <strong>PropertyOS</strong>
+          <strong>T&N House's</strong>
           <span>PROPERTY MANAGEMENT</span>
         </div>
       </div>
@@ -96,11 +98,17 @@ export function Sidebar({
       </nav>
 
       <div className="sidebar-footer">
-        <div className="workspace-avatar">P</div>
+        <div className="workspace-avatar">T&amp;N</div>
 
         <div className="workspace-copy">
-          <strong>My Workspace</strong>
-          <span>Property management</span>
+          <span>Owner of the Property</span>
+
+          <strong className="workspace-owner-name">
+            MD.Tofazzal Hossain
+          </strong>
+          <strong className="workspace-owner-name">
+            MST. Nilufa Yaeasmin
+          </strong>
         </div>
       </div>
     </aside>
@@ -135,7 +143,6 @@ export function MobileNavigation({
           activePage={activePage}
           onNavigate={navigateTo}
           mobile
-          compactMobileLabel
         />
       ))}
 

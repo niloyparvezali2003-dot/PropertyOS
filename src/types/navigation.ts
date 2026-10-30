@@ -7,6 +7,7 @@ import {
   Gauge,
   History,
   LayoutDashboard,
+  NotebookPen,
   ReceiptText,
   Settings,
   Users,
@@ -26,6 +27,8 @@ export type AppPage =
   | 'Payments'
   | 'Ledgers'
   | 'Reports'
+  | 'Note'
+  | 'Opening Balance'
   | 'History'
   | 'Backup'
   | 'Settings'
@@ -40,7 +43,7 @@ export const navigationGroups: {
   items: NavigationItem[]
 }[] = [
     {
-      title: 'WORKSPACE',
+      title: 'Workspace',
       items: [
         { label: 'Dashboard', icon: LayoutDashboard },
         { label: 'Properties', icon: Building2 },
@@ -50,7 +53,7 @@ export const navigationGroups: {
       ],
     },
     {
-      title: 'FINANCE',
+      title: 'Finance',
       items: [
         { label: 'Rent & Bills', icon: ReceiptText },
         { label: 'Electricity', icon: Zap },
@@ -60,8 +63,10 @@ export const navigationGroups: {
       ],
     },
     {
-      title: 'MANAGEMENT',
+      title: 'Management',
       items: [
+        { label: 'Note', icon: NotebookPen },
+        { label: 'Opening Balance', icon: Wallet },
         { label: 'History', icon: History },
         { label: 'Backup', icon: Download },
         { label: 'Settings', icon: Settings },
@@ -71,8 +76,8 @@ export const navigationGroups: {
 
 const mobilePrimaryPages = new Set<AppPage>([
   'Dashboard',
-  'Properties',
-  'Tenants',
+  'Rent & Bills',
+  'Electricity',
   'Payments',
 ])
 

@@ -41,9 +41,9 @@
   height: 42px;
 }
 
-.history-stat-icon--blue { background: #edf4ff; color: #2e66c3; }
-.history-stat-icon--green { background: #eaf8f0; color: #1e8854; }
-.history-stat-icon--amber { background: #fff4df; color: #a86a10; }
+.history-stat-icon--blue { background: var(--color-action-soft); color: var(--color-action); }
+.history-stat-icon--green { background: var(--color-success-soft); color: var(--color-success); }
+.history-stat-icon--amber { background: var(--color-warning-soft); color: var(--color-warning); }
 
 .history-stat-card div {
   display: grid;
@@ -58,7 +58,7 @@
 }
 
 .history-stat-card div strong {
-  color: var(--text, #172033);
+  color: var(--text-primary);
   font-size: 23px;
   line-height: 1.15;
   font-variant-numeric: tabular-nums;
@@ -96,7 +96,7 @@
   min-width: 0;
   min-height: 40px;
   padding: 9px 10px;
-  color: var(--text, #172033);
+  color: var(--text-primary);
   border: 1px solid var(--border, #d9dee8);
   border-radius: 9px;
   background: var(--surface, #fff);
@@ -138,7 +138,7 @@
 
 .history-list-heading h2 {
   margin: 0;
-  color: var(--text, #172033);
+  color: var(--text-heading);
   font-size: 16px;
   font-weight: 750;
 }
@@ -172,21 +172,21 @@
 .history-event-icon {
   width: 40px;
   height: 40px;
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--surface-muted);
+  color: var(--text-primary);
 }
-.history-event-icon--property { background: #edf4ff; color: #2e66c3; }
-.history-event-icon--room { background: #f4efff; color: #7451b8; }
+.history-event-icon--property { background: var(--color-action-soft); color: var(--color-action); }
+.history-event-icon--room { background: var(--color-action-soft); color: var(--color-action); }
 .history-event-icon--tenant,
-.history-event-icon--tenant-assignment { background: #eaf8f0; color: #1e8854; }
+.history-event-icon--tenant-assignment { background: var(--color-success-soft); color: var(--color-success); }
 .history-event-icon--meter,
-.history-event-icon--meter-assignment { background: #e9f8fa; color: #137b8b; }
+.history-event-icon--meter-assignment { background: var(--color-gold-soft); color: var(--color-gold-deep); }
 .history-event-icon--rent-rate,
-.history-event-icon--rent-bills { background: #fff4df; color: #a86a10; }
+.history-event-icon--rent-bills { background: var(--color-warning-soft); color: var(--color-warning); }
 .history-event-icon--electricity-rate,
 .history-event-icon--electricity-bill { background: #fff0eb; color: #b94c2d; }
 .history-event-icon--payment,
-.history-event-icon--credit-application { background: #eaf8f0; color: #1e8854; }
+.history-event-icon--credit-application { background: var(--color-success-soft); color: var(--color-success); }
 
 .history-event-copy { min-width: 0; }
 
@@ -199,7 +199,7 @@
 
 .history-event-title-row > strong {
   overflow-wrap: anywhere;
-  color: var(--text, #172033);
+  color: var(--text-primary);
   font-size: 13px;
   font-weight: 750;
 }
@@ -210,7 +210,7 @@
   min-height: 22px;
   padding: 3px 7px;
   border-radius: 6px;
-  background: #f0f3f7;
+  background: var(--surface-muted);
   color: #4f5a6c;
   font-size: 10px;
   font-weight: 750;
@@ -252,11 +252,11 @@
 .history-empty-icon {
   width: 48px;
   height: 48px;
-  background: #f0f4f8;
+  background: var(--surface-muted);
   color: #637087;
 }
 
-.history-empty-state > strong { color: var(--text, #172033); font-size: 14px; }
+.history-empty-state > strong { color: var(--text-primary); font-size: 14px; }
 .history-empty-state p { max-width: 480px; margin: 0; font-size: 12px; line-height: 1.6; }
 
 .history-error {
@@ -267,14 +267,14 @@
   padding: 15px 17px;
   border: 1px solid #f2c5c3;
   border-radius: 12px;
-  background: #fff6f5;
+  background: var(--color-danger-soft);
   color: #8c2925;
 }
 
 .history-error div { display: grid; gap: 4px; }
 .history-error strong { font-size: 13px; }
 .history-error span { font-size: 12px; line-height: 1.5; }
-.history-empty-state > svg.animate-spin { color: #64748b; }
+.history-empty-state > svg.animate-spin { color: var(--text-secondary); }
 
 @media (max-width: 1000px) {
   .history-filter-panel {

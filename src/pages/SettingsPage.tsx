@@ -109,7 +109,7 @@ export function SettingsPage({ ownerUid }: SettingsPageProps) {
     <section className="settings-page">
       <header className="settings-page-heading">
         <div>
-          <p className="settings-eyebrow">WORKSPACE CONFIGURATION</p>
+          <p className="settings-eyebrow">Workspace configuration</p>
           <h1>Settings</h1>
           <p>Manage your house profile and the contact details used by your PropertyOS workspace.</p>
         </div>

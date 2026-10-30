@@ -1,3 +1,5 @@
+import { getCachedList } from './listCache'
+
 import {
   collection,
   doc,
@@ -175,16 +177,18 @@ function validateAssignmentRecord(
 export async function listTenantAssignments(
   ownerUid: string,
 ): Promise<TenantAssignmentRecord[]> {
-  const { db } = getFirebaseServices()
-  const assignmentsRef = collection(db, 'users', ownerUid, 'tenantAssignments')
-  const snapshot = await getDocs(query(assignmentsRef, orderBy('createdAt', 'desc')))
+  return getCachedList(ownerUid, 'TenantAssignments', async () => {
+    const { db } = getFirebaseServices()
+    const assignmentsRef = collection(db, 'users', ownerUid, 'tenantAssignments')
+    const snapshot = await getDocs(query(assignmentsRef, orderBy('createdAt', 'desc')))
 
-  return snapshot.docs.map((assignmentDocument) =>
-    validateAssignmentRecord(
-      assignmentDocument.id,
-      assignmentDocument.data() as Record<string, unknown>,
-    ),
-  )
+    return snapshot.docs.map((assignmentDocument) =>
+      validateAssignmentRecord(
+        assignmentDocument.id,
+        assignmentDocument.data() as Record<string, unknown>,
+      ),
+    )
+  })
 }
 
 export async function createTenantAssignment(

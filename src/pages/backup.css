@@ -2,7 +2,7 @@
     display: grid;
     gap: 20px;
     min-width: 0;
-    color: #172033;
+    color: var(--text-primary);
 }
 
 .backup-page-heading h1 {
@@ -15,14 +15,14 @@
 .backup-page-heading>div>p:last-child {
     max-width: 650px;
     margin: 8px 0 0;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 13px;
     line-height: 1.65;
 }
 
 .backup-eyebrow {
     margin: 0 0 7px;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 1.2px;
@@ -44,10 +44,10 @@
     width: 52px;
     height: 52px;
     place-items: center;
-    border: 1px solid #dbeafe;
+    border: 1px solid var(--color-action-border);
     border-radius: 13px;
-    background: #eff6ff;
-    color: #1d4ed8;
+    background: var(--color-action-soft);
+    color: var(--color-action-hover);
 }
 
 .backup-main-copy {
@@ -63,7 +63,7 @@
 .backup-main-copy>p {
     max-width: 720px;
     margin: 0;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 12px;
     line-height: 1.7;
     overflow-wrap: anywhere;
@@ -80,13 +80,13 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    color: #475569;
+    color: var(--text-primary);
     font-size: 11px;
     font-weight: 650;
 }
 
 .backup-facts svg {
-    color: #64748b;
+    color: var(--text-secondary);
 }
 
 .backup-create-button {
@@ -97,9 +97,9 @@
     min-height: 43px;
     margin-top: 22px;
     padding: 0 15px;
-    border: 1px solid #1d4ed8;
+    border: 1px solid var(--color-action);
     border-radius: 10px;
-    background: #1d4ed8;
+    background: var(--color-action);
     color: #fff;
     font-size: 12px;
     font-weight: 750;
@@ -107,7 +107,7 @@
 }
 
 .backup-create-button:hover:not(:disabled) {
-    background: #1e40af;
+    background: var(--color-action-hover);
 }
 
 .backup-create-button:disabled {
@@ -153,36 +153,36 @@
 }
 
 .backup-status-card p {
-    color: #475569;
+    color: var(--text-primary);
 }
 
 .backup-status-card small,
 .backup-message small {
     display: block;
     margin-top: 6px;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 10px;
     line-height: 1.6;
 }
 
 .backup-message-success {
     border-color: #bbf7d0;
-    background: #f0fdf4;
-    color: #166534;
+    background: var(--color-success-soft);
+    color: var(--color-success);
 }
 
 .backup-message-success>svg {
-    color: #15803d;
+    color: var(--color-success);
 }
 
 .backup-message-error {
     border-color: #fecaca;
-    background: #fff7f7;
-    color: #991b1b;
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
 }
 
 .backup-message-error>svg {
-    color: #b91c1c;
+    color: var(--color-danger);
 }
 
 .backup-details-grid {
@@ -202,7 +202,7 @@
 .backup-detail-number {
     display: inline-block;
     margin-bottom: 13px;
-    color: #94a3b8;
+    color: var(--text-tertiary);
     font-size: 11px;
     font-weight: 800;
     letter-spacing: 0.7px;
@@ -216,7 +216,7 @@
 
 .backup-detail-card p {
     margin: 7px 0 0;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 11px;
     line-height: 1.7;
     overflow-wrap: anywhere;
@@ -229,7 +229,7 @@
     padding: 14px;
     border: 1px solid #fde68a;
     border-radius: 12px;
-    background: #fffbeb;
+    background: var(--color-warning-soft);
     color: #854d0e;
 }
 
@@ -381,13 +381,13 @@
 .backup-restore-meta code { color: var(--text-primary, #1c2a3e); }
 .backup-restore-safe-note,
 .backup-restore-progress { display: flex; align-items: center; gap: 9px; margin: 0; color: var(--text-secondary, #687386); }
-.backup-restore-safe-note { color: #256347; }
+.backup-restore-safe-note { color: var(--color-success); }
 .backup-restore-conflicts,
-.backup-restore-error { padding: 14px; border: 1px solid #e8b7b7; border-radius: 12px; background: #fff6f6; color: #7c2525; }
+.backup-restore-error { padding: 14px; border: 1px solid #e8b7b7; border-radius: 12px; background: var(--color-danger-soft); color: #7c2525; }
 .backup-restore-conflicts p { margin: 7px 0; }
 .backup-restore-conflicts ul { margin: 8px 0; padding-left: 22px; overflow-wrap: anywhere; }
 .backup-restore-conflicts li { margin: 5px 0; }
-.backup-restore-success { padding: 13px 14px; border-radius: 12px; background: #eef8f1; color: #256347; }
+.backup-restore-success { padding: 13px 14px; border-radius: 12px; background: #eef8f1; color: var(--color-success); }
 .backup-restore-error, .backup-restore-success { margin: 0; overflow-wrap: anywhere; }
 .backup-restore-footnote { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary, #687386); }
 @media (max-width: 640px) {

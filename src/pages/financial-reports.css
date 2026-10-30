@@ -2,7 +2,7 @@
     display: grid;
     gap: 20px;
     min-width: 0;
-    color: #172033;
+    color: var(--text-primary);
 }
 
 .financial-reports-heading {
@@ -14,7 +14,7 @@
 
 .financial-reports-eyebrow {
     margin: 0 0 7px;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 1.2px;
@@ -30,7 +30,7 @@
 .financial-reports-heading>div:first-child>p:last-child {
     max-width: 650px;
     margin: 8px 0 0;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 13px;
     line-height: 1.6;
 }
@@ -64,20 +64,20 @@
 .report-button-secondary {
     border-color: #dbe3ee;
     background: #fff;
-    color: #475569;
+    color: var(--text-primary);
 }
 
 .report-button-secondary:hover:not(:disabled) {
-    background: #f8fafc;
+    background: var(--surface-secondary);
 }
 
 .report-button-primary {
-    background: #1d4ed8;
+    background: var(--color-action);
     color: #fff;
 }
 
 .report-button-primary:hover:not(:disabled) {
-    background: #1e40af;
+    background: var(--color-action-hover);
 }
 
 .financial-report-period {
@@ -91,7 +91,7 @@
 }
 
 .financial-report-period label {
-    color: #475569;
+    color: var(--text-primary);
     font-size: 11px;
     font-weight: 800;
 }
@@ -104,17 +104,17 @@
     border-radius: 9px;
     outline: none;
     background: #fff;
-    color: #172033;
+    color: var(--text-primary);
     font-size: 12px;
 }
 
 .financial-report-period select:focus {
-    border-color: #80a9f8;
-    box-shadow: 0 0 0 3px #dbeafe;
+    border-color: var(--color-gold);
+    box-shadow: 0 0 0 3px rgb(213 165 46 / 16%);
 }
 
 .financial-report-period>span {
-    color: #94a3b8;
+    color: var(--text-tertiary);
     font-size: 10px;
     line-height: 1.5;
 }
@@ -140,7 +140,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 11px;
     font-weight: 750;
 }
@@ -158,13 +158,13 @@
 }
 
 .financial-report-card>small {
-    color: #94a3b8;
+    color: var(--text-tertiary);
     font-size: 10px;
     line-height: 1.5;
 }
 
 .financial-report-card.is-warning>strong {
-    color: #b45309;
+    color: var(--color-warning);
 }
 
 .financial-report-table-panel {
@@ -192,7 +192,7 @@
 
 .financial-report-table-header p {
     margin: 6px 0 0;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 11px;
     line-height: 1.5;
 }
@@ -201,8 +201,8 @@
     flex-shrink: 0;
     padding: 7px 10px;
     border-radius: 9px;
-    background: #eff6ff;
-    color: #1d4ed8;
+    background: var(--color-action-soft);
+    color: var(--color-action-hover);
     font-size: 10px;
     font-weight: 800;
 }
@@ -221,8 +221,8 @@
 .financial-report-table th {
     padding: 12px 14px;
     border-bottom: 1px solid #e8edf4;
-    background: #f8fafc;
-    color: #64748b;
+    background: var(--surface-secondary);
+    color: var(--text-secondary);
     font-size: 10px;
     font-weight: 800;
     white-space: nowrap;
@@ -231,7 +231,7 @@
 .financial-report-table td {
     padding: 14px;
     border-bottom: 1px solid #edf1f6;
-    color: #334155;
+    color: var(--text-primary);
     font-size: 11px;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
@@ -242,7 +242,7 @@
 }
 
 .financial-report-table tbody tr:hover td {
-    background: #fbfdff;
+    background: var(--surface-secondary);
 }
 
 .financial-report-table tbody tr.is-selected-month td {
@@ -254,7 +254,7 @@
 }
 
 .financial-report-table .report-received {
-    color: #047857;
+    color: var(--color-success);
     font-weight: 750;
 }
 
@@ -262,7 +262,7 @@
     padding: 0;
     border: 0;
     background: transparent;
-    color: #1d4ed8;
+    color: var(--color-action-hover);
     font: inherit;
     font-weight: 750;
     text-align: left;
@@ -276,7 +276,7 @@
 .financial-report-table-note {
     padding: 12px 16px;
     border-top: 1px solid #edf1f6;
-    color: #94a3b8;
+    color: var(--text-tertiary);
     font-size: 10px;
     line-height: 1.6;
 }
@@ -289,13 +289,13 @@
     gap: 10px;
     min-height: 180px;
     padding: 24px;
-    color: #64748b;
+    color: var(--text-secondary);
     font-size: 12px;
     text-align: center;
 }
 
 .financial-report-state strong {
-    color: #334155;
+    color: var(--text-primary);
 }
 
 .financial-report-error {
@@ -305,8 +305,8 @@
     padding: 14px;
     border: 1px solid #fecaca;
     border-radius: 12px;
-    background: #fff7f7;
-    color: #991b1b;
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
 }
 
 .financial-report-error>div {
@@ -330,7 +330,7 @@
     border: 1px solid #fecaca;
     border-radius: 8px;
     background: #fff;
-    color: #991b1b;
+    color: var(--color-danger);
     font-size: 11px;
     font-weight: 750;
     cursor: pointer;
@@ -338,7 +338,7 @@
 
 .financial-report-disclaimer {
     margin: -5px 0 0;
-    color: #94a3b8;
+    color: var(--text-tertiary);
     font-size: 10px;
     line-height: 1.7;
 }
@@ -517,8 +517,8 @@
     }
 
     .financial-report-table tbody tr.is-selected-month {
-        border-color: #bfdbfe;
-        box-shadow: inset 0 0 0 1px #dbeafe;
+        border-color: var(--color-action-border);
+        box-shadow: inset 0 0 0 1px var(--color-action-border);
     }
 
     .financial-report-table tbody td {
@@ -538,7 +538,7 @@
     .financial-report-table tbody td:first-child {
         grid-column: 1 / -1;
         border-bottom: 1px solid #edf1f6;
-        background: #f8fafc;
+        background: var(--surface-secondary);
     }
 
     .financial-report-table tbody td:nth-child(1)::before {
@@ -566,7 +566,7 @@
     }
 
     .financial-report-table tbody td::before {
-        color: #94a3b8;
+        color: var(--text-tertiary);
         font-size: 9px;
         font-weight: 800;
         line-height: 1.4;
@@ -588,7 +588,7 @@
     }
 
     .financial-report-table tbody td.report-received {
-        color: #047857;
+        color: var(--color-success);
     }
 
     .financial-report-table-note {

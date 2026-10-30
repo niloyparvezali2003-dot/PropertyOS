@@ -40,18 +40,18 @@
 }
 
 .rent-stat-icon--blue {
-  color: #2563eb;
-  background: #eff6ff;
+  color: var(--color-action);
+  background: var(--color-action-soft);
 }
 
 .rent-stat-icon--green {
-  color: #16865b;
-  background: #e9f8ef;
+  color: var(--color-success);
+  background: var(--color-success-soft);
 }
 
 .rent-stat-icon--purple {
-  color: #7c3aed;
-  background: #f3edff;
+  color: var(--color-highlight);
+  background: var(--color-highlight-soft);
 }
 
 .rent-stat-card p,
@@ -75,7 +75,7 @@
 
 .rent-stat-card small {
   margin-top: 4px;
-  color: #8490a2;
+  color: var(--text-tertiary);
   font-size: 10px;
   line-height: 1.5;
 }
@@ -95,7 +95,7 @@
 
 .rent-panel-icon {
   color: var(--brand);
-  background: #eff6ff;
+  background: var(--color-action-soft);
 }
 
 .rent-month-field {
@@ -120,7 +120,7 @@
 .rent-generation-result {
   margin-top: 18px;
   padding: 14px;
-  background: #f8fafc;
+  background: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
@@ -156,7 +156,7 @@
 }
 
 .rent-result-counts .has-errors strong {
-  color: #b42318;
+  color: var(--color-danger);
 }
 
 .rent-generation-errors {
@@ -188,7 +188,7 @@
 .rent-generation-errors li span {
   display: block;
   margin-top: 3px;
-  color: #b42318;
+  color: var(--color-danger);
 }
 
 .rent-rate-list,
@@ -243,7 +243,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 7px 10px;
-  color: #758197;
+  color: var(--text-tertiary);
   font-size: 10px;
   line-height: 1.5;
 }
@@ -265,7 +265,7 @@
 
 .rent-empty-inline > svg {
   margin-bottom: 11px;
-  color: #94a3b8;
+  color: var(--text-tertiary);
 }
 
 .rent-empty-inline > strong {
@@ -380,8 +380,8 @@
 
 .rent-issued-status {
   padding: 4px 8px;
-  color: #176b43;
-  background: #e8f5ee;
+  color: var(--color-success);
+  background: var(--color-success-soft);
   border-radius: 999px;
   font-size: 9px;
   font-weight: 700;
@@ -461,7 +461,7 @@
   gap: 9px;
   margin: 0 0 18px;
   padding: 12px 13px;
-  color: #176b43;
+  color: var(--color-success);
   background: #f0faf4;
   border: 1px solid #cdebd8;
   border-radius: var(--radius);
@@ -494,7 +494,7 @@
 
 .rent-form-error {
   margin: 0;
-  color: #b42318;
+  color: var(--color-danger);
   font-size: 11px;
   line-height: 1.6;
 }

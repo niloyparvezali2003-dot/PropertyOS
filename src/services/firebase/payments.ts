@@ -1,3 +1,5 @@
+import { getCachedList } from './listCache'
+
 import {
   collection,
   doc,
@@ -10,6 +12,7 @@ import {
 } from 'firebase/firestore'
 
 import { getFirebaseServices } from './client'
+import { readOpeningBalance } from './openingBalances'
 import {
   paymentAllocationSchema,
   paymentFormSchema,
@@ -36,6 +39,8 @@ export type PaymentCreditUpdate = {
 export type PaymentRecord = {
   id: string
   receiptNumber: string
+  /** Public short reference; null for receipts created before this ID format. */
+  transactionId: string | null
   tenantId: string
   tenantCode: string
   tenantName: string
@@ -46,6 +51,11 @@ export type PaymentRecord = {
   amountMinor: number
   allocatedAmountMinor: number
   advanceAddedMinor: number
+  /** Receipt-time tenant-wide outstanding due; null on older receipts. */
+  outstandingBeforeMinor: number | null
+  outstandingAfterMinor: number | null
+  /** Portion of this receipt settled against the tenant's legacy opening balance. */
+  openingBalanceAllocationMinor: number
   creditUpdate: PaymentCreditUpdate
   currency: 'BDT'
   status: 'posted'
@@ -55,6 +65,12 @@ export type PaymentRecord = {
   updatedAt: Timestamp | null
   createdBy: string
   updatedBy: string
+}
+
+export type PaymentCreationResult = {
+  id: string
+  receiptNumber: string
+  transactionId: string | null
 }
 
 export type PaymentBillBalanceRecord = {
@@ -117,10 +133,32 @@ export type CreditApplicationRecord = {
   updatedBy: string
 }
 
+export type OpeningBalanceCreditApplicationRecord = {
+  id: string
+  applicationNumber: string
+  tenantId: string
+  tenantCode: string
+  tenantName: string
+  amountMinor: number
+  currency: 'BDT'
+  status: 'posted'
+  createdAt: Timestamp | null
+  updatedAt: Timestamp | null
+  createdBy: string
+  updatedBy: string
+}
+
 export class InvalidPaymentDataError extends Error {
   constructor(message = 'Payment data is invalid. No changes were made.') {
     super(message)
     this.name = 'InvalidPaymentDataError'
+  }
+}
+
+class TransactionReferenceCollisionError extends Error {
+  constructor() {
+    super('The generated transaction reference is already in use.')
+    this.name = 'TransactionReferenceCollisionError'
   }
 }
 
@@ -180,6 +218,25 @@ function getTimestamp(value: unknown): Timestamp | null {
 
 function balanceDocumentId(billType: PaymentBillType, billId: string): string {
   return `${billType}__${billId}`
+}
+
+const TRANSACTION_ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+const TRANSACTION_ID_LENGTH = 10
+
+/** Generates a 10-character uppercase alphanumeric reference using Web Crypto. */
+function generateTransactionId(): string {
+  const characters: string[] = []
+  // 252 is the largest multiple of 36 below 256; rejecting larger bytes avoids modulo bias.
+  while (characters.length < TRANSACTION_ID_LENGTH) {
+    const bytes = new Uint8Array(16)
+    crypto.getRandomValues(bytes)
+    for (const byte of bytes) {
+      if (byte >= 252) continue
+      characters.push(TRANSACTION_ID_ALPHABET[byte % TRANSACTION_ID_ALPHABET.length])
+      if (characters.length === TRANSACTION_ID_LENGTH) break
+    }
+  }
+  return characters.join('')
 }
 
 function assignmentCoversDate(assignment: UnknownRecord, value: string): boolean {
@@ -301,24 +358,37 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
     reference: value.reference,
     notes: value.notes,
     amountReceivedMinor: value.amountMinor,
+    openingBalanceAllocationMinor: value.openingBalanceAllocationMinor ?? 0,
     allocations: value.allocations,
   })
   const amountMinor = value.amountMinor
+  const openingBalanceAllocationMinor = value.openingBalanceAllocationMinor ?? 0
   const allocatedAmountMinor = parsed.success
-    ? parsed.data.allocations.reduce((total, allocation) => total + allocation.amountMinor, 0)
+    ? parsed.data.allocations.reduce((total, allocation) => total + allocation.amountMinor, 0) +
+      (isSafeNonNegativeInteger(openingBalanceAllocationMinor) ? openingBalanceAllocationMinor : -1)
     : -1
   const advanceAddedMinor = isSafeNonNegativeInteger(amountMinor)
     ? amountMinor - allocatedAmountMinor
     : -1
+  const transactionId = value.transactionId === undefined ? null : value.transactionId
+  const hasDueSnapshot = value.outstandingBeforeMinor !== undefined || value.outstandingAfterMinor !== undefined
+  const validDueSnapshot = !hasDueSnapshot || (
+    isSafeNonNegativeInteger(value.outstandingBeforeMinor) &&
+    isSafeNonNegativeInteger(value.outstandingAfterMinor) &&
+    value.outstandingBeforeMinor >= allocatedAmountMinor &&
+    value.outstandingAfterMinor === value.outstandingBeforeMinor - allocatedAmountMinor
+  )
 
   if (
     !parsed.success ||
     !isSafeNonNegativeInteger(amountMinor) ||
     amountMinor <= 0 ||
     value.receiptNumber !== `PAY-${id}` ||
+    (transactionId !== null && (typeof transactionId !== 'string' || !/^[A-Z0-9]{10}$/.test(transactionId))) ||
     value.allocatedAmountMinor !== allocatedAmountMinor ||
     value.advanceAddedMinor !== advanceAddedMinor ||
     advanceAddedMinor < 0 ||
+    !validDueSnapshot ||
     value.currency !== 'BDT' ||
     value.status !== 'posted' ||
     !Array.isArray(value.balanceUpdates) ||
@@ -362,6 +432,7 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
   return {
     id,
     receiptNumber: value.receiptNumber as string,
+    transactionId: typeof transactionId === 'string' ? transactionId : null,
     tenantId: parsed.data.tenantId,
     tenantCode: parsed.data.tenantCode,
     tenantName: parsed.data.tenantName,
@@ -372,6 +443,9 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
     amountMinor,
     allocatedAmountMinor,
     advanceAddedMinor,
+    outstandingBeforeMinor: hasDueSnapshot ? value.outstandingBeforeMinor as number : null,
+    outstandingAfterMinor: hasDueSnapshot ? value.outstandingAfterMinor as number : null,
+    openingBalanceAllocationMinor,
     creditUpdate: { tenantId: parsed.data.tenantId, amountMinor: advanceAddedMinor },
     currency: 'BDT',
     status: 'posted',
@@ -394,6 +468,7 @@ function paymentMatchesAttempt(existing: PaymentRecord, input: PaymentFormValues
     existing.reference !== input.reference ||
     existing.notes !== input.notes ||
     existing.amountMinor !== input.amountReceivedMinor ||
+    existing.openingBalanceAllocationMinor !== input.openingBalanceAllocationMinor ||
     existing.allocations.length !== input.allocations.length
   ) return false
   return existing.allocations.every((allocation, index) => sameAllocation(allocation, input.allocations[index]))
@@ -547,39 +622,92 @@ function sameCreditApplication(existing: CreditApplicationRecord, allocation: Pa
 }
 
 export async function listPayments(ownerUid: string): Promise<PaymentRecord[]> {
-  const { db } = getFirebaseServices()
-  const paymentRef = collection(db, 'users', ownerUid, 'payments')
-  const snapshot = await getDocs(query(paymentRef, orderBy('paidOn', 'desc')))
-  return snapshot.docs.map((item) => readPaymentRecord(item.id, item.data()))
+  return getCachedList(ownerUid, 'Payments', async () => {
+    const { db } = getFirebaseServices()
+    const paymentRef = collection(db, 'users', ownerUid, 'payments')
+    const snapshot = await getDocs(query(paymentRef, orderBy('paidOn', 'desc')))
+    return snapshot.docs.map((item) => readPaymentRecord(item.id, item.data()))
+  })
 }
 
 export async function listPaymentBillBalances(ownerUid: string): Promise<PaymentBillBalanceRecord[]> {
-  const { db } = getFirebaseServices()
-  const snapshot = await getDocs(collection(db, 'users', ownerUid, 'billBalances'))
-  return snapshot.docs.map((item) => readBillBalance(item.id, item.data()))
+  return getCachedList(ownerUid, 'PaymentBillBalances', async () => {
+    const { db } = getFirebaseServices()
+    const snapshot = await getDocs(collection(db, 'users', ownerUid, 'billBalances'))
+    return snapshot.docs.map((item) => readBillBalance(item.id, item.data()))
+  })
 }
 
 export async function listTenantCredits(ownerUid: string): Promise<TenantCreditRecord[]> {
-  const { db } = getFirebaseServices()
-  const snapshot = await getDocs(collection(db, 'users', ownerUid, 'tenantCredits'))
-  return snapshot.docs.map((item) => readTenantCredit(item.id, item.data()))
+  return getCachedList(ownerUid, 'TenantCredits', async () => {
+    const { db } = getFirebaseServices()
+    const snapshot = await getDocs(collection(db, 'users', ownerUid, 'tenantCredits'))
+    return snapshot.docs.map((item) => readTenantCredit(item.id, item.data()))
+  })
 }
 
 export async function listCreditApplications(ownerUid: string): Promise<CreditApplicationRecord[]> {
-  const { db } = getFirebaseServices()
-  const creditApplicationsRef = collection(db, 'users', ownerUid, 'creditApplications')
-  const snapshot = await getDocs(query(creditApplicationsRef, orderBy('createdAt', 'desc')))
-  return snapshot.docs.map((item) => readCreditApplication(item.id, item.data()))
+  return getCachedList(ownerUid, 'CreditApplications', async () => {
+    const { db } = getFirebaseServices()
+    const creditApplicationsRef = collection(db, 'users', ownerUid, 'creditApplications')
+    const snapshot = await getDocs(query(creditApplicationsRef, orderBy('createdAt', 'desc')))
+    return snapshot.docs.map((item) => readCreditApplication(item.id, item.data()))
+  })
+}
+
+function readOpeningBalanceCreditApplication(id: string, value: unknown): OpeningBalanceCreditApplicationRecord {
+  if (!isRecord(value) ||
+    value.applicationNumber !== `OBC-${id}` ||
+    typeof value.tenantId !== 'string' ||
+    typeof value.tenantCode !== 'string' || !/^T[0-9]{5}[A-Z]$/.test(value.tenantCode) ||
+    typeof value.tenantName !== 'string' || value.tenantName.length < 2 ||
+    !isSafeNonNegativeInteger(value.amountMinor) || value.amountMinor <= 0 ||
+    !isRecord(value.tenantCreditUpdate) || value.tenantCreditUpdate.tenantId !== value.tenantId || value.tenantCreditUpdate.amountMinor !== value.amountMinor ||
+    value.currency !== 'BDT' || value.status !== 'posted' ||
+    !(value.createdAt instanceof Timestamp) || !(value.updatedAt instanceof Timestamp) ||
+    typeof value.createdBy !== 'string' || typeof value.updatedBy !== 'string'
+  ) throw new InvalidPaymentDataError(`Opening balance advance application ${id} contains invalid data.`)
+  return {
+    id,
+    applicationNumber: value.applicationNumber,
+    tenantId: value.tenantId,
+    tenantCode: value.tenantCode,
+    tenantName: value.tenantName,
+    amountMinor: value.amountMinor,
+    currency: 'BDT',
+    status: 'posted',
+    createdAt: getTimestamp(value.createdAt),
+    updatedAt: getTimestamp(value.updatedAt),
+    createdBy: value.createdBy,
+    updatedBy: value.updatedBy,
+  }
+}
+
+export async function listOpeningBalanceCreditApplications(ownerUid: string): Promise<OpeningBalanceCreditApplicationRecord[]> {
+  return getCachedList(ownerUid, 'OpeningBalanceCreditApplications', async () => {
+    const { db } = getFirebaseServices()
+    const refs = collection(db, 'users', ownerUid, 'openingBalanceCreditApplications')
+    const snapshot = await getDocs(query(refs, orderBy('createdAt', 'desc')))
+    return snapshot.docs.map((item) => readOpeningBalanceCreditApplication(item.id, item.data()))
+  })
 }
 
 export async function createPayment(
   ownerUid: string,
   rawInput: PaymentFormValues,
   idempotencyKey?: string,
-): Promise<string> {
+): Promise<PaymentCreationResult> {
   const input = paymentFormSchema.parse(rawInput)
-  const allocatedAmountMinor = input.allocations.reduce((total, allocation) => total + allocation.amountMinor, 0)
+  const billAllocatedAmountMinor = input.allocations.reduce((total, allocation) => total + allocation.amountMinor, 0)
+  const allocatedAmountMinor = billAllocatedAmountMinor + input.openingBalanceAllocationMinor
   const advanceAddedMinor = input.amountReceivedMinor - allocatedAmountMinor
+  if (!isSafeNonNegativeInteger(input.outstandingBeforeMinor)) {
+    throw new InvalidPaymentDataError('The tenant outstanding due snapshot is missing. Refresh the payment page and try again.')
+  }
+  if (allocatedAmountMinor > input.outstandingBeforeMinor) {
+    throw new InvalidPaymentDataError('The selected bill allocations exceed the tenant outstanding due snapshot. Refresh and try again.')
+  }
+  const outstandingAfterMinor = input.outstandingBeforeMinor - allocatedAmountMinor
   if (
     !Number.isSafeInteger(allocatedAmountMinor) ||
     allocatedAmountMinor < 0 ||
@@ -604,6 +732,7 @@ export async function createPayment(
   const receiptNumber = `PAY-${paymentRef.id}`
   const tenantRef = doc(db, 'users', ownerUid, 'tenants', input.tenantId)
   const creditRef = doc(db, 'users', ownerUid, 'tenantCredits', input.tenantId)
+  const openingBalanceRef = doc(db, 'users', ownerUid, 'openingBalances', input.tenantId)
   const references = input.allocations.map((allocation) => ({
     allocation,
     billRef: doc(db, 'users', ownerUid, allocation.billType === 'rent' ? 'rentBills' : 'electricityBills', allocation.billId),
@@ -611,17 +740,34 @@ export async function createPayment(
     assignmentRef: doc(db, 'users', ownerUid, 'tenantAssignments', allocation.tenantAssignmentId),
   }))
 
-  return runTransaction(db, async (transaction) => {
+  for (let referenceAttempt = 0; referenceAttempt < 12; referenceAttempt += 1) {
+    const transactionId = generateTransactionId()
+    const transactionReferenceRef = doc(db, 'users', ownerUid, 'transactionReferences', transactionId)
+
+    try {
+      return await runTransaction(db, async (transaction) => {
     const paymentSnapshot = await transaction.get(paymentRef)
     if (paymentSnapshot.exists()) {
       const existing = readPaymentRecord(paymentSnapshot.id, paymentSnapshot.data())
-      if (paymentMatchesAttempt(existing, input)) return existing.receiptNumber
+      if (paymentMatchesAttempt(existing, input)) {
+        return { id: existing.id, receiptNumber: existing.receiptNumber, transactionId: existing.transactionId }
+      }
       throw new InvalidPaymentDataError('This payment attempt was already used for different details. Start a new payment attempt.')
     }
 
+    const transactionReferenceSnapshot = await transaction.get(transactionReferenceRef)
+    if (transactionReferenceSnapshot.exists()) throw new TransactionReferenceCollisionError()
+
     const tenantSnapshotPromise = transaction.get(tenantRef)
     const creditSnapshotPromise = advanceAddedMinor > 0 ? transaction.get(creditRef) : Promise.resolve(null)
-    const [tenantSnapshot, creditSnapshot] = await Promise.all([tenantSnapshotPromise, creditSnapshotPromise])
+    const openingBalanceSnapshotPromise = input.openingBalanceAllocationMinor > 0
+      ? transaction.get(openingBalanceRef)
+      : Promise.resolve(null)
+    const [tenantSnapshot, creditSnapshot, openingBalanceSnapshot] = await Promise.all([
+      tenantSnapshotPromise,
+      creditSnapshotPromise,
+      openingBalanceSnapshotPromise,
+    ])
     if (!tenantSnapshot.exists()) throw new InvalidPaymentDataError('The selected tenant no longer exists.')
     const tenantData = tenantSnapshot.data() as UnknownRecord
     if (tenantData.tenantCode !== input.tenantCode || tenantData.fullName !== input.tenantName) {
@@ -699,6 +845,40 @@ export async function createPayment(
       }
     })
 
+    let openingBalanceWrite: UnknownRecord | null = null
+    if (input.openingBalanceAllocationMinor > 0) {
+      if (!openingBalanceSnapshot?.exists()) {
+        throw new InvalidPaymentDataError('This tenant does not have an opening balance to settle.')
+      }
+      const openingBalance = readOpeningBalance(openingBalanceSnapshot.id, openingBalanceSnapshot.data())
+      if (
+        openingBalance.tenantId !== input.tenantId ||
+        openingBalance.tenantCode !== input.tenantCode ||
+        openingBalance.tenantName !== input.tenantName
+      ) throw new InvalidPaymentDataError('The opening balance no longer matches the selected tenant. Refresh and try again.')
+      if (input.openingBalanceAllocationMinor > openingBalance.outstandingMinor) {
+        throw new PaymentAmountExceedsBalanceError()
+      }
+      openingBalanceWrite = {
+        tenantId: openingBalance.tenantId,
+        tenantCode: openingBalance.tenantCode,
+        tenantName: openingBalance.tenantName,
+        effectiveDate: openingBalance.effectiveDate,
+        originalAmountMinor: openingBalance.originalAmountMinor,
+        adjustedAmountMinor: openingBalance.adjustedAmountMinor,
+        paidAmountMinor: openingBalance.paidAmountMinor + input.openingBalanceAllocationMinor,
+        outstandingMinor: openingBalance.outstandingMinor - input.openingBalanceAllocationMinor,
+        note: openingBalance.note,
+        lastTransactionType: 'payment',
+        lastTransactionId: paymentRef.id,
+        lastTransactionAmountMinor: input.openingBalanceAllocationMinor,
+        createdAt: openingBalance.createdAt ?? serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: openingBalance.createdBy,
+        updatedBy: actorUid,
+      }
+    }
+
     let creditWrite: UnknownRecord | null = null
     if (advanceAddedMinor > 0) {
       let currentCreditMinor = 0
@@ -735,6 +915,7 @@ export async function createPayment(
     }))
     transaction.set(paymentRef, {
       receiptNumber,
+      transactionId,
       tenantId: input.tenantId,
       tenantCode: input.tenantCode,
       tenantName: input.tenantName,
@@ -745,6 +926,9 @@ export async function createPayment(
       amountMinor: input.amountReceivedMinor,
       allocatedAmountMinor,
       advanceAddedMinor,
+      openingBalanceAllocationMinor: input.openingBalanceAllocationMinor,
+      outstandingBeforeMinor: input.outstandingBeforeMinor,
+      outstandingAfterMinor,
       creditUpdate: { tenantId: input.tenantId, amountMinor: advanceAddedMinor },
       currency: 'BDT',
       status: 'posted',
@@ -755,10 +939,23 @@ export async function createPayment(
       createdBy: actorUid,
       updatedBy: actorUid,
     })
+    transaction.set(transactionReferenceRef, {
+      paymentId: paymentRef.id,
+      transactionId,
+      createdAt: serverTimestamp(),
+    })
     for (const write of writes) transaction.set(write.balanceRef, write.balanceData)
+    if (openingBalanceWrite) transaction.set(openingBalanceRef, openingBalanceWrite)
     if (creditWrite) transaction.set(creditRef, creditWrite)
-    return receiptNumber
-  })
+    return { id: paymentRef.id, receiptNumber, transactionId }
+      })
+    } catch (error) {
+      if (error instanceof TransactionReferenceCollisionError) continue
+      throw error
+    }
+  }
+
+  throw new InvalidPaymentDataError('Unable to reserve a unique transaction ID. Please retry the payment.')
 }
 
 export async function applyTenantCredit(
@@ -890,6 +1087,91 @@ export async function applyTenantCredit(
     transaction.set(applicationRef, applicationData)
     transaction.set(balanceRef, balanceData)
     transaction.set(creditRef, creditData)
+    return applicationNumber
+  })
+}
+
+/** Apply existing advance credit to the tenant-level opening balance. */
+export async function applyTenantCreditToOpeningBalance(
+  ownerUid: string,
+  tenantId: string,
+  tenantCode: string,
+  tenantName: string,
+  amountMinor: number,
+  idempotencyKey: string,
+): Promise<string> {
+  const { auth, db } = getFirebaseServices()
+  const actorUid = auth.currentUser?.uid
+  if (!actorUid || actorUid !== ownerUid) throw new InvalidPaymentDataError('Your sign-in session does not match this workspace. Sign in again.')
+  if (!/^[a-f0-9]{32}$/.test(idempotencyKey) || !isSafeNonNegativeInteger(amountMinor) || amountMinor <= 0) {
+    throw new InvalidPaymentDataError('The opening balance advance application is invalid.')
+  }
+
+  const applicationRef = doc(db, 'users', ownerUid, 'openingBalanceCreditApplications', `obca_${idempotencyKey}`)
+  const openingBalanceRef = doc(db, 'users', ownerUid, 'openingBalances', tenantId)
+  const tenantRef = doc(db, 'users', ownerUid, 'tenants', tenantId)
+  const creditRef = doc(db, 'users', ownerUid, 'tenantCredits', tenantId)
+  const applicationNumber = `OBC-${applicationRef.id}`
+
+  return runTransaction(db, async (transaction) => {
+    const existingSnapshot = await transaction.get(applicationRef)
+    if (existingSnapshot.exists()) {
+      const existing = readOpeningBalanceCreditApplication(existingSnapshot.id, existingSnapshot.data())
+      if (existing.tenantId === tenantId && existing.tenantCode === tenantCode && existing.tenantName === tenantName && existing.amountMinor === amountMinor) {
+        return existing.applicationNumber
+      }
+      throw new InvalidPaymentDataError('This advance application attempt was already used for different details.')
+    }
+
+    const [tenantSnapshot, balanceSnapshot, creditSnapshot] = await Promise.all([
+      transaction.get(tenantRef),
+      transaction.get(openingBalanceRef),
+      transaction.get(creditRef),
+    ])
+    if (!tenantSnapshot.exists() || !balanceSnapshot.exists()) throw new InvalidPaymentDataError('The tenant opening balance no longer exists.')
+    if (!creditSnapshot.exists()) throw new InsufficientTenantCreditError()
+    const tenant = tenantSnapshot.data()
+    if (tenant.tenantCode !== tenantCode || tenant.fullName !== tenantName) throw new InvalidPaymentDataError('Tenant details changed. Refresh and try again.')
+
+    const openingBalance = readOpeningBalance(balanceSnapshot.id, balanceSnapshot.data())
+    const credit = readTenantCredit(creditSnapshot.id, creditSnapshot.data())
+    if (openingBalance.tenantCode !== tenantCode || openingBalance.tenantName !== tenantName || credit.tenantCode !== tenantCode) {
+      throw new InvalidPaymentDataError('The tenant opening balance or advance credit does not match the selected tenant.')
+    }
+    if (credit.creditMinor < amountMinor) throw new InsufficientTenantCreditError()
+    if (openingBalance.outstandingMinor < amountMinor) throw new PaymentAmountExceedsBalanceError()
+
+    transaction.set(applicationRef, {
+      applicationNumber,
+      tenantId,
+      tenantCode,
+      tenantName,
+      amountMinor,
+      tenantCreditUpdate: { tenantId, amountMinor },
+      currency: 'BDT',
+      status: 'posted',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: actorUid,
+      updatedBy: actorUid,
+    })
+    transaction.update(openingBalanceRef, {
+      paidAmountMinor: openingBalance.paidAmountMinor + amountMinor,
+      outstandingMinor: openingBalance.outstandingMinor - amountMinor,
+      lastTransactionType: 'credit_application',
+      lastTransactionId: applicationRef.id,
+      lastTransactionAmountMinor: amountMinor,
+      updatedAt: serverTimestamp(),
+      updatedBy: actorUid,
+    })
+    transaction.update(creditRef, {
+      creditMinor: credit.creditMinor - amountMinor,
+      lastTransactionType: 'credit_application',
+      lastTransactionId: applicationRef.id,
+      lastTransactionAmountMinor: amountMinor,
+      updatedAt: serverTimestamp(),
+      updatedBy: actorUid,
+    })
     return applicationNumber
   })
 }

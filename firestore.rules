@@ -1666,7 +1666,7 @@ service cloud.firestore {
         && data.readingDate[0:7] == data.billingMonth
         && validElectricityNumber(data.previousReading)
         && validElectricityNumber(data.currentReading)
-        && data.currentReading >= data.previousReading
+        && data.currentReading > data.previousReading
         && validElectricityNumber(data.unitsConsumed)
         && data.unitsConsumed <= data.currentReading - data.previousReading + 0.000001
         && data.unitsConsumed >= data.currentReading - data.previousReading - 0.000001
@@ -1690,7 +1690,10 @@ service cloud.firestore {
         && data.updatedAt is timestamp
         && data.createdBy == request.auth.uid
         && data.updatedBy == request.auth.uid
-        && readingId == data.meterAssignmentId + '__' + data.billingMonth
+        && (
+          readingId == data.meterAssignmentId + '__' + data.billingMonth
+          || readingId == data.meterAssignmentId + '__' + data.readingDate
+        )
         && exists(assignmentPath)
         && get(assignmentPath).data.meterId == data.meterId
         && get(assignmentPath).data.meterCode == data.meterCode
@@ -1824,7 +1827,10 @@ service cloud.firestore {
         && data.meterId is string
         && data.meterCode is string
         && validElectricityMonth(data.billingMonth)
-        && billId == data.meterAssignmentId + '__' + data.billingMonth
+        && (
+          billId == data.meterAssignmentId + '__' + data.billingMonth
+          || billId == data.meterAssignmentId + '__' + data.readingDate
+        )
         && data.currency == 'BDT'
         && data.status == 'issued'
         && data.createdAt is timestamp
@@ -1996,6 +2002,42 @@ service cloud.firestore {
         && data.creditUpdate.amountMinor == data.advanceAddedMinor;
     }
 
+    function paymentTransactionReferenceExistsAfter(userId, paymentId, data) {
+      let referencePath =
+        /databases/$(database)/documents/users/$(userId)/transactionReferences/$(data.transactionId);
+      return existsAfter(referencePath)
+        && getAfter(referencePath).data.paymentId == paymentId
+        && getAfter(referencePath).data.transactionId == data.transactionId;
+    }
+
+    function validTransactionReference(userId, transactionId, data) {
+      return data.keys().hasAll(['paymentId', 'transactionId', 'createdAt'])
+        && data.keys().hasOnly(['paymentId', 'transactionId', 'createdAt'])
+        && transactionId.matches('^[A-Z0-9]{10}$')
+        && data.transactionId == transactionId
+        && data.paymentId is string
+        && data.paymentId.size() > 0
+        && data.createdAt is timestamp
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)/payments/$(data.paymentId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/payments/$(data.paymentId)
+        ).data.transactionId == transactionId;
+    }
+
+    function paymentOpeningBalanceLinkedAfter(userId, paymentId, data) {
+      let openingBalancePath =
+        /databases/$(database)/documents/users/$(userId)/openingBalances/$(data.tenantId);
+      return data.openingBalanceAllocationMinor == 0 || (
+        existsAfter(openingBalancePath)
+        && getAfter(openingBalancePath).data.tenantId == data.tenantId
+        && getAfter(openingBalancePath).data.lastTransactionType == 'payment'
+        && getAfter(openingBalancePath).data.lastTransactionId == paymentId
+        && getAfter(openingBalancePath).data.lastTransactionAmountMinor == data.openingBalanceAllocationMinor
+      );
+    }
+
     function validPaymentRecord(userId, paymentId, data) {
       let tenantPath =
         /databases/$(database)/documents/users/$(userId)/tenants/$(data.tenantId);
@@ -2004,20 +2046,25 @@ service cloud.firestore {
         && get(tenantPath).data.tenantCode == data.tenantCode
         && get(tenantPath).data.fullName == data.tenantName
         && data.keys().hasAll([
-          'receiptNumber', 'tenantId', 'tenantCode', 'tenantName',
+          'receiptNumber', 'transactionId', 'tenantId', 'tenantCode', 'tenantName',
           'paidOn', 'method', 'reference', 'notes', 'amountMinor',
-          'allocatedAmountMinor', 'advanceAddedMinor', 'creditUpdate',
+          'allocatedAmountMinor', 'advanceAddedMinor', 'openingBalanceAllocationMinor',
+          'outstandingBeforeMinor', 'outstandingAfterMinor', 'creditUpdate',
           'currency', 'status', 'allocations', 'balanceUpdates',
           'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
         ])
         && data.keys().hasOnly([
-          'receiptNumber', 'tenantId', 'tenantCode', 'tenantName',
+          'receiptNumber', 'transactionId', 'tenantId', 'tenantCode', 'tenantName',
           'paidOn', 'method', 'reference', 'notes', 'amountMinor',
-          'allocatedAmountMinor', 'advanceAddedMinor', 'creditUpdate',
+          'allocatedAmountMinor', 'advanceAddedMinor', 'openingBalanceAllocationMinor',
+          'outstandingBeforeMinor', 'outstandingAfterMinor', 'creditUpdate',
           'currency', 'status', 'allocations', 'balanceUpdates',
           'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
         ])
         && data.receiptNumber == 'PAY-' + paymentId
+        && data.transactionId is string
+        && data.transactionId.matches('^[A-Z0-9]{10}$')
+        && paymentTransactionReferenceExistsAfter(userId, paymentId, data)
         && data.tenantId is string
         && data.tenantId.size() > 0
         && data.tenantCode is string
@@ -2038,7 +2085,16 @@ service cloud.firestore {
         && data.allocatedAmountMinor >= 0
         && data.advanceAddedMinor is int
         && data.advanceAddedMinor >= 0
+        && data.openingBalanceAllocationMinor is int
+        && data.openingBalanceAllocationMinor >= 0
+        && data.openingBalanceAllocationMinor <= data.allocatedAmountMinor
         && data.allocatedAmountMinor + data.advanceAddedMinor == data.amountMinor
+        && data.outstandingBeforeMinor is int
+        && data.outstandingBeforeMinor >= data.allocatedAmountMinor
+        && data.outstandingBeforeMinor <= 10000000000000
+        && data.outstandingAfterMinor is int
+        && data.outstandingAfterMinor >= 0
+        && data.outstandingAfterMinor == data.outstandingBeforeMinor - data.allocatedAmountMinor
         && data.creditUpdate is map
         && data.creditUpdate.keys().hasAll(['tenantId', 'amountMinor'])
         && data.creditUpdate.keys().hasOnly(['tenantId', 'amountMinor'])
@@ -2054,6 +2110,7 @@ service cloud.firestore {
         && data.updatedAt is timestamp
         && data.createdBy == request.auth.uid
         && data.updatedBy == request.auth.uid
+        && paymentOpeningBalanceLinkedAfter(userId, paymentId, data)
         && (data.advanceAddedMinor == 0 || paymentCreditLinkedAfter(userId, paymentId, data));
     }
 
@@ -2162,6 +2219,14 @@ service cloud.firestore {
       );
     }
 
+    match /users/{userId}/transactionReferences/{transactionId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validTransactionReference(userId, transactionId, request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
     match /users/{userId}/payments/{paymentId} {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId) && validPaymentRecord(userId, paymentId, request.resource.data);
@@ -2245,6 +2310,8 @@ service cloud.firestore {
         /databases/$(database)/documents/users/$(userId)/payments/$(data.lastTransactionId);
       let creditApplicationPath =
         /databases/$(database)/documents/users/$(userId)/creditApplications/$(data.lastTransactionId);
+      let openingBalanceCreditApplicationPath =
+        /databases/$(database)/documents/users/$(userId)/openingBalanceCreditApplications/$(data.lastTransactionId);
 
       return (
         data.lastTransactionType == 'payment'
@@ -2260,6 +2327,13 @@ service cloud.firestore {
         && getAfter(creditApplicationPath).data.amountMinor == data.lastTransactionAmountMinor
         && getAfter(creditApplicationPath).data.tenantCreditUpdate.tenantId == tenantId
         && getAfter(creditApplicationPath).data.tenantCreditUpdate.amountMinor == data.lastTransactionAmountMinor
+      ) || (
+        data.lastTransactionType == 'credit_application'
+        && existsAfter(openingBalanceCreditApplicationPath)
+        && getAfter(openingBalanceCreditApplicationPath).data.tenantId == tenantId
+        && getAfter(openingBalanceCreditApplicationPath).data.amountMinor == data.lastTransactionAmountMinor
+        && getAfter(openingBalanceCreditApplicationPath).data.tenantCreditUpdate.tenantId == tenantId
+        && getAfter(openingBalanceCreditApplicationPath).data.tenantCreditUpdate.amountMinor == data.lastTransactionAmountMinor
       );
     }
 
@@ -2373,7 +2447,349 @@ service cloud.firestore {
 
 
     // ==================================================
-    // 34. IMMUTABLE AUDIT EVENTS
+    // 34. OWNER NOTES AND CHECKLIST ITEMS
+    // ==================================================
+
+    function validNote(data) {
+      return data.keys().hasAll([
+          'title', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'title', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    function validNoteTask(data) {
+      return data.keys().hasAll([
+          'noteId', 'text', 'order', 'completedAt', 'expiresAt',
+          'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'noteId', 'text', 'order', 'completedAt', 'expiresAt',
+          'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.noteId is string
+        && data.noteId.size() > 0
+        && data.text is string
+        && data.text.size() >= 1
+        && data.text.size() <= 1000
+        && data.order is int
+        && data.order >= 0
+        && (data.completedAt == null || data.completedAt is timestamp)
+        && (data.expiresAt == null || data.expiresAt is timestamp)
+        && ((data.completedAt == null && data.expiresAt == null)
+          || (data.completedAt is timestamp && data.expiresAt is timestamp
+            && data.expiresAt > data.completedAt))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    match /users/{userId}/notes/{noteId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validNote(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isOwner(userId)
+        && validNote(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy;
+      allow delete: if isOwner(userId);
+    }
+
+    function noteTaskParentExistsAfter(userId, noteId) {
+      let notePath = /databases/$(database)/documents/users/$(userId)/notes/$(noteId);
+      return existsAfter(notePath);
+    }
+
+    match /users/{userId}/noteTasks/{taskId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validNoteTask(request.resource.data)
+        && noteTaskParentExistsAfter(userId, request.resource.data.noteId);
+      allow update: if isOwner(userId)
+        && validNoteTask(request.resource.data)
+        && request.resource.data.noteId == resource.data.noteId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && noteTaskParentExistsAfter(userId, resource.data.noteId);
+      allow delete: if isOwner(userId);
+    }
+
+    // ==================================================
+    // 35. TENANT OPENING BALANCES
+    // ==================================================
+
+    function validOpeningBalance(tenantId, data) {
+      return data.keys().hasAll([
+          'tenantId', 'tenantCode', 'tenantName', 'effectiveDate',
+          'originalAmountMinor', 'adjustedAmountMinor', 'paidAmountMinor',
+          'outstandingMinor', 'note', 'lastTransactionType', 'lastTransactionId',
+          'lastTransactionAmountMinor', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'tenantId', 'tenantCode', 'tenantName', 'effectiveDate',
+          'originalAmountMinor', 'adjustedAmountMinor', 'paidAmountMinor',
+          'outstandingMinor', 'note', 'lastTransactionType', 'lastTransactionId',
+          'lastTransactionAmountMinor', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.tenantId == tenantId
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && validPaymentDate(data.effectiveDate)
+        && data.originalAmountMinor is int
+        && data.originalAmountMinor > 0
+        && data.originalAmountMinor <= 10000000000000
+        && data.adjustedAmountMinor is int
+        && data.adjustedAmountMinor >= -10000000000000
+        && data.paidAmountMinor is int
+        && data.paidAmountMinor >= 0
+        && data.outstandingMinor is int
+        && data.outstandingMinor >= 0
+        && data.outstandingMinor <= 10000000000000
+        && data.originalAmountMinor + data.adjustedAmountMinor <= 10000000000000
+        && data.originalAmountMinor + data.adjustedAmountMinor >= data.paidAmountMinor
+        && data.outstandingMinor == data.originalAmountMinor + data.adjustedAmountMinor - data.paidAmountMinor
+        && data.note is string
+        && data.note.size() <= 1000
+        && data.lastTransactionType in ['opening_balance', 'payment', 'credit_application', 'adjustment']
+        && data.lastTransactionId is string
+        && data.lastTransactionId.size() > 0
+        && data.lastTransactionAmountMinor is int
+        && data.lastTransactionAmountMinor > 0
+        && data.lastTransactionAmountMinor <= 10000000000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    function openingBalanceLinkedAfter(userId, tenantId, data) {
+      let paymentPath =
+        /databases/$(database)/documents/users/$(userId)/payments/$(data.lastTransactionId);
+      let openingCreditPath =
+        /databases/$(database)/documents/users/$(userId)/openingBalanceCreditApplications/$(data.lastTransactionId);
+      let adjustmentPath =
+        /databases/$(database)/documents/users/$(userId)/openingBalanceAdjustments/$(data.lastTransactionId);
+
+      return (
+        data.lastTransactionType == 'payment'
+        && existsAfter(paymentPath)
+        && getAfter(paymentPath).data.tenantId == tenantId
+        && getAfter(paymentPath).data.openingBalanceAllocationMinor == data.lastTransactionAmountMinor
+      ) || (
+        data.lastTransactionType == 'credit_application'
+        && existsAfter(openingCreditPath)
+        && getAfter(openingCreditPath).data.tenantId == tenantId
+        && getAfter(openingCreditPath).data.amountMinor == data.lastTransactionAmountMinor
+      ) || (
+        data.lastTransactionType == 'adjustment'
+        && existsAfter(adjustmentPath)
+        && getAfter(adjustmentPath).data.tenantId == tenantId
+        && getAfter(adjustmentPath).data.amountMinor == data.lastTransactionAmountMinor
+        && getAfter(adjustmentPath).data.afterOutstandingMinor == data.outstandingMinor
+      );
+    }
+
+    match /users/{userId}/openingBalances/{tenantId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && validOpeningBalance(tenantId, request.resource.data)
+        && request.resource.data.lastTransactionType == 'opening_balance'
+        && request.resource.data.lastTransactionId == tenantId
+        && request.resource.data.adjustedAmountMinor == 0
+        && request.resource.data.paidAmountMinor == 0
+        && request.resource.data.outstandingMinor == request.resource.data.originalAmountMinor
+        && request.resource.data.lastTransactionAmountMinor == request.resource.data.originalAmountMinor
+        && exists(/databases/$(database)/documents/users/$(userId)/tenants/$(tenantId))
+        && get(/databases/$(database)/documents/users/$(userId)/tenants/$(tenantId)).data.tenantCode == request.resource.data.tenantCode
+        && get(/databases/$(database)/documents/users/$(userId)/tenants/$(tenantId)).data.fullName == request.resource.data.tenantName;
+
+      allow update: if isOwner(userId)
+        && validOpeningBalance(tenantId, request.resource.data)
+        && request.resource.data.tenantId == resource.data.tenantId
+        && request.resource.data.tenantCode == resource.data.tenantCode
+        && request.resource.data.tenantName == resource.data.tenantName
+        && request.resource.data.effectiveDate == resource.data.effectiveDate
+        && request.resource.data.originalAmountMinor == resource.data.originalAmountMinor
+        && request.resource.data.note == resource.data.note
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.lastTransactionId != resource.data.lastTransactionId
+        && (
+          (
+            request.resource.data.lastTransactionType == 'payment'
+            && request.resource.data.adjustedAmountMinor == resource.data.adjustedAmountMinor
+            && request.resource.data.paidAmountMinor == resource.data.paidAmountMinor + request.resource.data.lastTransactionAmountMinor
+            && request.resource.data.outstandingMinor == resource.data.outstandingMinor - request.resource.data.lastTransactionAmountMinor
+            && request.resource.data.lastTransactionAmountMinor <= resource.data.outstandingMinor
+          ) || (
+            request.resource.data.lastTransactionType == 'credit_application'
+            && request.resource.data.adjustedAmountMinor == resource.data.adjustedAmountMinor
+            && request.resource.data.paidAmountMinor == resource.data.paidAmountMinor + request.resource.data.lastTransactionAmountMinor
+            && request.resource.data.outstandingMinor == resource.data.outstandingMinor - request.resource.data.lastTransactionAmountMinor
+            && request.resource.data.lastTransactionAmountMinor <= resource.data.outstandingMinor
+          ) || (
+            request.resource.data.lastTransactionType == 'adjustment'
+            && request.resource.data.paidAmountMinor == resource.data.paidAmountMinor
+            && request.resource.data.lastTransactionAmountMinor > 0
+            && request.resource.data.outstandingMinor >= 0
+            && (
+              (
+                getAfter(/databases/$(database)/documents/users/$(userId)/openingBalanceAdjustments/$(request.resource.data.lastTransactionId)).data.direction == 'increase'
+                && request.resource.data.adjustedAmountMinor == resource.data.adjustedAmountMinor + request.resource.data.lastTransactionAmountMinor
+                && request.resource.data.outstandingMinor == resource.data.outstandingMinor + request.resource.data.lastTransactionAmountMinor
+              ) || (
+                getAfter(/databases/$(database)/documents/users/$(userId)/openingBalanceAdjustments/$(request.resource.data.lastTransactionId)).data.direction == 'decrease'
+                && request.resource.data.adjustedAmountMinor == resource.data.adjustedAmountMinor - request.resource.data.lastTransactionAmountMinor
+                && request.resource.data.outstandingMinor == resource.data.outstandingMinor - request.resource.data.lastTransactionAmountMinor
+              )
+            )
+          )
+        )
+        && openingBalanceLinkedAfter(userId, tenantId, request.resource.data);
+
+      allow delete: if false;
+    }
+
+    function validOpeningBalanceAdjustment(adjustmentId, data) {
+      return data.keys().hasAll([
+          'adjustmentNumber', 'tenantId', 'tenantCode', 'tenantName', 'direction',
+          'amountMinor', 'beforeOutstandingMinor', 'afterOutstandingMinor',
+          'effectiveDate', 'note', 'createdAt', 'createdBy'
+        ])
+        && data.keys().hasOnly([
+          'adjustmentNumber', 'tenantId', 'tenantCode', 'tenantName', 'direction',
+          'amountMinor', 'beforeOutstandingMinor', 'afterOutstandingMinor',
+          'effectiveDate', 'note', 'createdAt', 'createdBy'
+        ])
+        && data.adjustmentNumber == 'OBA-' + adjustmentId
+        && data.tenantId is string
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.direction in ['increase', 'decrease']
+        && data.amountMinor is int
+        && data.amountMinor > 0
+        && data.amountMinor <= 10000000000000
+        && data.beforeOutstandingMinor is int
+        && data.beforeOutstandingMinor >= 0
+        && data.beforeOutstandingMinor <= 10000000000000
+        && data.afterOutstandingMinor is int
+        && data.afterOutstandingMinor >= 0
+        && data.afterOutstandingMinor <= 10000000000000
+        && ((data.direction == 'increase'
+            && data.afterOutstandingMinor == data.beforeOutstandingMinor + data.amountMinor)
+          || (data.direction == 'decrease'
+            && data.beforeOutstandingMinor >= data.amountMinor
+            && data.afterOutstandingMinor == data.beforeOutstandingMinor - data.amountMinor))
+        && validPaymentDate(data.effectiveDate)
+        && data.note is string
+        && data.note.size() >= 1
+        && data.note.size() <= 1000
+        && data.createdAt is timestamp
+        && data.createdBy == request.auth.uid;
+    }
+
+    function openingBalanceAdjustmentLinkedAfter(userId, adjustmentId, data) {
+      let openingPath =
+        /databases/$(database)/documents/users/$(userId)/openingBalances/$(data.tenantId);
+      return existsAfter(openingPath)
+        && getAfter(openingPath).data.lastTransactionType == 'adjustment'
+        && getAfter(openingPath).data.lastTransactionId == adjustmentId
+        && getAfter(openingPath).data.lastTransactionAmountMinor == data.amountMinor
+        && getAfter(openingPath).data.outstandingMinor == data.afterOutstandingMinor;
+    }
+
+    match /users/{userId}/openingBalanceAdjustments/{adjustmentId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validOpeningBalanceAdjustment(adjustmentId, request.resource.data)
+        && openingBalanceAdjustmentLinkedAfter(userId, adjustmentId, request.resource.data);
+      allow update, delete: if false;
+    }
+
+    function validOpeningBalanceCreditApplication(applicationId, data) {
+      return data.keys().hasAll([
+          'applicationNumber', 'tenantId', 'tenantCode', 'tenantName', 'amountMinor',
+          'tenantCreditUpdate', 'currency', 'status', 'createdAt', 'updatedAt',
+          'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'applicationNumber', 'tenantId', 'tenantCode', 'tenantName', 'amountMinor',
+          'tenantCreditUpdate', 'currency', 'status', 'createdAt', 'updatedAt',
+          'createdBy', 'updatedBy'
+        ])
+        && data.applicationNumber == 'OBC-' + applicationId
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.amountMinor is int
+        && data.amountMinor > 0
+        && data.amountMinor <= 10000000000000
+        && data.tenantCreditUpdate is map
+        && data.tenantCreditUpdate.keys().hasAll(['tenantId', 'amountMinor'])
+        && data.tenantCreditUpdate.keys().hasOnly(['tenantId', 'amountMinor'])
+        && data.tenantCreditUpdate.tenantId == data.tenantId
+        && data.tenantCreditUpdate.amountMinor == data.amountMinor
+        && data.currency == 'BDT'
+        && data.status == 'posted'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.createdBy == request.auth.uid
+        && data.updatedBy == request.auth.uid;
+    }
+
+    function openingBalanceCreditApplicationAtomicAfter(userId, applicationId, data) {
+      let openingPath =
+        /databases/$(database)/documents/users/$(userId)/openingBalances/$(data.tenantId);
+      let creditPath =
+        /databases/$(database)/documents/users/$(userId)/tenantCredits/$(data.tenantId);
+      return existsAfter(openingPath)
+        && getAfter(openingPath).data.tenantId == data.tenantId
+        && getAfter(openingPath).data.tenantCode == data.tenantCode
+        && getAfter(openingPath).data.tenantName == data.tenantName
+        && getAfter(openingPath).data.lastTransactionType == 'credit_application'
+        && getAfter(openingPath).data.lastTransactionId == applicationId
+        && getAfter(openingPath).data.lastTransactionAmountMinor == data.amountMinor
+        && getAfter(openingPath).data.outstandingMinor >= 0
+        && exists(creditPath)
+        && existsAfter(creditPath)
+        && get(creditPath).data.creditMinor >= data.amountMinor
+        && getAfter(creditPath).data.creditMinor == get(creditPath).data.creditMinor - data.amountMinor
+        && getAfter(creditPath).data.lastTransactionType == 'credit_application'
+        && getAfter(creditPath).data.lastTransactionId == applicationId
+        && getAfter(creditPath).data.lastTransactionAmountMinor == data.amountMinor;
+    }
+
+    match /users/{userId}/openingBalanceCreditApplications/{applicationId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validOpeningBalanceCreditApplication(applicationId, request.resource.data)
+        && openingBalanceCreditApplicationAtomicAfter(userId, applicationId, request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // ==================================================
+    // 36. IMMUTABLE AUDIT EVENTS
     // ==================================================
 
     function validAuditEvent(data) {
@@ -2389,13 +2805,14 @@ service cloud.firestore {
         && data.action in [
           'created', 'updated', 'assigned', 'moved_out', 'replaced',
           'rate_added', 'bills_generated', 'bill_issued',
-          'payment_recorded', 'credit_applied'
+          'payment_recorded', 'credit_applied',
+          'opening_balance_added', 'opening_balance_adjusted'
         ]
         && data.entityType in [
           'property', 'room', 'tenant', 'meter', 'tenant_assignment',
           'meter_assignment', 'rent_rate', 'rent_bills',
           'electricity_rate', 'electricity_bill', 'payment',
-          'credit_application'
+          'credit_application', 'opening_balance'
         ]
         && data.entityId is string
         && data.entityId.size() >= 1
@@ -2496,13 +2913,15 @@ service cloud.firestore {
         && isRestoreMode(userId)
         && collectionName in [
           'auditEvents', 'billBalances', 'creditApplications',
+          'noteTasks', 'notes', 'openingBalanceAdjustments',
+          'openingBalanceCreditApplications', 'openingBalances',
           'currentAssignmentByMeter', 'currentMeterByRoom',
           'currentRoomByTenant', 'currentTenantByRoom',
           'electricityBills', 'electricityRates', 'electricityReadings',
           'electricityReadingState', 'meterAssignments', 'meters',
           'payments', 'properties', 'propertyNameIndex', 'rentBills',
           'roomNameIndex', 'roomRentRates', 'rooms', 'tenantAssignments',
-          'settings', 'tenantCredits', 'tenants', 'system'
+          'settings', 'tenantCredits', 'tenants', 'transactionReferences', 'system'
         ];
     }
 // 35. DENY EVERYTHING ELSE

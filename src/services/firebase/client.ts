@@ -11,6 +11,9 @@ import {
 } from 'firebase/auth'
 import {
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   type Firestore,
 } from 'firebase/firestore'
 
@@ -60,10 +63,31 @@ export function getFirebaseServices(): FirebaseServices {
     ? getApp()
     : initializeApp(firebaseConfig)
 
+  let db: Firestore
+
+  try {
+    // Keep Firestore's local document/query cache in IndexedDB so previously
+    // loaded workspace data is available across reloads and brief outages.
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    })
+  } catch (error: unknown) {
+    // Some browser profiles disable IndexedDB or may already have an
+    // initialized Firestore instance (for example during Vite HMR). Fall
+    // back to the SDK's normal in-memory cache instead of blocking the app.
+    console.warn(
+      '[PropertyOS] Persistent Firestore cache is unavailable; using memory cache.',
+      error,
+    )
+    db = getFirestore(app)
+  }
+
   cachedServices = {
     app,
     auth: getAuth(app),
-    db: getFirestore(app),
+    db,
   }
 
   return cachedServices
