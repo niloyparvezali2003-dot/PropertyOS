@@ -11,7 +11,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 import { listMeterAssignments } from './meters'
 import {
   electricityRateFormSchema,
@@ -316,8 +316,8 @@ export async function createElectricityRate(ownerUid: string, rawInput: Electric
       notes: input.notes,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
   })
   return id
@@ -446,8 +446,8 @@ export async function createElectricityBillFromReading(
       notes: input.notes,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     }
 
     transaction.set(targetReadingRef, snapshot)
@@ -464,8 +464,8 @@ export async function createElectricityBillFromReading(
       lastReadingValue: input.currentReading,
       createdAt: stateSnapshot.exists() ? stateSnapshot.data().createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: stateSnapshot.exists() ? stateSnapshot.data().createdBy : ownerUid,
-      updatedBy: ownerUid,
+      createdBy: stateSnapshot.exists() ? stateSnapshot.data().createdBy : getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
   })
   return billId

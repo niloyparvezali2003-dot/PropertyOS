@@ -10,7 +10,7 @@ import {
 } from 'firebase/firestore'
 
 import { openingBalanceAdjustmentSchema, openingBalanceFormSchema, type OpeningBalanceAdjustmentValues, type OpeningBalanceFormValues } from '../../schemas/openingBalance'
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 
 type UnknownRecord = Record<string, unknown>
 
@@ -66,8 +66,8 @@ export class OpeningBalanceInsufficientDueError extends Error {
 
 function assertOwner(ownerUid: string): void {
   const { auth } = getFirebaseServices()
-  if (!ownerUid || auth.currentUser?.uid !== ownerUid) {
-    throw new Error('Your sign-in session does not match this workspace. Sign in again.')
+  if (!ownerUid || !auth.currentUser) {
+    throw new Error('Sign in before accessing this workspace.')
   }
 }
 
@@ -204,8 +204,8 @@ export async function createOpeningBalance(ownerUid: string, rawInput: OpeningBa
       lastTransactionAmountMinor: input.amountMinor,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
   })
 }
@@ -247,7 +247,7 @@ export async function adjustOpeningBalance(
       effectiveDate: input.effectiveDate,
       note: input.note,
       createdAt: serverTimestamp(),
-      createdBy: ownerUid,
+      createdBy: getCurrentActorUid(),
     })
     transaction.update(openingRef, {
       adjustedAmountMinor: nextAdjustedAmount,
@@ -256,7 +256,7 @@ export async function adjustOpeningBalance(
       lastTransactionId: adjustmentRef.id,
       lastTransactionAmountMinor: input.amountMinor,
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
   })
   return `OBA-${adjustmentRef.id}`

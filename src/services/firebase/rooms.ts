@@ -19,7 +19,7 @@ import {
   reserveNextIdentifier,
 } from './identifiers'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 import { listProperties } from './properties'
 
 import {
@@ -260,8 +260,8 @@ export async function createRoom(
       status: input.status,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
 
     transaction.set(nameIndexRef, {
@@ -381,7 +381,7 @@ export async function updateRoom(
       notes: input.notes,
       status: input.status,
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
   })
 }

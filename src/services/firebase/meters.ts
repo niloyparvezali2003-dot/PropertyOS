@@ -11,7 +11,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 import {
   commitIdentifierReservation,
   IdentifierLimitReachedError,
@@ -419,8 +419,8 @@ export async function createMeter(
       status: 'available',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
 
     commitIdentifierReservation(transaction, reservation)
@@ -535,14 +535,14 @@ export async function assignMeter(
       endNotes: '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
 
     transaction.update(meterRef, {
       status: 'assigned',
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
 
     transaction.set(roomIndexRef, {
@@ -681,13 +681,13 @@ export async function replaceMeter(
       endReason: input.reason,
       endNotes: input.notes,
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
 
     transaction.update(oldMeterRef, {
       status: 'retired',
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
 
     // Create a brand-new meter with a separate permanent ID.
@@ -698,8 +698,8 @@ export async function replaceMeter(
       status: 'assigned',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
 
     // Preserve the history of the room-to-meter relationship.
@@ -719,8 +719,8 @@ export async function replaceMeter(
       endNotes: '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
 
     // The old meter is no longer current.

@@ -23,6 +23,7 @@ const mobileLabels: Partial<Record<AppPage, string>> = {
   Payments: 'Pay',
   Settings: 'Setting',
   Note: 'Note',
+  'Users & Access': 'Users',
   'Opening Balance': 'Opening',
 }
 
@@ -101,7 +102,7 @@ export function Sidebar({
         <div className="workspace-avatar">T&amp;N</div>
 
         <div className="workspace-copy">
-          <span>Owner of the Property</span>
+          <span>Shared Property Workspace</span>
 
           <strong className="workspace-owner-name">
             MD.Tofazzal Hossain

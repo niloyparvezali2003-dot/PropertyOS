@@ -719,7 +719,7 @@ export async function createPayment(
 
   const { auth, db } = getFirebaseServices()
   const actorUid = auth.currentUser?.uid
-  if (!actorUid || actorUid !== ownerUid) {
+  if (!actorUid) {
     throw new InvalidPaymentDataError('Your sign-in session does not match this workspace. Sign in again.')
   }
   if (idempotencyKey !== undefined && !/^[a-f0-9]{32}$/.test(idempotencyKey)) {
@@ -966,7 +966,7 @@ export async function applyTenantCredit(
   const allocation = paymentAllocationSchema.parse(rawAllocation)
   const { auth, db } = getFirebaseServices()
   const actorUid = auth.currentUser?.uid
-  if (!actorUid || actorUid !== ownerUid) {
+  if (!actorUid) {
     throw new InvalidPaymentDataError('Your sign-in session does not match this workspace. Sign in again.')
   }
   if (idempotencyKey !== undefined && !/^[a-f0-9]{32}$/.test(idempotencyKey)) {
@@ -1102,7 +1102,7 @@ export async function applyTenantCreditToOpeningBalance(
 ): Promise<string> {
   const { auth, db } = getFirebaseServices()
   const actorUid = auth.currentUser?.uid
-  if (!actorUid || actorUid !== ownerUid) throw new InvalidPaymentDataError('Your sign-in session does not match this workspace. Sign in again.')
+  if (!actorUid) throw new InvalidPaymentDataError('Sign in before recording this financial transaction.')
   if (!/^[a-f0-9]{32}$/.test(idempotencyKey) || !isSafeNonNegativeInteger(amountMinor) || amountMinor <= 0) {
     throw new InvalidPaymentDataError('The opening balance advance application is invalid.')
   }

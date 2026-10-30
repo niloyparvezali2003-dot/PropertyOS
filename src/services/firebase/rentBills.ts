@@ -11,7 +11,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 import { parseIdentifierNumber } from './identifiers'
 import { listTenantAssignments } from './tenantAssignments'
 
@@ -852,8 +852,8 @@ export async function createRoomRentRate(
       notes: input.notes.trim(),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
   })
 
@@ -1179,8 +1179,8 @@ async function createRentBillForAssignmentMonth(
       status: 'issued',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
 
     return 'created'

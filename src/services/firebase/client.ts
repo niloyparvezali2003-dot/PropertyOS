@@ -92,3 +92,10 @@ export function getFirebaseServices(): FirebaseServices {
 
   return cachedServices
 }
+
+/** Returns the authenticated person, distinct from the workspace data UID. */
+export function getCurrentActorUid(): string {
+  const user = getFirebaseServices().auth.currentUser
+  if (!user) throw new Error('Your sign-in session has expired. Sign in again.')
+  return user.uid
+}

@@ -21,7 +21,7 @@ import {
   reserveNextIdentifier,
 } from './identifiers'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 import { propertyFormSchema } from '../../schemas/property'
 import type { PropertyFormValues } from '../../schemas/property'
 
@@ -384,8 +384,8 @@ export async function createProperty(
       status: 'active',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
 
     transaction.set(nameIndexRef, {
@@ -481,7 +481,7 @@ export async function updateProperty(
       address: input.address,
       notes: input.notes,
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
   })
 }

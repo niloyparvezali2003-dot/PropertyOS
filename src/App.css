@@ -182,3 +182,38 @@
     border-right-color: var(--border);
   }
 }
+
+
+.auth-switch-mode {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 8px;
+  border: 0;
+  color: var(--text-link, #356fa8);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.auth-status-actions {
+  display: grid;
+  gap: 9px;
+  margin-top: 18px;
+}
+
+.auth-status-actions .auth-status-action {
+  width: 100%;
+}
+
+.workspace-session-label {
+  margin-left: auto;
+  color: var(--text-secondary, #77746e);
+  font-size: 12px;
+}
+
+.desktop-session-bar .sign-out-button {
+  margin-left: 12px;
+}

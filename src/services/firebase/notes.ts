@@ -15,7 +15,7 @@ import {
   writeBatch,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 export const NOTE_TASK_RETENTION_DAYS = 30
@@ -44,8 +44,8 @@ export type NoteTaskRecord = {
 
 function assertOwner(ownerUid: string): void {
   const { auth } = getFirebaseServices()
-  if (!ownerUid || auth.currentUser?.uid !== ownerUid) {
-    throw new Error('Your sign-in session does not match this workspace. Sign in again.')
+  if (!ownerUid || !auth.currentUser) {
+    throw new Error('Sign in before accessing this workspace.')
   }
 }
 
@@ -128,8 +128,8 @@ export async function createNote(ownerUid: string, rawTitle = 'New note'): Promi
       title,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
   })
   invalidateOwnerDataCache(ownerUid)
@@ -144,7 +144,7 @@ export async function renameNote(ownerUid: string, noteId: string, rawTitle: str
   await updateDoc(doc(db, 'users', ownerUid, 'notes', noteId), {
     title,
     updatedAt: serverTimestamp(),
-    updatedBy: ownerUid,
+    updatedBy: getCurrentActorUid(),
   })
   invalidateOwnerDataCache(ownerUid)
 }
@@ -172,10 +172,10 @@ export async function createNoteTask(ownerUid: string, noteId: string, rawText: 
       expiresAt: null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
-    transaction.update(noteRef, { updatedAt: serverTimestamp(), updatedBy: ownerUid })
+    transaction.update(noteRef, { updatedAt: serverTimestamp(), updatedBy: getCurrentActorUid() })
   })
   invalidateOwnerDataCache(ownerUid)
   return taskRef.id
@@ -191,8 +191,8 @@ export async function updateNoteTaskText(ownerUid: string, noteId: string, taskI
   await runTransaction(db, async (transaction) => {
     const taskSnapshot = await transaction.get(taskRef)
     if (!taskSnapshot.exists() || taskSnapshot.data().noteId !== noteId) throw new Error('This checklist item no longer exists.')
-    transaction.update(taskRef, { text, updatedAt: serverTimestamp(), updatedBy: ownerUid })
-    transaction.update(noteRef, { updatedAt: serverTimestamp(), updatedBy: ownerUid })
+    transaction.update(taskRef, { text, updatedAt: serverTimestamp(), updatedBy: getCurrentActorUid() })
+    transaction.update(noteRef, { updatedAt: serverTimestamp(), updatedBy: getCurrentActorUid() })
   })
   invalidateOwnerDataCache(ownerUid)
 }
@@ -210,9 +210,9 @@ export async function setNoteTaskCompleted(ownerUid: string, noteId: string, tas
       completedAt: completed ? now : null,
       expiresAt: completed ? Timestamp.fromMillis(now.toMillis() + NOTE_TASK_RETENTION_DAYS * DAY_MS) : null,
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
-    transaction.update(noteRef, { updatedAt: serverTimestamp(), updatedBy: ownerUid })
+    transaction.update(noteRef, { updatedAt: serverTimestamp(), updatedBy: getCurrentActorUid() })
   })
   invalidateOwnerDataCache(ownerUid)
 }
@@ -228,12 +228,12 @@ export async function reorderNoteTasks(ownerUid: string, noteId: string, ordered
     batch.update(doc(db, 'users', ownerUid, 'noteTasks', taskId), {
       order: index,
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
   })
   batch.update(doc(db, 'users', ownerUid, 'notes', noteId), {
     updatedAt: serverTimestamp(),
-    updatedBy: ownerUid,
+    updatedBy: getCurrentActorUid(),
   })
   await batch.commit()
   invalidateOwnerDataCache(ownerUid)
@@ -244,7 +244,7 @@ export async function deleteNoteTask(ownerUid: string, noteId: string, taskId: s
   const { db } = getFirebaseServices()
   const batch = writeBatch(db)
   batch.delete(doc(db, 'users', ownerUid, 'noteTasks', taskId))
-  batch.update(doc(db, 'users', ownerUid, 'notes', noteId), { updatedAt: serverTimestamp(), updatedBy: ownerUid })
+  batch.update(doc(db, 'users', ownerUid, 'notes', noteId), { updatedAt: serverTimestamp(), updatedBy: getCurrentActorUid() })
   await batch.commit()
   invalidateOwnerDataCache(ownerUid)
 }

@@ -5,7 +5,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 
 export type WorkspaceSettings = {
   houseName: string
@@ -39,8 +39,8 @@ function settingsRef(ownerUid: string) {
 
 function assertCurrentOwner(ownerUid: string): void {
   const { auth } = getFirebaseServices()
-  if (!auth.currentUser || auth.currentUser.uid !== ownerUid) {
-    throw new Error('Settings access denied: the signed-in account does not match this workspace.')
+  if (!ownerUid || !auth.currentUser) {
+    throw new Error('Settings access denied: sign in to a workspace member account.')
   }
 }
 
@@ -118,8 +118,8 @@ export async function saveWorkspaceSettings(
       // Preserve source creator metadata when a settings document has been restored.
       createdBy: typeof existingData?.createdBy === 'string'
         ? existingData.createdBy
-        : ownerUid,
-      updatedBy: ownerUid,
+        : getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
   })
 

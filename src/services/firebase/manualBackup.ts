@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore'
 
 import { getFirebaseServices } from './client'
+import { assertWorkspaceAccess } from './workspace'
 
 type JsonValue =
   | null
@@ -189,11 +190,8 @@ export async function createManualFirestoreBackup(
 
   const { app, auth, db } = getFirebaseServices()
 
-  if (!auth.currentUser || auth.currentUser.uid !== ownerUid) {
-    throw new Error(
-      'Backup denied: the signed-in account does not match this owner.',
-    )
-  }
+  if (!auth.currentUser) throw new Error('Sign in before creating a backup.')
+  await assertWorkspaceAccess(ownerUid)
 
   const projectId = app.options.projectId
 

@@ -11,6 +11,7 @@ import {
   ReceiptText,
   Settings,
   Users,
+  UserRoundCog,
   Wallet,
   Zap,
   type LucideIcon,
@@ -30,6 +31,7 @@ export type AppPage =
   | 'Note'
   | 'Opening Balance'
   | 'History'
+  | 'Users & Access'
   | 'Backup'
   | 'Settings'
 
@@ -68,6 +70,7 @@ export const navigationGroups: {
         { label: 'Note', icon: NotebookPen },
         { label: 'Opening Balance', icon: Wallet },
         { label: 'History', icon: History },
+        { label: 'Users & Access', icon: UserRoundCog },
         { label: 'Backup', icon: Download },
         { label: 'Settings', icon: Settings },
       ],

@@ -11,7 +11,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 import { parseIdentifierNumber } from './identifiers'
 import {
   tenantAssignmentFormSchema,
@@ -279,8 +279,8 @@ export async function createTenantAssignment(
       moveOutNotes: '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     }
 
     const indexData = {
@@ -362,7 +362,7 @@ export async function endTenantAssignment(
       status: 'ended',
       moveOutNotes: input.moveOutNotes.trim(),
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
 
     transaction.delete(roomIndexRef)

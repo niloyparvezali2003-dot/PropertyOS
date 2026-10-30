@@ -19,7 +19,7 @@ import {
   reserveNextIdentifier,
 } from './identifiers'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 
 import {
   tenantFormSchema,
@@ -171,8 +171,8 @@ export async function createTenant(
       status: input.status,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: getCurrentActorUid(),
+      updatedBy: getCurrentActorUid(),
     })
 
     commitIdentifierReservation(transaction, reservation)
@@ -217,7 +217,7 @@ export async function updateTenant(
       notes: input.notes,
       status: input.status,
       updatedAt: serverTimestamp(),
-      updatedBy: ownerUid,
+      updatedBy: getCurrentActorUid(),
     })
   })
 }

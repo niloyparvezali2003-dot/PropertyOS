@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity,
+  Mail,
   Bolt,
   Building2,
   CalendarClock,
@@ -25,6 +26,7 @@ import {
   type AuditEntityType,
   type AuditEventRecord,
 } from '../services/firebase/audit'
+import { listWorkspaceMembers, type WorkspaceMemberRecord } from '../services/firebase/workspace'
 import './history.css'
 
 type HistoryPageProps = {
@@ -46,6 +48,8 @@ const entityOptions: { value: 'all' | AuditEntityType; label: string }[] = [
   { value: 'payment', label: 'Payments' },
   { value: 'credit_application', label: 'Advance applications' },
   { value: 'opening_balance', label: 'Opening balances' },
+  { value: 'member', label: 'Workspace members' },
+  { value: 'invitation', label: 'Invitations' },
 ]
 
 const actionLabels: Record<AuditEventRecord['action'], string> = {
@@ -61,6 +65,10 @@ const actionLabels: Record<AuditEventRecord['action'], string> = {
   credit_applied: 'Advance applied',
   opening_balance_added: 'Opening balance added',
   opening_balance_adjusted: 'Opening balance adjusted',
+  invitation_created: 'Invitation created',
+  invitation_accepted: 'Invitation accepted',
+  invitation_cancelled: 'Invitation cancelled',
+  member_revoked: 'Member access removed',
 }
 
 function eventIcon(entityType: AuditEntityType): LucideIcon {
@@ -78,6 +86,8 @@ function eventIcon(entityType: AuditEntityType): LucideIcon {
     case 'payment':
     case 'credit_application': return Wallet
     case 'opening_balance': return Wallet
+    case 'member': return Users
+    case 'invitation': return Mail
     default: return Activity
   }
 }
@@ -113,6 +123,7 @@ function entityLabel(value: AuditEntityType): string {
 
 export function HistoryPage({ ownerUid }: HistoryPageProps) {
   const [events, setEvents] = useState<AuditEventRecord[]>([])
+  const [members, setMembers] = useState<WorkspaceMemberRecord[]>([])
   const [search, setSearch] = useState('')
   const [entityFilter, setEntityFilter] = useState<'all' | AuditEntityType>('all')
   const [fromDate, setFromDate] = useState('')
@@ -124,7 +135,19 @@ export function HistoryPage({ ownerUid }: HistoryPageProps) {
     setIsLoading(true)
     setPageError('')
     try {
-      setEvents(await listAuditEvents(ownerUid))
+      const [eventsResult, membersResult] = await Promise.allSettled([
+        listAuditEvents(ownerUid),
+        listWorkspaceMembers(ownerUid),
+      ])
+      if (eventsResult.status === 'rejected') throw eventsResult.reason
+      setEvents(eventsResult.value)
+      if (membersResult.status === 'fulfilled') {
+        setMembers(membersResult.value)
+      } else {
+        // Keep the activity timeline available if member names cannot be loaded.
+        // Actor UIDs remain visible as a fallback.
+        setMembers([])
+      }
     } catch (error: unknown) {
       setPageError(getAuditErrorMessage(error))
     } finally {
@@ -135,6 +158,11 @@ export function HistoryPage({ ownerUid }: HistoryPageProps) {
   useEffect(() => {
     void loadEvents()
   }, [loadEvents])
+
+  const memberNames = useMemo(
+    () => new Map(members.map((member) => [member.uid, member.displayName || member.email])),
+    [members],
+  )
 
   const filteredEvents = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -150,9 +178,11 @@ export function HistoryPage({ ownerUid }: HistoryPageProps) {
         event.summary,
         actionLabels[event.action],
         entityLabel(event.entityType),
+        memberNames.get(event.actorUid) ?? event.actorUid,
+        event.actorUid,
       ].join(' ').toLowerCase().includes(term)
     })
-  }, [entityFilter, events, fromDate, search, toDate])
+  }, [entityFilter, events, fromDate, memberNames, search, toDate])
 
   const lastSevenDays = useMemo(() => {
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
@@ -267,6 +297,8 @@ export function HistoryPage({ ownerUid }: HistoryPageProps) {
                     </div>
                     <p>{event.summary}</p>
                     <div className="history-event-meta">
+                      <span>By {memberNames.get(event.actorUid) ?? `Account ${event.actorUid.slice(0, 8)}`}</span>
+                      <span aria-hidden="true">·</span>
                       <span>{entityLabel(event.entityType)}</span>
                       <span aria-hidden="true">·</span>
                       <span>Ref: {event.entityId}</span>

@@ -4,29 +4,128 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ==================================================
-    // 1. OWNER ACCESS
+    // 1. SHARED WORKSPACE ACCESS
     // ==================================================
 
-    function isOwner(userId) {
-      return request.auth != null
-        && request.auth.uid == userId;
+    function hasFullWorkspaceAccess(workspaceUid, memberUid) {
+      let memberPath =
+        /databases/$(database)/documents/users/$(workspaceUid)/workspaceMembers/$(memberUid);
+      let member = get(memberPath).data;
+      return member.uid == memberUid
+        && member.status == 'active'
+        && member.role == 'full_access';
     }
 
-    // Temporary restore mode is scoped to the signed-in user's own namespace
-    // and expires after ten minutes. It only enables create operations through
-    // the dedicated restore matcher below; restore writes use create-only transactions.
+    function isWorkspaceMember(userId) {
+      return request.auth != null
+        && (request.auth.uid == userId || hasFullWorkspaceAccess(userId, request.auth.uid));
+    }
+
+    // Keep the existing function name so all existing business-data matchers
+    // inherit shared-workspace membership without changing document paths.
+    function isOwner(userId) {
+      return isWorkspaceMember(userId);
+    }
+
+    function createdByCurrentActor(data) {
+      return request.auth != null
+        && data.createdBy is string
+        && data.createdBy == request.auth.uid;
+    }
+
+    // Temporary restore mode is scoped to the existing workspace namespace,
+    // not to whichever member happens to be signed in.
     function isRestoreMode(userId) {
       let restorePath =
         /databases/$(database)/documents/users/$(userId)/system/restoreMode;
-      return request.auth != null
-        && request.auth.uid == userId
+      return isWorkspaceMember(userId)
         && exists(restorePath)
         && get(restorePath).data.active == true
-        && get(restorePath).data.ownerUid == request.auth.uid
+        && get(restorePath).data.ownerUid == userId
         && get(restorePath).data.sessionToken is string
         && get(restorePath).data.sessionToken.size() >= 32
         && get(restorePath).data.expiresAt is timestamp
         && get(restorePath).data.expiresAt > request.time;
+    }
+
+    function validWorkspaceMember(uid, data) {
+      return data.keys().hasAll([
+          'uid', 'email', 'displayName', 'role', 'status', 'invitationId',
+          'invitedBy', 'invitedByEmail', 'isWorkspaceOwner', 'joinedAt', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'role', 'status', 'invitationId',
+          'invitedBy', 'invitedByEmail', 'isWorkspaceOwner', 'joinedAt', 'createdAt',
+          'revokedBy', 'revokedAt'
+        ])
+        && data.uid == uid
+        && data.email is string
+        && data.email.size() > 2
+        && data.email.size() <= 254
+        && data.email.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$')
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 120
+        && data.role == 'full_access'
+        && data.status in ['active', 'revoked']
+        && data.invitationId is string
+        && data.invitedBy is string
+        && data.invitedByEmail is string
+        && data.isWorkspaceOwner is bool
+        && data.joinedAt is timestamp
+        && data.createdAt is timestamp
+        && (!('revokedBy' in data) || data.revokedBy is string)
+        && (!('revokedAt' in data) || data.revokedAt is timestamp);
+    }
+
+    function validInvitationCreate(userId, invitationId, data) {
+      return data.keys().hasAll([
+          'invitationId', 'workspaceUid', 'invitedEmail', 'status',
+          'createdBy', 'createdByEmail', 'createdAt', 'expiresAt'
+        ])
+        && data.keys().hasOnly([
+          'invitationId', 'workspaceUid', 'invitedEmail', 'status',
+          'createdBy', 'createdByEmail', 'createdAt', 'expiresAt'
+        ])
+        && data.invitationId == invitationId
+        && invitationId.matches('^[a-f0-9]{64}$')
+        && data.workspaceUid == userId
+        && data.invitedEmail is string
+        && data.invitedEmail.size() <= 254
+        && data.invitedEmail.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$')
+        && data.status == 'pending'
+        && data.createdBy == request.auth.uid
+        && request.auth.token.email is string
+        && data.createdByEmail == request.auth.token.email.lower()
+        && data.createdAt is timestamp
+        && data.expiresAt is timestamp
+        && data.expiresAt > request.time
+        && data.expiresAt <= request.time + duration.value(8, 'd');
+    }
+
+    function validInvitationAcceptance(userId, invitationId, invitation) {
+      let memberPath =
+        /databases/$(database)/documents/users/$(userId)/workspaceMembers/$(request.auth.uid);
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && request.auth.token.email.lower() == invitation.invitedEmail
+        && invitation.status == 'pending'
+        && invitation.workspaceUid == userId
+        && invitation.expiresAt is timestamp
+        && invitation.expiresAt > request.time
+        && request.resource.data.status == 'accepted'
+        && request.resource.data.acceptedBy == request.auth.uid
+        && request.resource.data.acceptedAt is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedBy', 'acceptedAt'])
+        && existsAfter(memberPath)
+        && getAfter(memberPath).data.uid == request.auth.uid
+        && getAfter(memberPath).data.email == invitation.invitedEmail
+        && getAfter(memberPath).data.status == 'active'
+        && getAfter(memberPath).data.role == 'full_access'
+        && getAfter(memberPath).data.invitationId == invitationId
+        && getAfter(memberPath).data.invitedBy == invitation.createdBy
+        && getAfter(memberPath).data.invitedByEmail == invitation.createdByEmail;
     }
 
     // ==================================================
@@ -74,7 +173,7 @@ service cloud.firestore {
         && data.status == 'active'
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -155,7 +254,7 @@ service cloud.firestore {
         && data.status in ['active', 'archived']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -233,7 +332,7 @@ service cloud.firestore {
         && data.status in ['vacant', 'maintenance', 'inactive']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && roomPropertyIsActive(userId, data);
     }
@@ -304,7 +403,7 @@ service cloud.firestore {
         && data.status in ['available', 'assigned', 'retired']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -404,7 +503,7 @@ service cloud.firestore {
         && data.endNotes.size() <= 1000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && (
           (
@@ -688,7 +787,7 @@ service cloud.firestore {
         && data.moveOutNotes.size() <= 1000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && (
           (
@@ -872,6 +971,134 @@ service cloud.firestore {
     }
 
     // ==================================================
+    // SHARED WORKSPACE MEMBERSHIP AND INVITATIONS
+    // ==================================================
+
+    match /users/{userId}/workspaceMembers/{memberUid} {
+      allow get: if request.auth != null
+        && (request.auth.uid == userId || memberUid == request.auth.uid || isWorkspaceMember(userId));
+      allow list: if isWorkspaceMember(userId);
+
+      // The existing UID namespace is the permanent workspace owner.
+      allow create: if (
+          validWorkspaceMember(memberUid, request.resource.data)
+          && memberUid == userId
+          && request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.email == request.auth.token.email.lower()
+          && request.resource.data.status == 'active'
+          && request.resource.data.invitationId == ''
+          && request.resource.data.invitedBy == request.auth.uid
+          && request.resource.data.invitedByEmail == request.auth.token.email.lower()
+          && request.resource.data.isWorkspaceOwner == true
+        ) || (
+          validWorkspaceMember(memberUid, request.resource.data)
+          && request.auth != null
+          && request.auth.uid == memberUid
+          && request.resource.data.status == 'active'
+          && request.resource.data.isWorkspaceOwner == false
+          && request.resource.data.email == request.auth.token.email.lower()
+          && request.resource.data.invitationId is string
+          && request.resource.data.invitationId.matches('^[a-f0-9]{64}$')
+          && request.auth.token.email_verified == true
+          && exists(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId))
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.status == 'pending'
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.workspaceUid == userId
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.invitedEmail == request.resource.data.email
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.createdBy == request.resource.data.invitedBy
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.createdByEmail == request.resource.data.invitedByEmail
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.expiresAt > request.time
+          && getAfter(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.status == 'accepted'
+          && getAfter(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.acceptedBy == request.auth.uid
+        );
+
+      // Existing members may be revoked by another active member, never by
+      // themselves and never if they are the original workspace owner.
+      allow update: if (
+          isWorkspaceMember(userId)
+          && request.auth.uid != memberUid
+          && resource.data.isWorkspaceOwner == false
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.displayName == resource.data.displayName
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.invitationId == resource.data.invitationId
+          && request.resource.data.invitedBy == resource.data.invitedBy
+          && request.resource.data.invitedByEmail == resource.data.invitedByEmail
+          && request.resource.data.isWorkspaceOwner == false
+          && request.resource.data.joinedAt == resource.data.joinedAt
+          && request.resource.data.createdAt == resource.data.createdAt
+          && resource.data.status == 'active'
+          && request.resource.data.status == 'revoked'
+          && request.resource.data.revokedBy == request.auth.uid
+          && request.resource.data.revokedAt is timestamp
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'revokedBy', 'revokedAt'])
+        ) || (
+          // A revoked account can rejoin only by accepting a fresh invitation
+          // addressed to its verified email. Keep the same auth UID and record.
+          request.auth != null
+          && request.auth.uid == memberUid
+          && request.auth.token.email_verified == true
+          && request.auth.token.email is string
+          && resource.data.isWorkspaceOwner == false
+          && resource.data.status == 'revoked'
+          && request.resource.data.status == 'active'
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.email is string
+          && request.auth.token.email.lower() == request.resource.data.email
+          && request.resource.data.displayName == resource.data.displayName
+          && request.resource.data.role == 'full_access'
+          && request.resource.data.isWorkspaceOwner == false
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.invitationId is string
+          && request.resource.data.invitationId.matches('^[a-f0-9]{64}$')
+          && request.resource.data.joinedAt is timestamp
+          && exists(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId))
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.status == 'pending'
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.invitedEmail == request.resource.data.email
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.createdBy == request.resource.data.invitedBy
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.createdByEmail == request.resource.data.invitedByEmail
+          && get(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.expiresAt > request.time
+          && getAfter(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.status == 'accepted'
+          && getAfter(/databases/$(database)/documents/users/$(userId)/workspaceInvitations/$(request.resource.data.invitationId)).data.acceptedBy == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'email', 'invitationId', 'invitedBy', 'invitedByEmail', 'joinedAt', 'revokedBy', 'revokedAt'
+          ])
+        );
+
+      allow delete: if false;
+    }
+
+    match /users/{userId}/workspaceInvitations/{invitationId} {
+      allow get: if isWorkspaceMember(userId)
+        || (
+          request.auth != null
+          && request.auth.token.email_verified == true
+          && resource.data.status == 'pending'
+          && request.auth.token.email is string
+          && request.auth.token.email.lower() == resource.data.invitedEmail
+          && resource.data.workspaceUid == userId
+          && resource.data.expiresAt is timestamp
+          && resource.data.expiresAt > request.time
+        );
+      allow list: if isWorkspaceMember(userId);
+
+      allow create: if isWorkspaceMember(userId)
+        && validInvitationCreate(userId, invitationId, request.resource.data);
+
+      allow update: if (
+          isWorkspaceMember(userId)
+          && resource.data.status == 'pending'
+          && request.resource.data.status == 'revoked'
+          && request.resource.data.revokedBy == request.auth.uid
+          && request.resource.data.revokedAt is timestamp
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'revokedBy', 'revokedAt'])
+        ) || validInvitationAcceptance(userId, invitationId, resource.data);
+
+      allow delete: if false;
+    }
+
+    // ==================================================
     // 8. PROPERTY RECORDS
     // ==================================================
 
@@ -879,7 +1106,8 @@ service cloud.firestore {
       allow read: if isOwner(userId);
 
       allow create: if isOwner(userId)
-        && validProperty(request.resource.data);
+        && validProperty(request.resource.data)
+        && createdByCurrentActor(request.resource.data);
 
       allow update: if isOwner(userId)
         && validProperty(request.resource.data)
@@ -980,7 +1208,8 @@ service cloud.firestore {
       allow read: if isOwner(userId);
 
       allow create: if isOwner(userId)
-        && validRoom(request.resource.data, userId);
+        && validRoom(request.resource.data, userId)
+        && createdByCurrentActor(request.resource.data);
 
       allow update: if isOwner(userId)
         && validRoom(request.resource.data, userId)
@@ -1018,7 +1247,8 @@ service cloud.firestore {
       allow read: if isOwner(userId);
 
       allow create: if isOwner(userId)
-        && validTenant(request.resource.data);
+        && validTenant(request.resource.data)
+        && createdByCurrentActor(request.resource.data);
 
       allow update: if isOwner(userId)
         && validTenant(request.resource.data)
@@ -1038,6 +1268,7 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validMeter(request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && (
           request.resource.data.status == 'available'
           || (
@@ -1095,6 +1326,7 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validMeterAssignment(request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && request.resource.data.status == 'current'
         && validMeterAssignmentRoom(userId, request.resource.data)
         && validCurrentMeterPair(
@@ -1206,6 +1438,7 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validTenantAssignment(request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && request.resource.data.status == 'current'
         && validTenantAssignmentTenant(userId, request.resource.data)
         && validTenantAssignmentRoom(userId, request.resource.data)
@@ -1359,7 +1592,7 @@ service cloud.firestore {
         && data.notes.size() <= 1000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && rateId == data.roomId + '__' + data.effectiveFrom
         && validRentRateRoom(userId, data);
@@ -1471,7 +1704,7 @@ service cloud.firestore {
         && data.status == 'issued'
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && billId == data.assignmentId + '__' + data.billingMonth
         && exists(assignmentPath)
@@ -1500,7 +1733,8 @@ service cloud.firestore {
       allow read: if isOwner(userId);
 
       allow create: if isOwner(userId)
-        && validRentRate(userId, rateId, request.resource.data);
+        && validRentRate(userId, rateId, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
 
       // Rate records are immutable. Add a new effective date to change rent.
       allow update: if false;
@@ -1515,7 +1749,8 @@ service cloud.firestore {
       allow read: if isOwner(userId);
 
       allow create: if isOwner(userId)
-        && validRentBill(userId, billId, request.resource.data);
+        && validRentBill(userId, billId, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
 
       // Issued bills are historical financial records and cannot be rewritten.
       allow update: if false;
@@ -1583,7 +1818,7 @@ service cloud.firestore {
         && data.notes.size() <= 1000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && rateId == 'rate__' + data.roomId + '__' + data.effectiveFrom;
     }
@@ -1688,7 +1923,7 @@ service cloud.firestore {
         && data.notes.size() <= 1000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && (
           readingId == data.meterAssignmentId + '__' + data.billingMonth
@@ -1750,14 +1985,16 @@ service cloud.firestore {
 
     match /users/{userId}/electricityRates/{rateId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && validElectricityRate(userId, rateId, request.resource.data);
+      allow create: if isOwner(userId) && validElectricityRate(userId, rateId, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
       allow update: if false;
       allow delete: if false;
     }
 
     match /users/{userId}/electricityReadings/{readingId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && validElectricityReading(userId, readingId, request.resource.data);
+      allow create: if isOwner(userId) && validElectricityReading(userId, readingId, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
       allow update: if false;
       allow delete: if false;
     }
@@ -1835,7 +2072,7 @@ service cloud.firestore {
         && data.status == 'issued'
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && existsAfter(readingPath)
         && getAfter(readingPath).data.meterAssignmentId == data.meterAssignmentId
@@ -1859,7 +2096,8 @@ service cloud.firestore {
 
     match /users/{userId}/electricityBills/{billId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && validElectricityBill(userId, billId, request.resource.data);
+      allow create: if isOwner(userId) && validElectricityBill(userId, billId, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
       allow update: if false;
       allow delete: if false;
     }
@@ -1901,7 +2139,7 @@ service cloud.firestore {
         && validElectricityNumber(data.lastReadingValue)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && existsAfter(readingPath)
         && getAfter(readingPath).data.meterAssignmentId == assignmentId
@@ -1913,7 +2151,8 @@ service cloud.firestore {
 
     match /users/{userId}/electricityReadingState/{assignmentId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && validElectricityReadingState(userId, assignmentId, request.resource.data);
+      allow create: if isOwner(userId) && validElectricityReadingState(userId, assignmentId, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
       allow update: if isOwner(userId)
         && validElectricityReadingState(userId, assignmentId, request.resource.data)
         && request.resource.data.meterAssignmentId == resource.data.meterAssignmentId
@@ -2108,7 +2347,7 @@ service cloud.firestore {
         && data.balanceUpdates.size() == data.allocations.size()
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
         && paymentOpeningBalanceLinkedAfter(userId, paymentId, data)
         && (data.advanceAddedMinor == 0 || paymentCreditLinkedAfter(userId, paymentId, data));
@@ -2182,7 +2421,7 @@ service cloud.firestore {
         && data.lastTransactionAmountMinor <= data.originalAmountMinor
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -2229,7 +2468,8 @@ service cloud.firestore {
 
     match /users/{userId}/payments/{paymentId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && validPaymentRecord(userId, paymentId, request.resource.data);
+      allow create: if isOwner(userId) && validPaymentRecord(userId, paymentId, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
       allow update: if false;
       allow delete: if false;
     }
@@ -2239,6 +2479,7 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validPaymentBillBalance(balanceId, request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && request.resource.data.paidAmountMinor == request.resource.data.lastTransactionAmountMinor
         && paymentBalanceLinkedAfter(userId, request.resource.data);
 
@@ -2301,7 +2542,7 @@ service cloud.firestore {
         && data.lastTransactionAmountMinor <= 10000000000000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -2342,6 +2583,7 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validTenantCredit(tenantId, request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && request.resource.data.lastTransactionType == 'payment'
         && request.resource.data.creditMinor == request.resource.data.lastTransactionAmountMinor
         && tenantCreditLinkedAfter(userId, tenantId, request.resource.data);
@@ -2409,7 +2651,7 @@ service cloud.firestore {
         && data.status == 'posted'
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -2440,6 +2682,7 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
         && validCreditApplication(applicationId, request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && creditApplicationAtomicAfter(userId, applicationId, request.resource.data);
       allow update: if false;
       allow delete: if false;
@@ -2462,7 +2705,7 @@ service cloud.firestore {
         && data.title.size() <= 120
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -2489,7 +2732,7 @@ service cloud.firestore {
             && data.expiresAt > data.completedAt))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -2497,7 +2740,7 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
         && validNote(request.resource.data)
-        && request.resource.data.createdBy == request.auth.uid;
+        && createdByCurrentActor(request.resource.data);
       allow update: if isOwner(userId)
         && validNote(request.resource.data)
         && request.resource.data.createdAt == resource.data.createdAt
@@ -2514,6 +2757,7 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
         && validNoteTask(request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && noteTaskParentExistsAfter(userId, request.resource.data.noteId);
       allow update: if isOwner(userId)
         && validNoteTask(request.resource.data)
@@ -2571,7 +2815,7 @@ service cloud.firestore {
         && data.lastTransactionAmountMinor <= 10000000000000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -2607,6 +2851,7 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validOpeningBalance(tenantId, request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && request.resource.data.lastTransactionType == 'opening_balance'
         && request.resource.data.lastTransactionId == tenantId
         && request.resource.data.adjustedAmountMinor == 0
@@ -2702,7 +2947,7 @@ service cloud.firestore {
         && data.note.size() >= 1
         && data.note.size() <= 1000
         && data.createdAt is timestamp
-        && data.createdBy == request.auth.uid;
+        && data.createdBy is string && data.createdBy.size() > 0;
     }
 
     function openingBalanceAdjustmentLinkedAfter(userId, adjustmentId, data) {
@@ -2719,6 +2964,7 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
         && validOpeningBalanceAdjustment(adjustmentId, request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && openingBalanceAdjustmentLinkedAfter(userId, adjustmentId, request.resource.data);
       allow update, delete: if false;
     }
@@ -2754,7 +3000,7 @@ service cloud.firestore {
         && data.status == 'posted'
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
-        && data.createdBy == request.auth.uid
+        && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid;
     }
 
@@ -2784,6 +3030,7 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
         && validOpeningBalanceCreditApplication(applicationId, request.resource.data)
+        && createdByCurrentActor(request.resource.data)
         && openingBalanceCreditApplicationAtomicAfter(userId, applicationId, request.resource.data);
       allow update, delete: if false;
     }
@@ -2806,13 +3053,15 @@ service cloud.firestore {
           'created', 'updated', 'assigned', 'moved_out', 'replaced',
           'rate_added', 'bills_generated', 'bill_issued',
           'payment_recorded', 'credit_applied',
-          'opening_balance_added', 'opening_balance_adjusted'
+          'opening_balance_added', 'opening_balance_adjusted',
+          'invitation_created', 'invitation_accepted',
+          'invitation_cancelled', 'member_revoked'
         ]
         && data.entityType in [
           'property', 'room', 'tenant', 'meter', 'tenant_assignment',
           'meter_assignment', 'rent_rate', 'rent_bills',
           'electricity_rate', 'electricity_bill', 'payment',
-          'credit_application', 'opening_balance'
+          'credit_application', 'opening_balance', 'member', 'invitation'
         ]
         && data.entityId is string
         && data.entityId.size() >= 1
@@ -2868,7 +3117,7 @@ service cloud.firestore {
         && data.updatedBy == request.auth.uid;
     }
 
-    // Workspace settings are private to the signed-in account.
+    // Workspace settings are shared by active workspace members.
     // Existing settings cannot be deleted by the client.
     match /users/{userId}/settings/{settingsId} {
       allow read: if isOwner(userId) && settingsId == 'general';
@@ -2876,7 +3125,7 @@ service cloud.firestore {
       allow create: if isOwner(userId)
         && settingsId == 'general'
         && validWorkspaceSettings(request.resource.data)
-        && request.resource.data.createdBy == request.auth.uid;
+        && createdByCurrentActor(request.resource.data);
 
       allow update: if isOwner(userId)
         && settingsId == 'general'
@@ -2896,7 +3145,7 @@ service cloud.firestore {
           'active', 'ownerUid', 'sessionToken', 'expiresAt', 'createdAt'
         ])
         && request.resource.data.active == true
-        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == userId
         && request.resource.data.sessionToken is string
         && request.resource.data.sessionToken.size() >= 32
         && request.resource.data.expiresAt is timestamp

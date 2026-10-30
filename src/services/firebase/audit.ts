@@ -13,7 +13,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 
 export type AuditAction =
   | 'created'
@@ -28,6 +28,10 @@ export type AuditAction =
   | 'credit_applied'
   | 'opening_balance_added'
   | 'opening_balance_adjusted'
+  | 'invitation_created'
+  | 'invitation_accepted'
+  | 'invitation_cancelled'
+  | 'member_revoked'
 
 export type AuditEntityType =
   | 'property'
@@ -43,6 +47,8 @@ export type AuditEntityType =
   | 'payment'
   | 'credit_application'
   | 'opening_balance'
+  | 'member'
+  | 'invitation'
 
 export type AuditEventInput = {
   action: AuditAction
@@ -73,6 +79,10 @@ const allowedActions = new Set<AuditAction>([
   'credit_applied',
   'opening_balance_added',
   'opening_balance_adjusted',
+  'invitation_created',
+  'invitation_accepted',
+  'invitation_cancelled',
+  'member_revoked',
 ])
 
 const allowedEntityTypes = new Set<AuditEntityType>([
@@ -89,6 +99,8 @@ const allowedEntityTypes = new Set<AuditEntityType>([
   'payment',
   'credit_application',
   'opening_balance',
+  'member',
+  'invitation',
 ])
 
 function isNonEmptyString(value: unknown, maximumLength: number): value is string {
@@ -152,7 +164,7 @@ export async function recordAuditEvent(
       entityId,
       entityLabel,
       summary,
-      actorUid: ownerUid,
+      actorUid: getCurrentActorUid(),
       occurredAt: serverTimestamp(),
     }
 
