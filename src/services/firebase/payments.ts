@@ -418,7 +418,10 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
     allocations: value.allocations,
   })
   const amountMinor = value.amountMinor
-  const openingBalanceAllocationMinor = value.openingBalanceAllocationMinor ?? 0
+  // Use the schema's normalized output so the optional legacy field is always a number.
+  const openingBalanceAllocationMinor = parsed.success
+    ? parsed.data.openingBalanceAllocationMinor
+    : 0
   const allocatedAmountMinor = parsed.success
     ? parsed.data.allocations.reduce((total, allocation) => total + allocation.amountMinor, 0) +
       (isSafeNonNegativeInteger(openingBalanceAllocationMinor) ? openingBalanceAllocationMinor : -1)
@@ -439,6 +442,7 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
     !parsed.success ||
     !isSafeNonNegativeInteger(amountMinor) ||
     amountMinor <= 0 ||
+    !isSafeNonNegativeInteger(openingBalanceAllocationMinor) ||
     value.receiptNumber !== `PAY-${id}` ||
     (transactionId !== null && (typeof transactionId !== 'string' || !/^[A-Z0-9]{10}$/.test(transactionId))) ||
     value.allocatedAmountMinor !== allocatedAmountMinor ||
@@ -626,8 +630,11 @@ function readCreditApplication(id: string, value: unknown): CreditApplicationRec
   const amountMinor = value.amountMinor
   const billUpdates = value.billUpdates
   const creditUpdate = value.tenantCreditUpdate
-  const isLegacyApplicationNumber = value.applicationNumber === `ADV-${id}`
-  const isCurrentApplicationNumber = typeof value.applicationNumber === 'string' && /^AP-[A-Za-z0-9]{7}$/.test(value.applicationNumber)
+  const applicationNumber = typeof value.applicationNumber === 'string'
+    ? value.applicationNumber
+    : ''
+  const isLegacyApplicationNumber = applicationNumber === `ADV-${id}`
+  const isCurrentApplicationNumber = /^AP-[A-Za-z0-9]{7}$/.test(applicationNumber)
   if (
     !allocationResult.success ||
     (!isLegacyApplicationNumber && !isCurrentApplicationNumber) ||
@@ -651,7 +658,7 @@ function readCreditApplication(id: string, value: unknown): CreditApplicationRec
   }
   return {
     id,
-    applicationNumber: value.applicationNumber,
+    applicationNumber,
     tenantId: allocationResult.data.tenantId,
     tenantCode: allocationResult.data.tenantCode,
     tenantName: allocationResult.data.tenantName,

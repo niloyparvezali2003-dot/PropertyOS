@@ -545,7 +545,6 @@ function assertNoOverlappingAssignment(
   records: AssignmentSnapshotRecord[],
   startDate: string,
   endDate: string,
-  type: 'room',
 ): void {
   for (const record of records) {
     if (record.id === target.id) continue
@@ -1066,7 +1065,6 @@ async function createRentBillForAssignmentMonth(
       roomAssignmentRecords,
       occupancyStartDate,
       occupancyEndDate,
-      'room',
     )
 
     const rates = allRates.filter(
