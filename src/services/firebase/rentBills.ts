@@ -545,7 +545,7 @@ function assertNoOverlappingAssignment(
   records: AssignmentSnapshotRecord[],
   startDate: string,
   endDate: string,
-  type: 'room' | 'tenant',
+  type: 'room',
 ): void {
   for (const record of records) {
     if (record.id === target.id) continue
@@ -573,12 +573,9 @@ function assertNoOverlappingAssignment(
       effectiveOtherEnd >= startDate
 
     if (overlaps) {
-      const message =
-        type === 'room'
-          ? `Room ${target.roomCode} has overlapping tenant assignments during ${startDate} to ${endDate}. No bill was generated for this assignment.`
-          : `Tenant ${target.tenantCode} has overlapping assignments during ${startDate} to ${endDate}. No bill was generated for this assignment.`
-
-      throw new RentAssignmentOverlapError(message)
+      throw new RentAssignmentOverlapError(
+        `Room ${target.roomCode} has overlapping tenant assignments during ${startDate} to ${endDate}. No bill was generated for this assignment.`,
+      )
     }
   }
 }
@@ -908,27 +905,17 @@ async function createRentBillForAssignmentMonth(
     previewAssignment.roomId,
   )
 
-  const tenantIndexRef = doc(
-    db,
-    'users',
-    ownerUid,
-    'currentRoomByTenant',
-    previewAssignment.tenantId,
-  )
-
   return runTransaction(db, async (transaction) => {
     const [
       existingBillSnapshot,
       assignmentSnapshot,
       roomSnapshot,
       roomIndexSnapshot,
-      tenantIndexSnapshot,
     ] = await Promise.all([
       transaction.get(billRef),
       transaction.get(assignmentRef),
       transaction.get(roomRef),
       transaction.get(roomIndexRef),
-      transaction.get(tenantIndexRef),
     ])
 
     if (existingBillSnapshot.exists()) {
@@ -976,32 +963,18 @@ async function createRentBillForAssignmentMonth(
         ? roomIndexSnapshot.data().assignmentId
         : null
 
-    const tenantCurrentAssignmentId =
-      tenantIndexSnapshot.exists()
-        ? tenantIndexSnapshot.data().assignmentId
-        : null
-
     if (
-      (
-        roomIndexSnapshot.exists() &&
-        typeof roomCurrentAssignmentId !== 'string'
-      ) ||
-      (
-        tenantIndexSnapshot.exists() &&
-        typeof tenantCurrentAssignmentId !== 'string'
-      )
+      roomIndexSnapshot.exists() &&
+      typeof roomCurrentAssignmentId !== 'string'
     ) {
       throw new InvalidRentBillingDataError(
-        'A current tenant-assignment index is invalid.',
+        'The room’s current tenant-assignment index is invalid.',
       )
     }
 
     if (
       assignment.status === 'current' &&
-      (
-        roomCurrentAssignmentId !== assignment.id ||
-        tenantCurrentAssignmentId !== assignment.id
-      )
+      roomCurrentAssignmentId !== assignment.id
     ) {
       throw new RentAssignmentOverlapError(
         'The current assignment indexes do not match this tenant. No bill was generated.',
@@ -1010,10 +983,7 @@ async function createRentBillForAssignmentMonth(
 
     if (
       assignment.status === 'ended' &&
-      (
-        roomCurrentAssignmentId === assignment.id ||
-        tenantCurrentAssignmentId === assignment.id
-      )
+      roomCurrentAssignmentId === assignment.id
     ) {
       throw new InvalidRentBillingDataError(
         'An ended assignment still has a current-assignment index.',
@@ -1048,22 +1018,13 @@ async function createRentBillForAssignmentMonth(
           record.data.roomId === assignment.roomId,
       )
 
-    const tenantAssignmentRecords =
-      convertAssignmentsToSnapshotRecords(
-        allAssignments,
-      ).filter(
-        (record) =>
-          record.data.tenantId === assignment.tenantId,
-      )
-
-    // Include any indexed assignment missing from the initial
-    // assignment list, then validate before creating the bill.
+    // Only the room may have one active tenant assignment at a time.
+    // A tenant can legitimately have simultaneous assignments in other rooms.
+    // Include a room-indexed assignment missing from the initial list before
+    // checking room overlap; there is no one-room-per-tenant index anymore.
     const linkedAssignmentIds = [
       ...new Set(
-        [
-          roomCurrentAssignmentId,
-          tenantCurrentAssignmentId,
-        ].filter(
+        [roomCurrentAssignmentId].filter(
           (id): id is string =>
             typeof id === 'string' &&
             id !== assignment.id,
@@ -1098,14 +1059,6 @@ async function createRentBillForAssignmentMonth(
         roomAssignmentRecords.push(record)
       }
 
-      if (
-        record.data.tenantId === assignment.tenantId &&
-        !tenantAssignmentRecords.some(
-          (item) => item.id === record.id,
-        )
-      ) {
-        tenantAssignmentRecords.push(record)
-      }
     })
 
     assertNoOverlappingAssignment(
@@ -1114,14 +1067,6 @@ async function createRentBillForAssignmentMonth(
       occupancyStartDate,
       occupancyEndDate,
       'room',
-    )
-
-    assertNoOverlappingAssignment(
-      assignment,
-      tenantAssignmentRecords,
-      occupancyStartDate,
-      occupancyEndDate,
-      'tenant',
     )
 
     const rates = allRates.filter(

@@ -6,9 +6,12 @@ import {
   useState,
   type FormEvent,
 } from 'react'
+import { flushSync } from 'react-dom'
 import {
   Banknote,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   CircleDollarSign,
   ClipboardList,
   CreditCard,
@@ -19,7 +22,11 @@ import {
   Wallet,
 } from 'lucide-react'
 
-import { listElectricityBills, type ElectricityBillRecord } from '../services/firebase/electricity'
+import {
+  listElectricityBills,
+  resolveElectricityBillTenantAssignment,
+  type ElectricityBillRecord,
+} from '../services/firebase/electricity'
 import {
   applyTenantCreditToOpeningBalance,
   applyTenantCredit,
@@ -167,9 +174,29 @@ function paymentReferenceLabel(payment: Pick<PaymentRecord, 'transactionId' | 'r
   return payment.transactionId ? `TRX ID: ${payment.transactionId}` : `Legacy receipt ID: ${payment.receiptNumber}`
 }
 
-function assignmentCovers(assignment: TenantAssignmentRecord, date: string): boolean {
-  return assignment.moveInDate <= date &&
-    (assignment.moveOutDate === null || assignment.moveOutDate >= date)
+const LEGACY_REFERENCE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz'
+const LEGACY_REFERENCE_SPACE = 62n ** 7n
+
+/** Stable short alias for immutable advance applications created before AP references existed. */
+function legacyAdvanceReferenceSuffix(documentId: string): string {
+  let hash = 14695981039346656037n
+  for (let index = 0; index < documentId.length; index += 1) {
+    hash ^= BigInt(documentId.charCodeAt(index))
+    hash = BigInt.asUintN(64, hash * 1099511628211n)
+  }
+  let value = hash % LEGACY_REFERENCE_SPACE
+  let suffix = ''
+  for (let index = 0; index < 7; index += 1) {
+    suffix = LEGACY_REFERENCE_ALPHABET[Number(value % 62n)] + suffix
+    value /= 62n
+  }
+  return suffix
+}
+
+function advanceApplicationReferenceLabel(applicationNumber: string, documentId: string): string {
+  if (/^AP-[A-Za-z0-9]{7}$/.test(applicationNumber)) return applicationNumber
+  if (applicationNumber.startsWith('ADV-')) return `AP-${legacyAdvanceReferenceSuffix(documentId)}`
+  return applicationNumber
 }
 
 function makePayableBills(
@@ -238,12 +265,11 @@ function makePayableBills(
   }
 
   for (const bill of electricityBills) {
-    const matches = assignments.filter((assignment) => assignment.roomId === bill.roomId && assignmentCovers(assignment, bill.readingDate))
-    if (matches.length !== 1) {
+    const assignment = resolveElectricityBillTenantAssignment(bill, assignments)
+    if (!assignment) {
       unmatchedElectricity += 1
       continue
     }
-    const assignment = matches[0]
     addBill({
       billType: 'electricity',
       billId: bill.id,
@@ -310,6 +336,8 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
   const [allocationAmounts, setAllocationAmounts] = useState<Record<string, string>>({})
   const [form, setForm] = useState<PaymentFormState>(emptyPaymentForm)
   const [printPaymentId, setPrintPaymentId] = useState<string | null>(null)
+  const [showAllRecentPayments, setShowAllRecentPayments] = useState(false)
+  const [showAllAdvanceApplications, setShowAllAdvanceApplications] = useState(false)
   const [paymentAttemptId, setPaymentAttemptId] = useState(newAttemptId)
   const creditAttemptIds = useRef(new Map<string, string>())
 
@@ -347,6 +375,23 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
   }, [ownerUid])
 
   useEffect(() => { void loadData() }, [loadData])
+
+  const recentPayments = useMemo(() => [...payments].sort((left, right) => {
+    // Recent means when the receipt was recorded, not a possibly backdated paidOn date.
+    const createdAtDifference = (right.createdAt?.toMillis() ?? 0) - (left.createdAt?.toMillis() ?? 0)
+    if (createdAtDifference !== 0) return createdAtDifference
+    const paidOnDifference = right.paidOn.localeCompare(left.paidOn)
+    return paidOnDifference || right.id.localeCompare(left.id)
+  }), [payments])
+  const visibleRecentPayments = showAllRecentPayments ? recentPayments : recentPayments.slice(0, 5)
+  const recentAdvanceApplications = useMemo(() => [...creditApplications].sort((left, right) => {
+    // Use the actual application creation timestamp, not the bill month or allocation date.
+    const createdAtDifference = (right.createdAt?.toMillis() ?? 0) - (left.createdAt?.toMillis() ?? 0)
+    return createdAtDifference || right.id.localeCompare(left.id)
+  }), [creditApplications])
+  const visibleAdvanceApplications = showAllAdvanceApplications
+    ? recentAdvanceApplications
+    : recentAdvanceApplications.slice(0, 5)
 
   const payableState = useMemo(() => makePayableBills(rentBills, electricityBills, assignments, balances), [rentBills, electricityBills, assignments, balances])
   const openBills = payableState.bills
@@ -582,8 +627,14 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
   }
 
   const printReceipt = (payment: PaymentRecord) => {
-    setPrintPaymentId(payment.id)
-    window.setTimeout(() => window.print(), 120)
+    // Flush the selected receipt into the DOM synchronously, then call print
+    // directly inside the button's click event. The previous setTimeout path
+    // could lose mobile Safari/Chrome's transient user activation, so the
+    // browser silently ignored window.print() on phones.
+    flushSync(() => {
+      setPrintPaymentId(payment.id)
+    })
+    window.print()
   }
 
   return (
@@ -696,17 +747,43 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
 
         <section className="payments-history-panel">
           <div className="payments-section-heading"><div><h2>Recent payments</h2><p className="payments-section-subtitle">Posted receipts are preserved as immutable history.</p></div><ReceiptText size={21} aria-hidden="true" /></div>
-          {isLoading ? <div className="payment-empty-state"><span className="payment-inline-spinner"><LoaderCircle size={17} className="animate-spin" /> Loading payment history…</span></div> : payments.length === 0 ? <div className="payment-empty-state">No payments recorded yet. A receipt will appear here after the first payment.</div> : (
-            <div className="payment-history-list">{payments.slice(0, 12).map((payment) => (
-              <article className="payment-history-row" key={payment.id}><div className="payment-history-main"><p className="payment-history-title payment-transaction-id">{paymentReferenceLabel(payment)}</p><div className="payment-history-meta">{payment.tenantCode} — {payment.tenantName}<br />{formatDate(payment.paidOn)} · {methodLabel(payment.method)}<br />{payment.allocations.length + (payment.openingBalanceAllocationMinor > 0 ? 1 : 0)} allocation{payment.allocations.length + (payment.openingBalanceAllocationMinor > 0 ? 1 : 0) === 1 ? '' : 's'}{payment.advanceAddedMinor > 0 ? ` · ${formatTaka(payment.advanceAddedMinor)} advance` : ''}</div><div className="payment-history-actions"><button type="button" onClick={() => printReceipt(payment)}><Printer size={14} /> Print receipt</button></div></div><strong className="payment-history-amount">{formatTaka(payment.amountMinor)}</strong></article>
-            ))}</div>
+          {isLoading ? <div className="payment-empty-state"><span className="payment-inline-spinner"><LoaderCircle size={17} className="animate-spin" /> Loading payment history…</span></div> : recentPayments.length === 0 ? <div className="payment-empty-state">No payments recorded yet. A receipt will appear here after the first payment.</div> : (
+            <>
+              <div className="payment-history-list" id="recent-payment-history-list">{visibleRecentPayments.map((payment) => (
+                <article className="payment-history-row" key={payment.id}><div className="payment-history-main"><p className="payment-history-title payment-transaction-id">{paymentReferenceLabel(payment)}</p><div className="payment-history-meta">{payment.tenantCode} — {payment.tenantName}<br />{formatDate(payment.paidOn)} · {methodLabel(payment.method)}<br />{payment.allocations.length + (payment.openingBalanceAllocationMinor > 0 ? 1 : 0)} allocation{payment.allocations.length + (payment.openingBalanceAllocationMinor > 0 ? 1 : 0) === 1 ? '' : 's'}{payment.advanceAddedMinor > 0 ? ` · ${formatTaka(payment.advanceAddedMinor)} advance` : ''}</div><div className="payment-history-actions"><button type="button" onClick={() => printReceipt(payment)}><Printer size={14} /> Print receipt</button></div></div><strong className="payment-history-amount">{formatTaka(payment.amountMinor)}</strong></article>
+              ))}</div>
+              {recentPayments.length > 5 && (
+                <button
+                  className="payment-history-more-button"
+                  type="button"
+                  onClick={() => setShowAllRecentPayments((current) => !current)}
+                  aria-expanded={showAllRecentPayments}
+                  aria-controls="recent-payment-history-list"
+                >
+                  {showAllRecentPayments ? <><ChevronUp size={15} /> Show less</> : <><ChevronDown size={15} /> Show more ({recentPayments.length - 5} older)</>}
+                </button>
+              )}
+            </>
           )}
 
           <div className="payments-section-heading payment-subsection-heading"><div><h2>Advance applications</h2><p className="payments-section-subtitle">Advance credit applied to bills, separate from cash receipts.</p></div><CreditCard size={20} aria-hidden="true" /></div>
-          {isLoading ? <div className="payment-empty-state">Loading advance history…</div> : creditApplications.length === 0 ? <div className="payment-empty-state">No advance credit has been applied yet.</div> : (
-            <div className="payment-history-list">{creditApplications.slice(0, 12).map((application) => (
-              <article className="payment-history-row" key={application.id}><div className="payment-history-main"><p className="payment-history-title">{application.applicationNumber}</p><div className="payment-history-meta">{application.tenantCode} — {application.tenantName}<br />{billTypeLabel(application.allocation.billType)} · {formatMonth(application.allocation.billingMonth)} · {application.allocation.roomCode} / {application.allocation.roomNumber}</div></div><strong className="payment-history-amount">{formatTaka(application.amountMinor)}</strong></article>
-            ))}</div>
+          {isLoading ? <div className="payment-empty-state">Loading advance history…</div> : recentAdvanceApplications.length === 0 ? <div className="payment-empty-state">No advance credit has been applied yet.</div> : (
+            <>
+              <div className="payment-history-list" id="advance-application-history-list">{visibleAdvanceApplications.map((application) => (
+                <article className="payment-history-row" key={application.id}><div className="payment-history-main"><p className="payment-history-title payment-transaction-id">{advanceApplicationReferenceLabel(application.applicationNumber, application.id)}</p><div className="payment-history-meta">{application.tenantCode} — {application.tenantName}<br />{billTypeLabel(application.allocation.billType)} · {formatMonth(application.allocation.billingMonth)} · {application.allocation.roomCode} / {application.allocation.roomNumber}</div></div><strong className="payment-history-amount">{formatTaka(application.amountMinor)}</strong></article>
+              ))}</div>
+              {recentAdvanceApplications.length > 5 && (
+                <button
+                  className="payment-history-more-button"
+                  type="button"
+                  onClick={() => setShowAllAdvanceApplications((current) => !current)}
+                  aria-expanded={showAllAdvanceApplications}
+                  aria-controls="advance-application-history-list"
+                >
+                  {showAllAdvanceApplications ? <><ChevronUp size={15} /> Show less</> : <><ChevronDown size={15} /> Show more ({recentAdvanceApplications.length - 5} older)</>}
+                </button>
+              )}
+            </>
           )}
         </section>
       </div>

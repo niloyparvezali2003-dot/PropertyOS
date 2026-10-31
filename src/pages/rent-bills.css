@@ -303,9 +303,15 @@
 
 .rent-bills-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(145px, 190px);
+  grid-template-columns: minmax(0, 1fr) minmax(145px, 190px) auto;
+  align-items: end;
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.rent-download-report-button {
+  min-height: 43px;
+  white-space: nowrap;
 }
 
 .rent-bills-toolbar .search-input {
@@ -541,6 +547,11 @@
 
   .rent-bills-toolbar {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rent-download-report-button {
+    width: 100%;
+    justify-content: center;
   }
 
   .rent-bill-details {

@@ -220,6 +220,33 @@ function balanceDocumentId(billType: PaymentBillType, billId: string): string {
   return `${billType}__${billId}`
 }
 
+const ADVANCE_REFERENCE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz'
+const ADVANCE_REFERENCE_LENGTH = 7
+const ADVANCE_REFERENCE_MAX_ACCEPTED_BYTE = 248
+
+/** Generates a uniformly distributed 7-character alphanumeric reference using Web Crypto. */
+function generateAdvanceReferenceCode(): string {
+  const characters: string[] = []
+  // 248 is the largest multiple of 62 below 256; rejection avoids modulo bias.
+  while (characters.length < ADVANCE_REFERENCE_LENGTH) {
+    const bytes = new Uint8Array(16)
+    crypto.getRandomValues(bytes)
+    for (const byte of bytes) {
+      if (byte >= ADVANCE_REFERENCE_MAX_ACCEPTED_BYTE) continue
+      characters.push(ADVANCE_REFERENCE_ALPHABET[byte % ADVANCE_REFERENCE_ALPHABET.length])
+      if (characters.length === ADVANCE_REFERENCE_LENGTH) break
+    }
+  }
+  return characters.join('')
+}
+
+class AdvanceReferenceCollisionError extends Error {
+  constructor() {
+    super('The advance reference code is already reserved. Generate another code.')
+    this.name = 'AdvanceReferenceCollisionError'
+  }
+}
+
 const TRANSACTION_ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 const TRANSACTION_ID_LENGTH = 10
 
@@ -251,6 +278,7 @@ function assignmentCoversDate(assignment: UnknownRecord, value: string): boolean
 function assertAssignmentMatches(
   assignment: UnknownRecord,
   allocation: PaymentAllocationFormValues,
+  requireDateCoverage = true,
 ): void {
   if (
     assignment.tenantId !== allocation.tenantId ||
@@ -262,7 +290,7 @@ function assertAssignmentMatches(
     assignment.floorName !== allocation.floorName ||
     assignment.propertyId !== allocation.propertyId ||
     assignment.propertyCode !== allocation.propertyCode ||
-    !assignmentCoversDate(assignment, allocation.referenceDate)
+    (requireDateCoverage && !assignmentCoversDate(assignment, allocation.referenceDate))
   ) {
     throw new PaymentAssignmentMismatchError()
   }
@@ -290,9 +318,8 @@ function validateSourceBill(
     throw new PaymentBillMismatchError()
   }
 
-  assertAssignmentMatches(assignment, allocation)
-
   if (billType === 'rent') {
+    assertAssignmentMatches(assignment, allocation)
     const assignmentEnd = typeof assignment.moveOutDate === 'string'
       ? assignment.moveOutDate
       : '9999-12-31'
@@ -311,13 +338,42 @@ function validateSourceBill(
     ) {
       throw new PaymentBillMismatchError()
     }
-  } else if (
-    typeof bill.readingId !== 'string' ||
-    bill.readingId !== billId ||
-    typeof bill.readingDate !== 'string' ||
-    bill.readingDate !== allocation.referenceDate
-  ) {
-    throw new PaymentBillMismatchError()
+  } else {
+    const hasTenantIssueSnapshot = typeof bill.tenantAssignmentId === 'string'
+    if (hasTenantIssueSnapshot) {
+      // New electricity bills are charged to the tenant saved at issue time.
+      // Do not re-check assignment date coverage: the assignment may have ended
+      // since issue, but the immutable bill must remain payable by that tenant.
+      if (
+        bill.tenantAssignmentId !== allocation.tenantAssignmentId ||
+        bill.tenantId !== allocation.tenantId ||
+        bill.tenantCode !== allocation.tenantCode ||
+        bill.tenantName !== allocation.tenantName ||
+        bill.tenantRoomNumber !== allocation.roomNumber ||
+        bill.tenantFloorName !== allocation.floorName
+      ) {
+        throw new PaymentBillMismatchError()
+      }
+      assertAssignmentMatches(assignment, allocation, false)
+    } else {
+      // Legacy electricity bills predate tenant-at-issue snapshots. Prefer the
+      // historical assignment; if none covers the reading date, a single
+      // current tenant in that room may take responsibility for the legacy bill.
+      const isCurrentRoomAssignment =
+        assignment.status === 'current' &&
+        assignment.moveOutDate === null &&
+        assignment.roomId === allocation.roomId
+      assertAssignmentMatches(assignment, allocation, !isCurrentRoomAssignment)
+    }
+
+    if (
+      typeof bill.readingId !== 'string' ||
+      bill.readingId !== billId ||
+      typeof bill.readingDate !== 'string' ||
+      bill.readingDate !== allocation.referenceDate
+    ) {
+      throw new PaymentBillMismatchError()
+    }
   }
 
   return amount
@@ -362,13 +418,10 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
     allocations: value.allocations,
   })
   const amountMinor = value.amountMinor
-  const rawOpeningBalanceAllocationMinor = value.openingBalanceAllocationMinor ?? 0
-  const openingBalanceAllocationMinor = isSafeNonNegativeInteger(rawOpeningBalanceAllocationMinor)
-    ? rawOpeningBalanceAllocationMinor
-    : -1
-  const allocatedAmountMinor = parsed.success && openingBalanceAllocationMinor >= 0
+  const openingBalanceAllocationMinor = value.openingBalanceAllocationMinor ?? 0
+  const allocatedAmountMinor = parsed.success
     ? parsed.data.allocations.reduce((total, allocation) => total + allocation.amountMinor, 0) +
-      openingBalanceAllocationMinor
+      (isSafeNonNegativeInteger(openingBalanceAllocationMinor) ? openingBalanceAllocationMinor : -1)
     : -1
   const advanceAddedMinor = isSafeNonNegativeInteger(amountMinor)
     ? amountMinor - allocatedAmountMinor
@@ -384,7 +437,6 @@ function readPaymentRecord(id: string, value: unknown): PaymentRecord {
 
   if (
     !parsed.success ||
-    openingBalanceAllocationMinor < 0 ||
     !isSafeNonNegativeInteger(amountMinor) ||
     amountMinor <= 0 ||
     value.receiptNumber !== `PAY-${id}` ||
@@ -574,9 +626,11 @@ function readCreditApplication(id: string, value: unknown): CreditApplicationRec
   const amountMinor = value.amountMinor
   const billUpdates = value.billUpdates
   const creditUpdate = value.tenantCreditUpdate
+  const isLegacyApplicationNumber = value.applicationNumber === `ADV-${id}`
+  const isCurrentApplicationNumber = typeof value.applicationNumber === 'string' && /^AP-[A-Za-z0-9]{7}$/.test(value.applicationNumber)
   if (
     !allocationResult.success ||
-    typeof value.applicationNumber !== 'string' || value.applicationNumber !== `ADV-${id}` ||
+    (!isLegacyApplicationNumber && !isCurrentApplicationNumber) ||
     value.tenantId !== allocationResult.data.tenantId ||
     value.tenantCode !== allocationResult.data.tenantCode ||
     value.tenantName !== allocationResult.data.tenantName ||
@@ -723,7 +777,7 @@ export async function createPayment(
 
   const { auth, db } = getFirebaseServices()
   const actorUid = auth.currentUser?.uid
-  if (!actorUid) {
+  if (!actorUid || actorUid !== ownerUid) {
     throw new InvalidPaymentDataError('Your sign-in session does not match this workspace. Sign in again.')
   }
   if (idempotencyKey !== undefined && !/^[a-f0-9]{32}$/.test(idempotencyKey)) {
@@ -970,7 +1024,7 @@ export async function applyTenantCredit(
   const allocation = paymentAllocationSchema.parse(rawAllocation)
   const { auth, db } = getFirebaseServices()
   const actorUid = auth.currentUser?.uid
-  if (!actorUid) {
+  if (!actorUid || actorUid !== ownerUid) {
     throw new InvalidPaymentDataError('Your sign-in session does not match this workspace. Sign in again.')
   }
   if (idempotencyKey !== undefined && !/^[a-f0-9]{32}$/.test(idempotencyKey)) {
@@ -980,119 +1034,140 @@ export async function applyTenantCredit(
   const applicationRef = idempotencyKey
     ? doc(db, 'users', ownerUid, 'creditApplications', `ca_${idempotencyKey}`)
     : doc(collection(db, 'users', ownerUid, 'creditApplications'))
-  const applicationNumber = `ADV-${applicationRef.id}`
   const creditRef = doc(db, 'users', ownerUid, 'tenantCredits', allocation.tenantId)
   const billRef = doc(db, 'users', ownerUid, allocation.billType === 'rent' ? 'rentBills' : 'electricityBills', allocation.billId)
   const balanceRef = doc(db, 'users', ownerUid, 'billBalances', balanceDocumentId(allocation.billType, allocation.billId))
   const assignmentRef = doc(db, 'users', ownerUid, 'tenantAssignments', allocation.tenantAssignmentId)
 
-  return runTransaction(db, async (transaction) => {
-    const applicationSnapshot = await transaction.get(applicationRef)
-    if (applicationSnapshot.exists()) {
-      const existing = readCreditApplication(applicationSnapshot.id, applicationSnapshot.data())
-      if (sameCreditApplication(existing, allocation)) return existing.applicationNumber
-      throw new InvalidPaymentDataError('This advance application attempt was already used for different details.')
-    }
+  // Reserve the short public reference in a separate document in the same
+  // transaction. The document ID itself makes duplicate AP codes impossible.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const applicationNumber = `AP-${generateAdvanceReferenceCode()}`
+    const referenceIndexRef = doc(db, 'users', ownerUid, 'creditApplicationReferenceIndex', applicationNumber)
+    try {
+      return await runTransaction(db, async (transaction) => {
+        const applicationSnapshot = await transaction.get(applicationRef)
+        if (applicationSnapshot.exists()) {
+          const existing = readCreditApplication(applicationSnapshot.id, applicationSnapshot.data())
+          if (sameCreditApplication(existing, allocation)) return existing.applicationNumber
+          throw new InvalidPaymentDataError('This advance application attempt was already used for different details.')
+        }
 
-    const [creditSnapshot, billSnapshot, balanceSnapshot, assignmentSnapshot] = await Promise.all([
-      transaction.get(creditRef),
-      transaction.get(billRef),
-      transaction.get(balanceRef),
-      transaction.get(assignmentRef),
-    ])
-    if (!creditSnapshot.exists()) throw new InsufficientTenantCreditError()
-    if (!billSnapshot.exists()) throw new PaymentBillNotFoundError()
-    if (!assignmentSnapshot.exists()) throw new PaymentAssignmentMismatchError()
+        const referenceIndexSnapshot = await transaction.get(referenceIndexRef)
+        if (referenceIndexSnapshot.exists()) throw new AdvanceReferenceCollisionError()
 
-    const credit = readTenantCredit(creditSnapshot.id, creditSnapshot.data())
-    if (credit.tenantCode !== allocation.tenantCode || credit.creditMinor < allocation.amountMinor) {
-      throw new InsufficientTenantCreditError()
-    }
-    const bill = billSnapshot.data() as UnknownRecord
-    const assignment = assignmentSnapshot.data() as UnknownRecord
-    const sourceAmountMinor = validateSourceBill(allocation.billType, allocation.billId, bill, assignment, allocation)
+        const [creditSnapshot, billSnapshot, balanceSnapshot, assignmentSnapshot] = await Promise.all([
+          transaction.get(creditRef),
+          transaction.get(billRef),
+          transaction.get(balanceRef),
+          transaction.get(assignmentRef),
+        ])
+        if (!creditSnapshot.exists()) throw new InsufficientTenantCreditError()
+        if (!billSnapshot.exists()) throw new PaymentBillNotFoundError()
+        if (!assignmentSnapshot.exists()) throw new PaymentAssignmentMismatchError()
 
-    let paidAmountMinor = 0
-    let balanceCreatedAt: Timestamp | ReturnType<typeof serverTimestamp> = serverTimestamp()
-    let balanceCreatedBy = actorUid
-    if (balanceSnapshot.exists()) {
-      const balance = readBillBalance(balanceSnapshot.id, balanceSnapshot.data())
-      if (
-        balance.billType !== allocation.billType || balance.billId !== allocation.billId ||
-        balance.originalAmountMinor !== sourceAmountMinor || balance.billingMonth !== allocation.billingMonth ||
-        balance.tenantAssignmentId !== allocation.tenantAssignmentId || balance.tenantId !== allocation.tenantId ||
-        balance.roomId !== allocation.roomId || balance.roomCode !== allocation.roomCode ||
-        balance.propertyId !== allocation.propertyId || balance.propertyCode !== allocation.propertyCode
-      ) throw new PaymentBillMismatchError()
-      paidAmountMinor = balance.paidAmountMinor
-      balanceCreatedAt = balance.createdAt ?? serverTimestamp()
-      balanceCreatedBy = balance.createdBy
-    }
-    const outstandingMinor = sourceAmountMinor - paidAmountMinor
-    if (outstandingMinor <= 0) throw new PaymentBillSettledError()
-    if (allocation.amountMinor > outstandingMinor) throw new PaymentAmountExceedsBalanceError()
+        const credit = readTenantCredit(creditSnapshot.id, creditSnapshot.data())
+        if (credit.tenantCode !== allocation.tenantCode || credit.creditMinor < allocation.amountMinor) {
+          throw new InsufficientTenantCreditError()
+        }
+        const bill = billSnapshot.data() as UnknownRecord
+        const assignment = assignmentSnapshot.data() as UnknownRecord
+        const sourceAmountMinor = validateSourceBill(allocation.billType, allocation.billId, bill, assignment, allocation)
 
-    const applicationData = {
-      applicationNumber,
-      tenantId: allocation.tenantId,
-      tenantCode: allocation.tenantCode,
-      tenantName: allocation.tenantName,
-      allocation,
-      billUpdates: [{ billType: allocation.billType, billId: allocation.billId, amountMinor: allocation.amountMinor }],
-      tenantCreditUpdate: { tenantId: allocation.tenantId, amountMinor: allocation.amountMinor },
-      amountMinor: allocation.amountMinor,
-      currency: 'BDT',
-      status: 'posted',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      createdBy: actorUid,
-      updatedBy: actorUid,
-    }
-    const nextPaidAmountMinor = paidAmountMinor + allocation.amountMinor
-    const balanceData = {
-      billType: allocation.billType,
-      billId: allocation.billId,
-      billingMonth: allocation.billingMonth,
-      tenantAssignmentId: allocation.tenantAssignmentId,
-      tenantId: allocation.tenantId,
-      tenantCode: allocation.tenantCode,
-      tenantName: allocation.tenantName,
-      roomId: allocation.roomId,
-      roomCode: allocation.roomCode,
-      roomNumber: allocation.roomNumber,
-      floorName: allocation.floorName,
-      propertyId: allocation.propertyId,
-      propertyCode: allocation.propertyCode,
-      originalAmountMinor: sourceAmountMinor,
-      paidAmountMinor: nextPaidAmountMinor,
-      outstandingMinor: sourceAmountMinor - nextPaidAmountMinor,
-      lastTransactionType: 'credit_application',
-      lastTransactionId: applicationRef.id,
-      lastTransactionAmountMinor: allocation.amountMinor,
-      createdAt: balanceCreatedAt,
-      updatedAt: serverTimestamp(),
-      createdBy: balanceCreatedBy,
-      updatedBy: actorUid,
-    }
-    const creditData = {
-      tenantId: credit.tenantId,
-      tenantCode: credit.tenantCode,
-      tenantName: credit.tenantName,
-      creditMinor: credit.creditMinor - allocation.amountMinor,
-      lastTransactionType: 'credit_application',
-      lastTransactionId: applicationRef.id,
-      lastTransactionAmountMinor: allocation.amountMinor,
-      createdAt: credit.createdAt ?? serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      createdBy: credit.createdBy,
-      updatedBy: actorUid,
-    }
+        let paidAmountMinor = 0
+        let balanceCreatedAt: Timestamp | ReturnType<typeof serverTimestamp> = serverTimestamp()
+        let balanceCreatedBy = actorUid
+        if (balanceSnapshot.exists()) {
+          const balance = readBillBalance(balanceSnapshot.id, balanceSnapshot.data())
+          if (
+            balance.billType !== allocation.billType || balance.billId !== allocation.billId ||
+            balance.originalAmountMinor !== sourceAmountMinor || balance.billingMonth !== allocation.billingMonth ||
+            balance.tenantAssignmentId !== allocation.tenantAssignmentId || balance.tenantId !== allocation.tenantId ||
+            balance.roomId !== allocation.roomId || balance.roomCode !== allocation.roomCode ||
+            balance.propertyId !== allocation.propertyId || balance.propertyCode !== allocation.propertyCode
+          ) throw new PaymentBillMismatchError()
+          paidAmountMinor = balance.paidAmountMinor
+          balanceCreatedAt = balance.createdAt ?? serverTimestamp()
+          balanceCreatedBy = balance.createdBy
+        }
+        const outstandingMinor = sourceAmountMinor - paidAmountMinor
+        if (outstandingMinor <= 0) throw new PaymentBillSettledError()
+        if (allocation.amountMinor > outstandingMinor) throw new PaymentAmountExceedsBalanceError()
 
-    transaction.set(applicationRef, applicationData)
-    transaction.set(balanceRef, balanceData)
-    transaction.set(creditRef, creditData)
-    return applicationNumber
-  })
+        const applicationData = {
+          applicationNumber,
+          tenantId: allocation.tenantId,
+          tenantCode: allocation.tenantCode,
+          tenantName: allocation.tenantName,
+          allocation,
+          billUpdates: [{ billType: allocation.billType, billId: allocation.billId, amountMinor: allocation.amountMinor }],
+          tenantCreditUpdate: { tenantId: allocation.tenantId, amountMinor: allocation.amountMinor },
+          amountMinor: allocation.amountMinor,
+          currency: 'BDT',
+          status: 'posted',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdBy: actorUid,
+          updatedBy: actorUid,
+        }
+        const nextPaidAmountMinor = paidAmountMinor + allocation.amountMinor
+        const balanceData = {
+          billType: allocation.billType,
+          billId: allocation.billId,
+          billingMonth: allocation.billingMonth,
+          tenantAssignmentId: allocation.tenantAssignmentId,
+          tenantId: allocation.tenantId,
+          tenantCode: allocation.tenantCode,
+          tenantName: allocation.tenantName,
+          roomId: allocation.roomId,
+          roomCode: allocation.roomCode,
+          roomNumber: allocation.roomNumber,
+          floorName: allocation.floorName,
+          propertyId: allocation.propertyId,
+          propertyCode: allocation.propertyCode,
+          originalAmountMinor: sourceAmountMinor,
+          paidAmountMinor: nextPaidAmountMinor,
+          outstandingMinor: sourceAmountMinor - nextPaidAmountMinor,
+          lastTransactionType: 'credit_application',
+          lastTransactionId: applicationRef.id,
+          lastTransactionAmountMinor: allocation.amountMinor,
+          createdAt: balanceCreatedAt,
+          updatedAt: serverTimestamp(),
+          createdBy: balanceCreatedBy,
+          updatedBy: actorUid,
+        }
+        const creditData = {
+          tenantId: credit.tenantId,
+          tenantCode: credit.tenantCode,
+          tenantName: credit.tenantName,
+          creditMinor: credit.creditMinor - allocation.amountMinor,
+          lastTransactionType: 'credit_application',
+          lastTransactionId: applicationRef.id,
+          lastTransactionAmountMinor: allocation.amountMinor,
+          createdAt: credit.createdAt ?? serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdBy: credit.createdBy,
+          updatedBy: actorUid,
+        }
+
+        transaction.set(applicationRef, applicationData)
+        transaction.set(referenceIndexRef, {
+          applicationId: applicationRef.id,
+          applicationNumber,
+          createdAt: serverTimestamp(),
+          createdBy: actorUid,
+        })
+        transaction.set(balanceRef, balanceData)
+        transaction.set(creditRef, creditData)
+        return applicationNumber
+      })
+    } catch (error) {
+      if (error instanceof AdvanceReferenceCollisionError) continue
+      throw error
+    }
+  }
+
+  throw new InvalidPaymentDataError('Unable to reserve a unique advance application reference. Please retry.')
 }
 
 /** Apply existing advance credit to the tenant-level opening balance. */
@@ -1106,7 +1181,7 @@ export async function applyTenantCreditToOpeningBalance(
 ): Promise<string> {
   const { auth, db } = getFirebaseServices()
   const actorUid = auth.currentUser?.uid
-  if (!actorUid) throw new InvalidPaymentDataError('Sign in before recording this financial transaction.')
+  if (!actorUid || actorUid !== ownerUid) throw new InvalidPaymentDataError('Your sign-in session does not match this workspace. Sign in again.')
   if (!/^[a-f0-9]{32}$/.test(idempotencyKey) || !isSafeNonNegativeInteger(amountMinor) || amountMinor <= 0) {
     throw new InvalidPaymentDataError('The opening balance advance application is invalid.')
   }

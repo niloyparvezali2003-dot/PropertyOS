@@ -2612,7 +2612,24 @@ service cloud.firestore {
     // 33. IMMUTABLE ADVANCE APPLICATIONS
     // ==================================================
 
-    function validCreditApplication(applicationId, data) {
+    function validCreditApplicationReferenceLinkedAfter(userId, applicationId, data) {
+      return data.applicationNumber is string
+        && data.applicationNumber.matches('^AP-[A-Za-z0-9]{7}$')
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)/creditApplicationReferenceIndex/$(data.applicationNumber)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/creditApplicationReferenceIndex/$(data.applicationNumber)
+        ).data.applicationId == applicationId
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/creditApplicationReferenceIndex/$(data.applicationNumber)
+        ).data.applicationNumber == data.applicationNumber
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/creditApplicationReferenceIndex/$(data.applicationNumber)
+        ).data.createdBy == request.auth.uid;
+    }
+
+    function validCreditApplication(userId, applicationId, data) {
       return data.keys().hasAll([
           'applicationNumber', 'tenantId', 'tenantCode', 'tenantName',
           'allocation', 'billUpdates', 'tenantCreditUpdate', 'amountMinor',
@@ -2623,7 +2640,10 @@ service cloud.firestore {
           'allocation', 'billUpdates', 'tenantCreditUpdate', 'amountMinor',
           'currency', 'status', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
         ])
-        && data.applicationNumber == 'ADV-' + applicationId
+        && (
+          data.applicationNumber == 'ADV-' + applicationId
+          || validCreditApplicationReferenceLinkedAfter(userId, applicationId, data)
+        )
         && data.tenantId is string
         && data.tenantId.size() > 0
         && data.tenantCode is string
@@ -2681,13 +2701,41 @@ service cloud.firestore {
     match /users/{userId}/creditApplications/{applicationId} {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
-        && validCreditApplication(applicationId, request.resource.data)
+        && validCreditApplication(userId, applicationId, request.resource.data)
         && createdByCurrentActor(request.resource.data)
         && creditApplicationAtomicAfter(userId, applicationId, request.resource.data);
       allow update: if false;
       allow delete: if false;
     }
 
+    function validCreditApplicationReferenceIndex(userId, referenceCode, data) {
+      return data.keys().hasAll(['applicationId', 'applicationNumber', 'createdAt', 'createdBy'])
+        && data.keys().hasOnly(['applicationId', 'applicationNumber', 'createdAt', 'createdBy'])
+        && referenceCode.matches('^AP-[A-Za-z0-9]{7}$')
+        && data.applicationId is string
+        && data.applicationId.size() > 0
+        && data.applicationNumber == referenceCode
+        && data.createdAt is timestamp
+        && data.createdBy == request.auth.uid
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)/creditApplications/$(data.applicationId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/creditApplications/$(data.applicationId)
+        ).data.applicationNumber == referenceCode
+        && getAfter(
+          /databases/$(database)/documents/users/$(userId)/creditApplications/$(data.applicationId)
+        ).data.createdBy == request.auth.uid;
+    }
+
+    match /users/{userId}/creditApplicationReferenceIndex/{referenceCode} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validCreditApplicationReferenceIndex(userId, referenceCode, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
 
     // ==================================================
     // 34. OWNER NOTES AND CHECKLIST ITEMS
@@ -3161,7 +3209,7 @@ service cloud.firestore {
       allow create: if isOwner(userId)
         && isRestoreMode(userId)
         && collectionName in [
-          'auditEvents', 'billBalances', 'creditApplications',
+          'auditEvents', 'billBalances', 'creditApplications', 'creditApplicationReferenceIndex',
           'noteTasks', 'notes', 'openingBalanceAdjustments',
           'openingBalanceCreditApplications', 'openingBalances',
           'currentAssignmentByMeter', 'currentMeterByRoom',

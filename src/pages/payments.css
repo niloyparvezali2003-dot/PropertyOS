@@ -356,6 +356,34 @@
   margin-top: 8px;
 }
 
+.payment-history-more-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 38px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 9px;
+  background: var(--surface, #fff);
+  color: var(--text, #334155);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.payment-history-more-button:hover {
+  background: var(--surface-muted, #f8fafc);
+}
+
+.payment-history-more-button:focus-visible {
+  outline: 2px solid var(--accent, #d5a52e);
+  outline-offset: 2px;
+}
+
 .payment-history-actions button {
   display: inline-flex;
   align-items: center;
@@ -441,6 +469,7 @@
 }
 
 @media print {
+  .payment-history-more-button { display: none !important; }
   @page {
     size: A4;
     margin: 12mm;

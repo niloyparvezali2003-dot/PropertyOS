@@ -80,9 +80,15 @@ export function OpeningBalancePage({ ownerUid }: OpeningBalancePageProps) {
       setTenants(nextTenants)
       setBalances(nextBalances)
       setAdjustments(nextAdjustments)
-      setForm((current) => ({ ...current, tenantId: nextTenants.some((tenant) => tenant.id === current.tenantId && !nextBalances.some((balance) => balance.tenantId === tenant.id))
-        ? current.tenantId
-        : nextTenants.find((tenant) => !nextBalances.some((balance) => balance.tenantId === tenant.id))?.id ?? '' }))
+      // Never auto-select a tenant. Preserve only an explicit user selection
+      // while it remains eligible; otherwise return to the neutral placeholder.
+      setForm((current) => ({
+        ...current,
+        tenantId: nextTenants.some((tenant) =>
+          tenant.id === current.tenantId &&
+          !nextBalances.some((balance) => balance.tenantId === tenant.id),
+        ) ? current.tenantId : '',
+      }))
     } catch (loadError: unknown) {
       setError(loadError instanceof Error ? loadError.message : 'Opening balance records could not be loaded.')
     } finally {

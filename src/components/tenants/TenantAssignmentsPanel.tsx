@@ -100,20 +100,37 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
     [assignments],
   )
 
-  const assignedTenantIds = useMemo(
-    () => new Set(currentAssignments.map((assignment) => assignment.tenantId)),
-    [currentAssignments],
-  )
-
   const assignedRoomIds = useMemo(
     () => new Set(currentAssignments.map((assignment) => assignment.roomId)),
     [currentAssignments],
   )
 
+  // A tenant can occupy several rooms at once. The room, not the tenant,
+  // is the unique side of the current occupancy relationship.
   const availableTenants = useMemo(
-    () => tenants.filter((tenant) => tenant.status === 'active' && !assignedTenantIds.has(tenant.id)),
-    [assignedTenantIds, tenants],
+    () => tenants.filter((tenant) => tenant.status === 'active'),
+    [tenants],
   )
+
+  const selectedTenant = useMemo(
+    () => tenants.find((tenant) => tenant.id === form.tenantId) ?? null,
+    [form.tenantId, tenants],
+  )
+
+  const selectedTenantCurrentAssignments = useMemo(
+    () => currentAssignments
+      .filter((assignment) => assignment.tenantId === form.tenantId)
+      .sort((a, b) => a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true })),
+    [currentAssignments, form.tenantId],
+  )
+
+  const currentRoomCountByTenant = useMemo(() => {
+    const counts = new Map<string, number>()
+    currentAssignments.forEach((assignment) => {
+      counts.set(assignment.tenantId, (counts.get(assignment.tenantId) ?? 0) + 1)
+    })
+    return counts
+  }, [currentAssignments])
 
   const availableRooms = useMemo(
     () => rooms.filter((room) => {
@@ -199,7 +216,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
           <p className="tenant-assignment-eyebrow">Occupancy management</p>
           <h2 id="tenant-assignment-heading">Tenant–Room Assignments</h2>
           <p className="tenant-assignment-intro">
-            Record move-ins and move-outs while keeping permanent tenant and room IDs unchanged.
+            One tenant can occupy multiple rooms. Each room keeps its own occupancy, rent and meter history under the same tenant profile.
           </p>
         </div>
         <button
@@ -216,7 +233,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
       <div className="tenant-assignment-stats" aria-label="Assignment totals">
         <div className="tenant-assignment-stat">
           <span className="tenant-assignment-stat-icon"><Users size={18} aria-hidden="true" /></span>
-          <span className="tenant-assignment-stat-copy"><strong>{currentAssignments.length}</strong><small>Current stays</small></span>
+          <span className="tenant-assignment-stat-copy"><strong>{currentAssignments.length}</strong><small>Occupied rooms</small></span>
         </div>
         <div className="tenant-assignment-stat">
           <span className="tenant-assignment-stat-icon"><DoorOpen size={18} aria-hidden="true" /></span>
@@ -249,12 +266,38 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
               <option value="">Select an active tenant</option>
               {availableTenants.map((tenant) => (
                 <option key={tenant.id} value={tenant.id}>
-                  {tenant.tenantCode} · {tenant.fullName}
+                  {tenant.fullName}{(currentRoomCountByTenant.get(tenant.id) ?? 0) > 0
+                    ? ` · ${currentRoomCountByTenant.get(tenant.id)} current room${currentRoomCountByTenant.get(tenant.id) === 1 ? '' : 's'}`
+                    : ' · No current room'}
                 </option>
               ))}
             </select>
-            {availableTenants.length === 0 && <small>No unassigned active tenants available.</small>}
+            {availableTenants.length === 0 && <small>No active tenants available.</small>}
           </label>
+
+          {selectedTenant && (
+            <div className="tenant-assignment-selected-occupancy" aria-live="polite">
+              <div className="tenant-assignment-selected-occupancy-heading">
+                <strong>{selectedTenant.fullName}</strong>
+                <span>
+                  {selectedTenantCurrentAssignments.length} current room{selectedTenantCurrentAssignments.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              {selectedTenantCurrentAssignments.length === 0 ? (
+                <p>No room is currently assigned to this tenant.</p>
+              ) : (
+                <ul>
+                  {selectedTenantCurrentAssignments.map((assignment) => (
+                    <li key={assignment.id}>
+                      <strong>Room {assignment.roomNumber}</strong>
+                      <span>{propertyById.get(assignment.propertyId)?.name ?? assignment.propertyCode} · {assignment.floorName} · Since {assignment.moveInDate}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <small>Adding another room creates a separate room assignment under this same tenant account.</small>
+            </div>
+          )}
 
           <label className="tenant-assignment-field">
             <span>Vacant room</span>
@@ -310,7 +353,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
           >
             {isSaving ? 'Saving…' : 'Assign tenant'}
           </button>
-          <p className="tenant-assignment-footnote">A new history record is created. Previous assignment records are never reused.</p>
+          <p className="tenant-assignment-footnote">Each room gets its own permanent assignment history and separate rent / meter billing. All rooms stay linked to one tenant profile.</p>
         </form>
 
         <div className="tenant-assignment-card tenant-assignment-current-card">
@@ -318,7 +361,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
             <span className="tenant-assignment-heading-icon"><CheckCircle2 size={18} aria-hidden="true" /></span>
             <div>
               <h3>Current assignments</h3>
-              <p>One current room per tenant and one current tenant per room.</p>
+              <p>A tenant may occupy several rooms; each room can have only one current tenant. Move-out applies to one room at a time.</p>
             </div>
           </div>
 
@@ -330,7 +373,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
             <div className="tenant-assignment-empty">
               <Users size={22} aria-hidden="true" />
               <strong>No current assignments</strong>
-              <span>Use the form to record a tenant move-in.</span>
+              <span>Choose a tenant and a vacant room to record a room assignment.</span>
             </div>
           ) : (
             <div className="tenant-assignment-list">
@@ -352,7 +395,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
                     </div>
 
                     <div className="tenant-assignment-item-details">
-                      <div><small>Room</small><strong>{assignment.roomCode} · {assignment.roomNumber}</strong></div>
+                      <div><small>Room</small><strong>{assignment.roomNumber}</strong></div>
                       <div><small>Property / floor</small><strong>{propertyName} · {assignment.floorName}</strong></div>
                       <div><small>Move-in</small><strong>{assignment.moveInDate}</strong></div>
                     </div>

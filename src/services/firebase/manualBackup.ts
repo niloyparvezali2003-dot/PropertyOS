@@ -44,6 +44,7 @@ const COLLECTIONS = [
   'auditEvents',
   'billBalances',
   'creditApplications',
+  'creditApplicationReferenceIndex',
   'noteTasks',
   'notes',
   'openingBalanceAdjustments',

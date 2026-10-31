@@ -1,4 +1,4 @@
-import { getCachedList } from './listCache'
+import { getCachedList, invalidateOwnerDataCache } from './listCache'
 
 import {
   collection,
@@ -44,7 +44,7 @@ export type TenantAssignmentRecord = {
 }
 
 export class TenantAssignmentConflictError extends Error {
-  constructor(message = 'The selected tenant or room already has a current assignment.') {
+  constructor(message = 'The selected room already has a current tenant, or the saved assignment indexes are inconsistent.') {
     super(message)
     this.name = 'TenantAssignmentConflictError'
   }
@@ -247,8 +247,40 @@ export async function createTenantAssignment(
       throw new RoomUnavailableForAssignmentError()
     }
 
-    if (roomIndexSnapshot.exists() || tenantIndexSnapshot.exists()) {
-      throw new TenantAssignmentConflictError()
+    if (roomIndexSnapshot.exists()) {
+      throw new TenantAssignmentConflictError(
+        'This room already has a current tenant. Move that tenant out before assigning another person.',
+      )
+    }
+
+    // `currentRoomByTenant/{tenantId}` is retained as a legacy reverse pointer
+    // for older records. It no longer limits a tenant to one room. When it
+    // exists, verify that it still points to another current assignment for
+    // this same tenant; new room assignments are indexed by room only.
+    if (tenantIndexSnapshot.exists()) {
+      const legacyIndex = tenantIndexSnapshot.data()
+      if (
+        legacyIndex.tenantId !== input.tenantId ||
+        typeof legacyIndex.assignmentId !== 'string' ||
+        !legacyIndex.assignmentId
+      ) {
+        throw new TenantAssignmentConflictError(
+          'The tenant’s legacy assignment index is inconsistent. Refresh and review the assignment history before adding another room.',
+        )
+      }
+
+      const legacyAssignmentSnapshot = await transaction.get(
+        getAssignmentRef(ownerUid, legacyIndex.assignmentId),
+      )
+      if (
+        !legacyAssignmentSnapshot.exists() ||
+        legacyAssignmentSnapshot.data().status !== 'current' ||
+        legacyAssignmentSnapshot.data().tenantId !== input.tenantId
+      ) {
+        throw new TenantAssignmentConflictError(
+          'The tenant’s legacy assignment pointer is outdated. Review the current assignments before adding another room.',
+        )
+      }
     }
 
     const propertyRef = doc(db, 'users', ownerUid, 'properties', room.propertyId)
@@ -301,9 +333,13 @@ export async function createTenantAssignment(
 
     transaction.set(assignmentRef, assignmentData)
     transaction.set(roomIndexRef, indexData)
-    transaction.set(tenantIndexRef, indexData)
+
+    // New assignments do not write `currentRoomByTenant`: that legacy index
+    // represented only one room per tenant. All current rooms are derived from
+    // tenantAssignments, while currentTenantByRoom guarantees room uniqueness.
   })
 
+  invalidateOwnerDataCache(ownerUid)
   return assignmentRef.id
 }
 
@@ -348,13 +384,43 @@ export async function endTenantAssignment(
 
     if (
       !roomIndexSnapshot.exists() ||
-      !tenantIndexSnapshot.exists() ||
-      roomIndexSnapshot.data().assignmentId !== assignmentId ||
-      tenantIndexSnapshot.data().assignmentId !== assignmentId
+      roomIndexSnapshot.data().assignmentId !== assignmentId
     ) {
       throw new TenantAssignmentConflictError(
-        'The current assignment indexes do not match this record. No changes were made.',
+        'The room’s current assignment index does not match this record. No changes were made.',
       )
+    }
+
+    let shouldRemoveLegacyTenantIndex = false
+    if (tenantIndexSnapshot.exists()) {
+      const legacyIndex = tenantIndexSnapshot.data()
+      if (
+        legacyIndex.tenantId !== assignment.tenantId ||
+        typeof legacyIndex.assignmentId !== 'string'
+      ) {
+        throw new TenantAssignmentConflictError(
+          'The tenant’s legacy assignment index is invalid. No changes were made.',
+        )
+      }
+
+      if (legacyIndex.assignmentId === assignmentId) {
+        shouldRemoveLegacyTenantIndex = true
+      } else {
+        // Another room remains linked to the same tenant. Keep its legacy
+        // pointer intact while ending only this room’s assignment.
+        const otherAssignmentSnapshot = await transaction.get(
+          getAssignmentRef(ownerUid, legacyIndex.assignmentId),
+        )
+        if (
+          !otherAssignmentSnapshot.exists() ||
+          otherAssignmentSnapshot.data().status !== 'current' ||
+          otherAssignmentSnapshot.data().tenantId !== assignment.tenantId
+        ) {
+          throw new TenantAssignmentConflictError(
+            'The tenant’s remaining room assignment could not be verified. No changes were made.',
+          )
+        }
+      }
     }
 
     transaction.update(assignmentRef, {
@@ -366,8 +432,12 @@ export async function endTenantAssignment(
     })
 
     transaction.delete(roomIndexRef)
-    transaction.delete(tenantIndexRef)
+    if (shouldRemoveLegacyTenantIndex) {
+      transaction.delete(tenantIndexRef)
+    }
   })
+
+  invalidateOwnerDataCache(ownerUid)
 }
 
 export function getTenantAssignmentErrorMessage(error: unknown): string {

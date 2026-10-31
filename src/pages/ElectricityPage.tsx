@@ -9,6 +9,7 @@ import {
   Activity,
   CheckCircle2,
   CircleDollarSign,
+  Download,
   FileText,
   Gauge,
   LoaderCircle,
@@ -26,6 +27,7 @@ import { listProperties, type PropertyRecord } from '../services/firebase/proper
 import { listTenantAssignments, type TenantAssignmentRecord } from '../services/firebase/tenantAssignments'
 import {
   createElectricityBillFromReading,
+  resolveElectricityBillTenantAssignment,
   createElectricityRate,
   getElectricityErrorMessage,
   listElectricityBills,
@@ -36,6 +38,8 @@ import {
   type ElectricityReadingRecord,
 } from '../services/firebase/electricity'
 import { electricityRateFormSchema, electricityReadingFormSchema } from '../schemas/electricity'
+import { loadWorkspaceSettings } from '../services/firebase/workspaceSettings'
+import { downloadMonthlyBillReportPdf } from '../utils/monthlyBillReportPdf'
 import './electricity.css'
 
 type ElectricityPageProps = { ownerUid: string }
@@ -123,6 +127,7 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
   const [billSearch, setBillSearch] = useState('')
   // Default the dashboard to the current billing month; historical months remain selectable.
   const [monthFilter, setMonthFilter] = useState(() => todayIso().slice(0, 7))
+  const [isDownloadingReport, setIsDownloadingReport] = useState(false)
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -225,6 +230,50 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
   const selectedRate = selectedAssignment
     ? getApplicableRate(rates, selectedAssignment.roomId, readingForm.readingDate)
     : undefined
+
+  async function handleDownloadElectricityReport() {
+    if (isDownloadingReport) return
+    if (monthFilter === 'all') {
+      setPageError('Choose one billing month before downloading the electricity bill report.')
+      return
+    }
+
+    const reportBills = bills.filter((bill) => bill.billingMonth === monthFilter)
+    if (reportBills.length === 0) {
+      setPageError(`No issued electricity bills exist for ${formatMonth(monthFilter)}.`)
+      return
+    }
+
+    setPageError('')
+    setPageSuccess('')
+    setIsDownloadingReport(true)
+    try {
+      const { settings } = await loadWorkspaceSettings(ownerUid)
+      await downloadMonthlyBillReportPdf({
+        kind: 'electricity',
+        houseName: settings.houseName,
+        billingMonth: monthFilter,
+        rows: reportBills.map((bill) => {
+          const tenantAssignment = resolveElectricityBillTenantAssignment(bill, tenantAssignments)
+          const room = roomById.get(bill.roomId)
+          const property = propertyById.get(bill.propertyId)
+            ?? (room ? propertyById.get(room.propertyId) : undefined)
+
+          return {
+            tenantName: bill.tenantName?.trim() || tenantAssignment?.tenantName || 'Unassigned',
+            roomNumber: bill.tenantRoomNumber || room?.roomNumber || tenantAssignment?.roomNumber || bill.roomCode,
+            propertyName: property?.name || bill.propertyCode,
+            amountMinor: bill.amountMinor,
+          }
+        }),
+      })
+      setPageSuccess(`Monthly electricity bill PDF downloaded for ${formatMonth(monthFilter)}. Only issued electricity amounts are included; previous dues and payments are excluded.`)
+    } catch (error: unknown) {
+      setPageError(error instanceof Error ? error.message : 'Could not generate the monthly electricity bill PDF.')
+    } finally {
+      setIsDownloadingReport(false)
+    }
+  }
 
   async function handleRateSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -357,29 +406,46 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
         <div className="electricity-loading"><LoaderCircle className="electricity-spin" size={25} /><span>Loading electricity records…</span></div>
       ) : (
         <div className="electricity-content-grid">
-          <section className="electricity-panel">
-            <div className="electricity-panel-heading"><div><h2>Electricity rate history</h2><p>Each room has its own effective-dated rate. A rate stays active until a newer rate is added for that room.</p></div><span className="electricity-panel-icon"><CircleDollarSign size={20} /></span></div>
-            {visibleRates.length === 0 ? <div className="electricity-empty-inline"><Zap size={24} /><strong>No custom electricity rates to display</strong><p>Rates set to the default ৳10.00 per unit are hidden here. Other saved rates remain visible.</p><button className="button button-primary" type="button" onClick={() => setIsRateFormOpen(true)}><Plus size={16} /> Add rate</button></div> : <div className="electricity-rate-list">{visibleRates.map((rate) => <article className="electricity-rate-card" key={rate.id}><div><strong>{rate.roomId ? `${rate.roomCode ?? roomById.get(rate.roomId)?.roomCode ?? 'Room'}${roomById.get(rate.roomId)?.roomNumber ? ` · ${roomById.get(rate.roomId)?.roomNumber}` : ''}` : 'Legacy shared rate'}</strong><span>Effective {formatDate(rate.effectiveFrom)}{rate.roomId === null ? ' · fallback for rooms without a specific rate' : ''}</span>{rate.notes && <small>{rate.notes}</small>}</div><b>{formatTaka(rate.pricePerUnitMinor)} <small>/ unit</small></b></article>)}</div>}
+          <section className="electricity-panel electricity-reading-panel">
+            <div className="electricity-panel-heading"><div><h2>Record a reading</h2><p>Save a meter reading and issue its electricity bill.</p></div><span className="electricity-panel-icon"><Gauge size={20} /></span></div>
+            <div className="electricity-info-note electricity-reading-note">Readings must be entered in date order and each new reading must be higher than the previous one. Every saved reading creates its own bill.</div>
+            {currentAssignments.length === 0 ? <div className="electricity-empty-inline"><Gauge size={24} /><strong>No current meter assignments</strong><p>Assign an available meter to a room in the Meters module before recording readings.</p></div> : <form className="electricity-quick-form electricity-reading-form" onSubmit={handleReadingSubmit}>
+              <div className="electricity-field electricity-reading-assignment"><label htmlFor="electricity-assignment">Current meter assignment <span>*</span></label><select id="electricity-assignment" value={readingForm.meterAssignmentId} onChange={(event) => setReadingForm((current) => ({ ...current, meterAssignmentId: event.target.value }))} required><option value="">Select tenant, room and property</option>{currentAssignments.map((assignment) => <option value={assignment.id} key={assignment.id}>{readAssignmentLabel(assignment)}</option>)}</select></div>
+              <div className="electricity-field electricity-reading-date"><label htmlFor="electricity-reading-date">Reading date <span>*</span></label><input id="electricity-reading-date" type="date" value={readingForm.readingDate} onChange={(event) => setReadingForm((current) => ({ ...current, readingDate: event.target.value }))} required /></div>
+              <div className="electricity-field electricity-reading-current"><label htmlFor="electricity-current-reading">Current meter reading <span>*</span></label><input id="electricity-current-reading" type="number" inputMode="decimal" min={selectedPreviousReading + 0.000001} max="1000000000" step="any" placeholder="e.g. 1250.5" value={readingForm.currentReading} onChange={(event) => setReadingForm((current) => ({ ...current, currentReading: event.target.value }))} required /></div>
+              <div className="electricity-preview-grid electricity-reading-preview"><span><small>Previous reading</small><strong>{selectedAssignment ? formatReading(selectedPreviousReading) : '—'}</strong></span><span><small>Applicable rate</small><strong>{selectedRate ? `${formatTaka(selectedRate.pricePerUnitMinor)} / unit${selectedRate.roomId === null ? ' · shared fallback' : ''}` : 'No rate configured for this room'}</strong></span></div>
+              <div className="electricity-field electricity-reading-notes"><label htmlFor="electricity-reading-notes">Notes <small>(optional)</small></label><textarea id="electricity-reading-notes" rows={2} maxLength={1000} placeholder="Reading or billing notes" value={readingForm.notes} onChange={(event) => setReadingForm((current) => ({ ...current, notes: event.target.value }))} /></div>
+              {readingFormError && <p className="electricity-form-error electricity-reading-error" role="alert">{readingFormError}</p>}
+              <button className="button button-primary electricity-full-button electricity-reading-submit" type="submit" disabled={isSavingReading}>{isSavingReading ? <LoaderCircle className="electricity-spin" size={17} /> : <FileText size={17} />}{isSavingReading ? 'Saving reading…' : 'Save reading & issue bill'}</button>
+            </form>}
           </section>
 
-          <section className="electricity-panel">
-            <div className="electricity-panel-heading"><div><h2>Record a reading</h2><p>Each reading date creates a separate bill. You can record multiple readings in the same month.</p></div><span className="electricity-panel-icon"><Gauge size={20} /></span></div>
-            <div className="electricity-info-note">The first reading compares against the meter assignment’s initial reading. Every later reading must be on a later date and must be higher than the previous reading. Multiple readings are allowed in one month; each creates a separate bill. Each room uses its own rate history.</div>
-            {currentAssignments.length === 0 ? <div className="electricity-empty-inline"><Gauge size={24} /><strong>No current meter assignments</strong><p>Assign an available meter to a room in the Meters module before recording readings.</p></div> : <form className="electricity-quick-form" onSubmit={handleReadingSubmit}>
-              <div className="electricity-field"><label htmlFor="electricity-assignment">Current meter assignment <span>*</span></label><select id="electricity-assignment" value={readingForm.meterAssignmentId} onChange={(event) => setReadingForm((current) => ({ ...current, meterAssignmentId: event.target.value }))} required><option value="">Select tenant, room and property</option>{currentAssignments.map((assignment) => <option value={assignment.id} key={assignment.id}>{readAssignmentLabel(assignment)}</option>)}</select></div>
-              <div className="electricity-field-grid"><div className="electricity-field"><label htmlFor="electricity-reading-date">Reading date <span>*</span></label><input id="electricity-reading-date" type="date" value={readingForm.readingDate} onChange={(event) => setReadingForm((current) => ({ ...current, readingDate: event.target.value }))} required /></div><div className="electricity-field"><label htmlFor="electricity-current-reading">Current meter reading <span>*</span></label><input id="electricity-current-reading" type="number" inputMode="decimal" min={selectedPreviousReading + 0.000001} max="1000000000" step="any" placeholder="e.g. 1250.5" value={readingForm.currentReading} onChange={(event) => setReadingForm((current) => ({ ...current, currentReading: event.target.value }))} required /></div></div>
-              <div className="electricity-preview-grid"><span><small>Previous reading</small><strong>{selectedAssignment ? formatReading(selectedPreviousReading) : '—'}</strong></span><span><small>Applicable rate</small><strong>{selectedRate ? `${formatTaka(selectedRate.pricePerUnitMinor)} / unit${selectedRate.roomId === null ? ' · legacy fallback' : ''}` : 'No rate configured for this room'}</strong></span></div>
-              <div className="electricity-field"><label htmlFor="electricity-reading-notes">Notes <small>(optional)</small></label><textarea id="electricity-reading-notes" rows={2} maxLength={1000} placeholder="Reading or billing notes" value={readingForm.notes} onChange={(event) => setReadingForm((current) => ({ ...current, notes: event.target.value }))} /></div>
-              {readingFormError && <p className="electricity-form-error" role="alert">{readingFormError}</p>}
-              <button className="button button-primary electricity-full-button" type="submit" disabled={isSavingReading}>{isSavingReading ? <LoaderCircle className="electricity-spin" size={17} /> : <FileText size={17} />}{isSavingReading ? 'Saving reading…' : 'Save reading & issue bill'}</button>
-            </form>}
+          <section className="electricity-panel electricity-rate-history-panel">
+            <div className="electricity-panel-heading"><div><h2>Electricity rate history</h2><p>Room-specific rates remain effective until a newer rate is added for that room.</p></div><span className="electricity-panel-icon"><CircleDollarSign size={20} /></span></div>
+            {visibleRates.length === 0 ? <div className="electricity-empty-inline"><Zap size={24} /><strong>No custom electricity rates to display</strong><p>Rates set to the default ৳10.00 per unit are hidden here. Other saved rates remain visible.</p><button className="button button-primary" type="button" onClick={() => setIsRateFormOpen(true)}><Plus size={16} /> Add rate</button></div> : <div className="electricity-rate-list">{visibleRates.map((rate) => {
+              const room = rate.roomId ? roomById.get(rate.roomId) : undefined
+              const tenantAssignment = rate.roomId ? currentTenantByRoomId.get(rate.roomId) : undefined
+              const roomNumber = room?.roomNumber || tenantAssignment?.roomNumber || rate.roomCode || 'Unknown'
+              const tenantName = tenantAssignment?.tenantName?.trim() || 'No current tenant'
+              const roomCode = room?.roomCode || rate.roomCode
+
+              return <article className="electricity-rate-card" key={rate.id}>
+                <div>
+                  <strong>{rate.roomId ? `Room ${roomNumber}` : 'Legacy shared rate'}</strong>
+                  <span>{rate.roomId ? tenantName : 'Fallback for rooms without a specific rate'}</span>
+                  <small>{rate.roomId && roomCode ? `${roomCode} · ` : ''}Effective {formatDate(rate.effectiveFrom)}</small>
+                  {rate.notes && <small className="electricity-rate-notes">{rate.notes}</small>}
+                </div>
+                <b>{formatTaka(rate.pricePerUnitMinor)} <small>/ unit</small></b>
+              </article>
+            })}</div>}
           </section>
         </div>
       )}
 
       <section className="electricity-panel electricity-bills-panel">
         <div className="electricity-panel-heading"><div><h2>Issued electricity bills</h2><p>Saved readings, rates, and amounts remain historical snapshots.</p></div><span className="electricity-record-count">{filteredBills.length} shown</span></div>
-        <div className="electricity-bills-toolbar"><SearchInput value={billSearch} onChange={setBillSearch} placeholder="Search tenant, room, property, or month…" /><label className="electricity-filter-field"><span>Month · summary & bills</span><select value={monthFilter} onChange={(event) => setMonthFilter(event.target.value)}><option value="all">All months · Full history</option>{months.map((month) => <option key={month} value={month}>{formatMonth(month)}</option>)}</select></label><button className="button button-secondary electricity-refresh-button" type="button" onClick={() => void loadData()} disabled={isLoading}><RefreshCw size={16} /> Refresh</button></div>
+        <div className="electricity-bills-toolbar"><SearchInput value={billSearch} onChange={setBillSearch} placeholder="Search tenant, room, property, or month…" /><label className="electricity-filter-field"><span>Month · summary & bills</span><select value={monthFilter} onChange={(event) => setMonthFilter(event.target.value)}><option value="all">All months · Full history</option>{months.map((month) => <option key={month} value={month}>{formatMonth(month)}</option>)}</select></label><button className="button button-secondary electricity-refresh-button" type="button" onClick={() => void loadData()} disabled={isLoading}><RefreshCw size={16} /> Refresh</button><button className="button button-secondary electricity-report-button" type="button" onClick={() => void handleDownloadElectricityReport()} disabled={isLoading || isDownloadingReport || monthFilter === 'all' || !bills.some((bill) => bill.billingMonth === monthFilter)} title={monthFilter === 'all' ? 'Choose one month to download a monthly report' : 'Download only this month’s issued electricity bills'}>{isDownloadingReport ? <LoaderCircle className="electricity-spin" size={16} /> : <Download size={16} />} {isDownloadingReport ? 'Preparing PDF…' : 'Download PDF'}</button></div>
         {filteredBills.length === 0 ? <div className="electricity-empty-state"><FileText size={28} /><strong>{billSearch.trim() ? 'No matching electricity bills' : monthFilter === 'all' ? 'No electricity bills found' : `No electricity bills for ${formatMonth(monthFilter)}`}</strong><p>{billSearch.trim() ? 'Try a different search term.' : monthFilter !== 'all' && bills.length > 0 ? 'Older bills are saved and have not been removed. Choose another billing month to view them.' : 'Add an electricity rate, select a current meter assignment, and save its meter reading to issue a bill.'}</p></div> : <div className="electricity-bill-list">{filteredBills.map((bill) => <article className="electricity-bill-card" key={bill.id}><div className="electricity-bill-top"><div className="electricity-bill-title"><strong>{billDisplayLabel(bill)}</strong><small>{formatMonth(bill.billingMonth)} · Read {formatDate(bill.readingDate)}</small></div><div className="electricity-bill-amount"><strong>{formatTaka(bill.amountMinor)}</strong><span>Issued</span></div></div><div className="electricity-bill-details"><span><small>Previous</small><b>{formatReading(bill.previousReading)}</b></span><span><small>Current</small><b>{formatReading(bill.currentReading)}</b></span><span><small>Units</small><b>{formatReading(bill.unitsConsumed)}</b></span><span><small>Rate</small><b>{formatTaka(bill.pricePerUnitMinor)} / unit</b></span></div>{bill.notes && <p className="electricity-bill-notes">{bill.notes}</p>}</article>)}</div>}
       </section>
 

@@ -80,6 +80,7 @@ const RESTORE_COLLECTIONS = [
   'auditEvents',
   'billBalances',
   'creditApplications',
+  'creditApplicationReferenceIndex',
   'noteTasks',
   'notes',
   'openingBalanceAdjustments',
@@ -111,6 +112,7 @@ const RESTORE_COLLECTIONS = [
 ] as const
 
 const BUSINESS_UNIQUE_FIELDS: Record<string, string[]> = {
+  creditApplicationReferenceIndex: ['applicationNumber'],
   properties: ['propertyCode'],
   rooms: ['roomCode'],
   tenants: ['tenantCode'],
@@ -261,6 +263,7 @@ function validateArchive(raw: unknown): BackupArchive {
     'openingBalances',
     'openingBalanceAdjustments',
     'openingBalanceCreditApplications',
+    'creditApplicationReferenceIndex',
   ]) {
     if (!(optionalCollection in archiveCollections)) {
       archiveCollections[optionalCollection] = []

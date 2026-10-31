@@ -11,8 +11,9 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getCurrentActorUid, getFirebaseServices } from './client'
+import { getFirebaseServices } from './client'
 import { listMeterAssignments } from './meters'
+import type { TenantAssignmentRecord } from './tenantAssignments'
 import {
   electricityRateFormSchema,
   electricityReadingFormSchema,
@@ -55,6 +56,13 @@ export type ElectricityReadingRecord = {
   pricePerUnitMinor: number
   amountMinor: number
   notes: string
+  /** Immutable tenant-at-issue snapshot; absent on legacy bills/readings. */
+  tenantAssignmentId?: string
+  tenantId?: string
+  tenantCode?: string
+  tenantName?: string
+  tenantRoomNumber?: string
+  tenantFloorName?: string
   createdAt: Timestamp | null
   updatedAt: Timestamp | null
   createdBy: string
@@ -160,6 +168,16 @@ function assignmentRef(ownerUid: string, assignmentId: string) {
   return doc(db, 'users', ownerUid, 'meterAssignments', assignmentId)
 }
 
+function tenantAssignmentRef(ownerUid: string, assignmentId: string) {
+  const { db } = getFirebaseServices()
+  return doc(db, 'users', ownerUid, 'tenantAssignments', assignmentId)
+}
+
+function currentTenantByRoomRef(ownerUid: string, roomId: string) {
+  const { db } = getFirebaseServices()
+  return doc(db, 'users', ownerUid, 'currentTenantByRoom', roomId)
+}
+
 function readingStateRef(ownerUid: string, assignmentId: string) {
   const { db } = getFirebaseServices()
   return doc(db, 'users', ownerUid, 'electricityReadingState', assignmentId)
@@ -219,6 +237,17 @@ function validateReading(id: string, raw: unknown): ElectricityReadingRecord {
     isSafeNonNegativeInteger(raw.amountMinor) && typeof raw.notes === 'string' &&
     raw.notes.length <= 1000 && raw.createdAt instanceof Timestamp && raw.updatedAt instanceof Timestamp &&
     typeof raw.createdBy === 'string' && typeof raw.updatedBy === 'string' &&
+    (raw.tenantAssignmentId === undefined || typeof raw.tenantAssignmentId === 'string') &&
+    (raw.tenantId === undefined || typeof raw.tenantId === 'string') &&
+    (raw.tenantCode === undefined || typeof raw.tenantCode === 'string') &&
+    (raw.tenantName === undefined || typeof raw.tenantName === 'string') &&
+    (raw.tenantRoomNumber === undefined || typeof raw.tenantRoomNumber === 'string') &&
+    (raw.tenantFloorName === undefined || typeof raw.tenantFloorName === 'string') &&
+    ((raw.tenantAssignmentId === undefined && raw.tenantId === undefined && raw.tenantCode === undefined &&
+      raw.tenantName === undefined && raw.tenantRoomNumber === undefined && raw.tenantFloorName === undefined) ||
+      (typeof raw.tenantAssignmentId === 'string' && typeof raw.tenantId === 'string' &&
+       typeof raw.tenantCode === 'string' && typeof raw.tenantName === 'string' &&
+       typeof raw.tenantRoomNumber === 'string' && typeof raw.tenantFloorName === 'string')) &&
     (id === `${raw.meterAssignmentId}__${readingMonth}` || id === `${raw.meterAssignmentId}__${raw.readingDate}`) &&
     (raw.rateId === `rate__${raw.rateEffectiveFrom}` ||
       raw.rateId === `rate__${raw.roomId}__${raw.rateEffectiveFrom}`)
@@ -242,6 +271,14 @@ function validateReading(id: string, raw: unknown): ElectricityReadingRecord {
     pricePerUnitMinor: raw.pricePerUnitMinor as number,
     amountMinor: raw.amountMinor as number,
     notes: raw.notes as string,
+    ...(typeof raw.tenantAssignmentId === 'string' ? {
+      tenantAssignmentId: raw.tenantAssignmentId,
+      tenantId: raw.tenantId as string,
+      tenantCode: raw.tenantCode as string,
+      tenantName: raw.tenantName as string,
+      tenantRoomNumber: raw.tenantRoomNumber as string,
+      tenantFloorName: raw.tenantFloorName as string,
+    } : {}),
     createdAt: getTimestamp(raw.createdAt),
     updatedAt: getTimestamp(raw.updatedAt),
     createdBy: raw.createdBy as string,
@@ -287,6 +324,57 @@ export async function listElectricityBills(ownerUid: string): Promise<Electricit
   })
 }
 
+/**
+ * Resolve the tenant responsible for an electricity bill.
+ * New bills carry an immutable tenant-assignment snapshot. Legacy bills first
+ * use the historical reading-date match, then fall back to a single current
+ * tenant in the room when no historical assignment covers that date.
+ */
+export function resolveElectricityBillTenantAssignment(
+  bill: ElectricityBillRecord,
+  assignments: TenantAssignmentRecord[],
+): TenantAssignmentRecord | null {
+  if (bill.tenantAssignmentId) {
+    return assignments.find((assignment) =>
+      assignment.id === bill.tenantAssignmentId &&
+      (!bill.tenantId || assignment.tenantId === bill.tenantId),
+    ) ?? null
+  }
+
+  const candidates = assignments.filter((assignment) =>
+    assignment.roomId === bill.roomId &&
+    assignment.moveInDate <= bill.readingDate &&
+    (assignment.moveOutDate === null || assignment.moveOutDate >= bill.readingDate),
+  )
+
+  if (candidates.length === 1) return candidates[0] ?? null
+
+  if (candidates.length > 1) {
+    const currentCandidates = candidates.filter((assignment) =>
+      assignment.status === 'current' && assignment.moveOutDate === null,
+    )
+    if (currentCandidates.length === 1) return currentCandidates[0] ?? null
+    if (currentCandidates.length > 1) return null
+
+    const latestMoveInDate = candidates.reduce(
+      (latest, assignment) => assignment.moveInDate > latest ? assignment.moveInDate : latest,
+      candidates[0].moveInDate,
+    )
+    const latestCandidates = candidates.filter((assignment) => assignment.moveInDate === latestMoveInDate)
+    return latestCandidates.length === 1 ? latestCandidates[0] ?? null : null
+  }
+
+  // Older electricity bills were not saved with tenant details. When their
+  // reading date predates the recorded move-in date, use a unique current
+  // room assignment rather than leaving the room's current bill unassigned.
+  const currentRoomAssignments = assignments.filter((assignment) =>
+    assignment.roomId === bill.roomId &&
+    assignment.status === 'current' &&
+    assignment.moveOutDate === null,
+  )
+  return currentRoomAssignments.length === 1 ? currentRoomAssignments[0] ?? null : null
+}
+
 export async function createElectricityRate(ownerUid: string, rawInput: ElectricityRateFormValues): Promise<string> {
   const input = electricityRateFormSchema.parse(rawInput)
   const { db } = getFirebaseServices()
@@ -316,8 +404,8 @@ export async function createElectricityRate(ownerUid: string, rawInput: Electric
       notes: input.notes,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: getCurrentActorUid(),
-      updatedBy: getCurrentActorUid(),
+      createdBy: ownerUid,
+      updatedBy: ownerUid,
     })
   })
   return id
@@ -372,12 +460,13 @@ export async function createElectricityBillFromReading(
   const stateRef = readingStateRef(ownerUid, assignment.id)
 
   await runTransaction(db, async (transaction) => {
-    const [assignmentSnapshot, rateSnapshot, savedReading, savedBill, stateSnapshot] = await Promise.all([
+    const [assignmentSnapshot, rateSnapshot, savedReading, savedBill, stateSnapshot, currentTenantIndexSnapshot] = await Promise.all([
       transaction.get(meterAssignmentDocument),
       transaction.get(rateDocument),
       transaction.get(targetReadingRef),
       transaction.get(targetBillRef),
       transaction.get(stateRef),
+      transaction.get(currentTenantByRoomRef(ownerUid, assignment.roomId)),
     ])
 
     if (!assignmentSnapshot.exists()) throw new ElectricityAssignmentNotFoundError()
@@ -400,6 +489,56 @@ export async function createElectricityBillFromReading(
     if (persistedRate.roomId !== null &&
         (persistedRate.roomId !== assignment.roomId || persistedRate.roomCode !== assignment.roomCode)) {
       throw new InvalidElectricityDataError('The selected electricity rate belongs to a different room. No bill was issued.')
+    }
+
+    // Link the electricity bill to the tenant currently assigned to this room
+    // at issue time. This immutable snapshot keeps the charge on the correct
+    // tenant ledger even if the tenant later moves out or another tenant moves in.
+    let tenantSnapshot: {
+      tenantAssignmentId: string
+      tenantId: string
+      tenantCode: string
+      tenantName: string
+      tenantRoomNumber: string
+      tenantFloorName: string
+    } | null = null
+
+    if (currentTenantIndexSnapshot.exists()) {
+      const indexData = currentTenantIndexSnapshot.data()
+      if (!isRecord(indexData) || typeof indexData.assignmentId !== 'string' ||
+          indexData.roomId !== assignment.roomId || indexData.roomCode !== assignment.roomCode ||
+          indexData.propertyId !== assignment.propertyId || indexData.propertyCode !== assignment.propertyCode) {
+        throw new InvalidElectricityDataError('The room’s current tenant index is invalid. No electricity bill was issued.')
+      }
+
+      const tenantAssignmentDocument = tenantAssignmentRef(ownerUid, indexData.assignmentId)
+      const tenantAssignmentSnapshot = await transaction.get(tenantAssignmentDocument)
+      if (!tenantAssignmentSnapshot.exists()) {
+        throw new InvalidElectricityDataError('The room’s current tenant assignment could not be found. No electricity bill was issued.')
+      }
+
+      const tenantAssignment = tenantAssignmentSnapshot.data()
+      if (!isRecord(tenantAssignment) || tenantAssignment.status !== 'current' ||
+          tenantAssignment.moveOutDate !== null || tenantAssignment.roomId !== assignment.roomId ||
+          typeof tenantAssignment.tenantId !== 'string' || typeof tenantAssignment.tenantCode !== 'string' ||
+          typeof tenantAssignment.tenantName !== 'string' || typeof tenantAssignment.roomNumber !== 'string' ||
+          typeof tenantAssignment.floorName !== 'string' ||
+          indexData.tenantId !== tenantAssignment.tenantId ||
+          indexData.tenantCode !== tenantAssignment.tenantCode ||
+          indexData.tenantName !== tenantAssignment.tenantName ||
+          indexData.roomNumber !== tenantAssignment.roomNumber ||
+          indexData.floorName !== tenantAssignment.floorName) {
+        throw new InvalidElectricityDataError('The room’s current tenant assignment does not match its saved index. No electricity bill was issued.')
+      }
+
+      tenantSnapshot = {
+        tenantAssignmentId: tenantAssignmentSnapshot.id,
+        tenantId: tenantAssignment.tenantId,
+        tenantCode: tenantAssignment.tenantCode,
+        tenantName: tenantAssignment.tenantName,
+        tenantRoomNumber: tenantAssignment.roomNumber,
+        tenantFloorName: tenantAssignment.floorName,
+      }
     }
 
     let previousReading = assignment.initialReading
@@ -444,10 +583,11 @@ export async function createElectricityBillFromReading(
       pricePerUnitMinor: persistedRate.pricePerUnitMinor,
       amountMinor,
       notes: input.notes,
+      ...(tenantSnapshot ?? {}),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: getCurrentActorUid(),
-      updatedBy: getCurrentActorUid(),
+      createdBy: ownerUid,
+      updatedBy: ownerUid,
     }
 
     transaction.set(targetReadingRef, snapshot)
@@ -464,8 +604,8 @@ export async function createElectricityBillFromReading(
       lastReadingValue: input.currentReading,
       createdAt: stateSnapshot.exists() ? stateSnapshot.data().createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: stateSnapshot.exists() ? stateSnapshot.data().createdBy : getCurrentActorUid(),
-      updatedBy: getCurrentActorUid(),
+      createdBy: stateSnapshot.exists() ? stateSnapshot.data().createdBy : ownerUid,
+      updatedBy: ownerUid,
     })
   })
   return billId

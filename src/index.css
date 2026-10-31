@@ -1685,6 +1685,25 @@ input:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.room-tenant-name {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  margin: 0 0 8px;
+  color: var(--text-heading);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.room-tenant-name svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--entity-tenant);
+}
+
 .room-property-name {
   overflow-wrap: anywhere;
   margin: 0 0 9px;

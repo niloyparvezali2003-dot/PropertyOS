@@ -13,6 +13,7 @@ import {
     Plus,
     RefreshCw,
     X,
+    UserRound,
     Zap,
 } from 'lucide-react'
 
@@ -29,6 +30,10 @@ import {
     type MeterAssignmentRecord,
 } from '../services/firebase/meters'
 import { listRooms, type RoomRecord } from '../services/firebase/rooms'
+import {
+    listTenantAssignments,
+    type TenantAssignmentRecord,
+} from '../services/firebase/tenantAssignments'
 import {
     listProperties,
     type PropertyRecord,
@@ -97,6 +102,8 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
     const [assignments, setAssignments] =
         useState<MeterAssignmentRecord[]>([])
     const [rooms, setRooms] = useState<RoomRecord[]>([])
+    const [tenantAssignments, setTenantAssignments] =
+        useState<TenantAssignmentRecord[]>([])
     const [properties, setProperties] = useState<PropertyRecord[]>([])
 
     const [search, setSearch] = useState('')
@@ -128,17 +135,20 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                 nextMeters,
                 nextAssignments,
                 nextRooms,
+                nextTenantAssignments,
                 nextProperties,
             ] = await Promise.all([
                 listMeters(ownerUid),
                 listMeterAssignments(ownerUid),
                 listRooms(ownerUid),
+                listTenantAssignments(ownerUid),
                 listProperties(ownerUid),
             ])
 
             setMeters(nextMeters)
             setAssignments(nextAssignments)
             setRooms(nextRooms)
+            setTenantAssignments(nextTenantAssignments)
             setProperties(nextProperties)
         } catch (error: unknown) {
             setPageError(getMeterErrorMessage(error))
@@ -160,6 +170,21 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
         () => new Map(properties.map((property) => [property.id, property])),
         [properties],
     )
+
+    const currentTenantAssignmentByRoom = useMemo(() => {
+        const map = new Map<string, TenantAssignmentRecord>()
+
+        for (const tenantAssignment of tenantAssignments) {
+            if (
+                tenantAssignment.status === 'current' &&
+                !map.has(tenantAssignment.roomId)
+            ) {
+                map.set(tenantAssignment.roomId, tenantAssignment)
+            }
+        }
+
+        return map
+    }, [tenantAssignments])
 
     const currentAssignmentByMeter = useMemo(() => {
         const map = new Map<string, MeterAssignmentRecord>()
@@ -236,6 +261,12 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                 assignment?.roomCode ?? '',
                 room?.roomNumber ?? '',
                 room?.floorName ?? '',
+                (assignment && current
+                    ? currentTenantAssignmentByRoom.get(assignment.roomId)?.tenantName
+                    : '') ?? '',
+                (assignment && current
+                    ? currentTenantAssignmentByRoom.get(assignment.roomId)?.tenantCode
+                    : '') ?? '',
                 property?.name ?? '',
                 property?.propertyCode ?? '',
             ]
@@ -251,6 +282,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
         latestAssignmentByMeter,
         roomById,
         propertyById,
+        currentTenantAssignmentByRoom,
     ])
 
     function openCreateDialog() {
@@ -314,13 +346,13 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                     assignmentForm,
                 )
                 const targetRoom = rooms.find((room) => room.id === assignmentForm.roomId)
-                const roomLabel = targetRoom ? `${targetRoom.roomCode} · Room ${targetRoom.roomNumber}` : 'selected room'
+                const roomLabel = targetRoom ? `Room ${targetRoom.roomNumber}` : 'selected room'
                 await recordAuditEvent(ownerUid, {
                     action: 'assigned',
                     entityType: 'meter_assignment',
                     entityId: assignmentId,
-                    entityLabel: `${selectedMeter.meterCode} → ${roomLabel}`,
-                    summary: `Assigned meter ${selectedMeter.meterCode} to ${roomLabel} from ${assignmentForm.assignedOn}.`,
+                    entityLabel: `${selectedMeter.serialNumber.trim() || 'Meter'} → ${roomLabel}`,
+                    summary: `Assigned meter ${selectedMeter.serialNumber.trim() || 'meter'} to ${roomLabel} from ${assignmentForm.assignedOn}.`,
                 })
             } else {
                 if (!selectedMeter) {
@@ -336,8 +368,8 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                     action: 'replaced',
                     entityType: 'meter',
                     entityId: newMeterId,
-                    entityLabel: `${selectedMeter.meterCode} replacement`,
-                    summary: `Replaced meter ${selectedMeter.meterCode} with serial number ${replacementForm.newSerialNumber.trim()}. Reason: ${replacementReasonLabels[replacementForm.reason]}.`,
+                    entityLabel: `${selectedMeter.serialNumber.trim() || 'Meter'} replacement`,
+                    summary: `Replaced ${selectedMeter.serialNumber.trim() || 'meter'} with serial number ${replacementForm.newSerialNumber.trim()}. Reason: ${replacementReasonLabels[replacementForm.reason]}.`,
                 })
             }
 
@@ -390,7 +422,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                     <p className="eyebrow">Property management</p>
                     <h1>Meters</h1>
                     <p className="page-description">
-                        Manage permanent meter IDs, room assignments, and replacements.
+                        Manage registered meters, room assignments, and replacements.
                     </p>
                 </div>
 
@@ -487,6 +519,10 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                             ? roomById.get(assignment.roomId)
                             : undefined
 
+                        const currentTenant = current
+                            ? currentTenantAssignmentByRoom.get(current.roomId)
+                            : undefined
+
                         const property = assignment
                             ? propertyById.get(assignment.propertyId)
                             : undefined
@@ -505,19 +541,24 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
                                 <div className="meter-title-row">
                                     <h2>{meter.serialNumber || 'No serial number'}</h2>
-                                    {meter.serialNumber && (
-                                        <span className="meter-serial">
-                                            {meter.meterCode}
-                                        </span>
-                                    )}
                                 </div>
 
                                 {current ? (
                                     <div className="meter-assignment-summary">
                                         <strong>Current room</strong>
+                                        <div
+                                            className="room-tenant-name"
+                                            title={currentTenant?.tenantName ?? 'No current tenant assigned'}
+                                        >
+                                            <UserRound size={13} aria-hidden="true" />
+                                            <span>
+                                                {currentTenant?.tenantName ?? 'No current tenant assigned'}
+                                            </span>
+                                        </div>
                                         <span>
-                                            {current.roomCode}
-                                            {room ? ` · Room ${room.roomNumber}` : ''}
+                                            {room
+                                                ? `Room ${room.roomNumber}`
+                                                : 'Room details unavailable'}
                                         </span>
                                         <small>
                                             {property
@@ -532,8 +573,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                                     <div className="meter-assignment-summary">
                                         <strong>Previous room</strong>
                                         <span>
-                                            {latest.roomCode}
-                                            {room ? ` · Room ${room.roomNumber}` : ''}
+                                            {room ? `Room ${room.roomNumber}` : 'Room details unavailable'}
                                         </span>
                                         <small>
                                             {latest.endedOn
@@ -656,10 +696,6 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
                             {dialogMode === 'assign' && (
                                 <>
-                                    <div className="property-id-note">
-                                        Meter ID: {selectedMeter?.meterCode}
-                                    </div>
-
                                     <div className="property-form-field">
                                         <label htmlFor="meter-room">
                                             Room <span aria-hidden="true">*</span>
@@ -682,7 +718,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
                                                 return (
                                                     <option key={room.id} value={room.id}>
-                                                        {room.roomCode} · {property?.name ?? 'Property'} · Room {room.roomNumber} · {room.floorName}
+                                                        {property?.name ?? 'Property'} · Room {room.roomNumber} · {room.floorName}
                                                     </option>
                                                 )
                                             })}
@@ -739,7 +775,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                             {dialogMode === 'replace' && (
                                 <>
                                     <div className="property-id-note">
-                                        Old meter: {selectedMeter?.meterCode}
+                                        Old meter: {selectedMeter?.serialNumber || 'Selected meter'}
                                         <br />
                                         The existing room assignment will end. A new meter ID will be created, and historical assignments will be retained.
                                     </div>

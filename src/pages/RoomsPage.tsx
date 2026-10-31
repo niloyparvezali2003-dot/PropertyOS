@@ -12,6 +12,7 @@ import {
     MapPin,
     Pencil,
     Plus,
+    UserRound,
     X,
 } from 'lucide-react'
 
@@ -92,14 +93,24 @@ export function RoomsPage({
         [properties],
     )
 
+    const currentTenantAssignmentByRoom = useMemo(() => {
+        const assignmentsByRoom = new Map<string, TenantAssignmentRecord>()
+
+        tenantAssignments.forEach((assignment) => {
+            if (
+                assignment.status === 'current' &&
+                !assignmentsByRoom.has(assignment.roomId)
+            ) {
+                assignmentsByRoom.set(assignment.roomId, assignment)
+            }
+        })
+
+        return assignmentsByRoom
+    }, [tenantAssignments])
+
     const occupiedRoomIds = useMemo(
-        () =>
-            new Set(
-                tenantAssignments
-                    .filter((assignment) => assignment.status === 'current')
-                    .map((assignment) => assignment.roomId),
-            ),
-        [tenantAssignments],
+        () => new Set(currentTenantAssignmentByRoom.keys()),
+        [currentTenantAssignmentByRoom],
     )
 
     const loadData = useCallback(async () => {
@@ -156,6 +167,8 @@ export function RoomsPage({
                 room.floorName,
                 room.roomNumber,
                 room.notes,
+                currentTenantAssignmentByRoom.get(room.id)?.tenantName ?? '',
+                currentTenantAssignmentByRoom.get(room.id)?.tenantCode ?? '',
                 room.status === 'vacant' && occupiedRoomIds.has(room.id)
                     ? 'Occupied'
                     : statusLabels[room.status],
@@ -164,7 +177,7 @@ export function RoomsPage({
                 .toLowerCase()
                 .includes(searchTerm)
         })
-    }, [rooms, search, selectedPropertyId, propertyById, occupiedRoomIds])
+    }, [rooms, search, selectedPropertyId, propertyById, occupiedRoomIds, currentTenantAssignmentByRoom])
 
     function openCreateDialog() {
         setEditingRoom(null)
@@ -392,8 +405,10 @@ export function RoomsPage({
                     {filteredRooms.map((room) => {
                         const property = propertyById.get(room.propertyId)
 
+                        const currentTenantAssignment =
+                            currentTenantAssignmentByRoom.get(room.id)
                         const isOccupied =
-                            room.status === 'vacant' && occupiedRoomIds.has(room.id)
+                            room.status === 'vacant' && Boolean(currentTenantAssignment)
 
                         const displayedStatus = isOccupied ? 'occupied' : room.status
 
@@ -413,6 +428,16 @@ export function RoomsPage({
                                     <h2>Room {room.roomNumber}</h2>
                                     <span className="room-code">{room.roomCode}</span>
                                 </div>
+
+                                {currentTenantAssignment && (
+                                    <p
+                                        className="room-tenant-name"
+                                        title={`Current tenant: ${currentTenantAssignment.tenantName}`}
+                                    >
+                                        <UserRound size={14} aria-hidden="true" />
+                                        <span>{currentTenantAssignment.tenantName}</span>
+                                    </p>
+                                )}
 
                                 <p className="room-property-name">
                                     {property?.propertyCode ?? room.propertyCode}

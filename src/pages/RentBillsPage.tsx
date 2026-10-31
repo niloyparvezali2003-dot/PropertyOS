@@ -10,6 +10,7 @@ import {
   CalendarDays,
   CheckCircle2,
   CircleDollarSign,
+  Download,
   FileText,
   LoaderCircle,
   Plus,
@@ -32,7 +33,13 @@ import {
 } from '../services/firebase/rentBills'
 import { listProperties, type PropertyRecord } from '../services/firebase/properties'
 import { listRooms, type RoomRecord } from '../services/firebase/rooms'
+import {
+  listTenantAssignments,
+  type TenantAssignmentRecord,
+} from '../services/firebase/tenantAssignments'
 import { roomRentRateFormSchema } from '../schemas/rentBill'
+import { loadWorkspaceSettings } from '../services/firebase/workspaceSettings'
+import { downloadMonthlyBillReportPdf } from '../utils/monthlyBillReportPdf'
 import './rent-bills.css'
 
 type RentBillsPageProps = {
@@ -118,6 +125,8 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const [bills, setBills] = useState<RentBillRecord[]>([])
   const [rooms, setRooms] = useState<RoomRecord[]>([])
   const [properties, setProperties] = useState<PropertyRecord[]>([])
+  const [tenantAssignments, setTenantAssignments] =
+    useState<TenantAssignmentRecord[]>([])
 
   const [isLoading, setIsLoading] = useState(true)
   const [pageError, setPageError] = useState('')
@@ -131,6 +140,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
   const [isGenerationConfirmOpen, setIsGenerationConfirmOpen] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isDownloadingReport, setIsDownloadingReport] = useState(false)
   const [generationResult, setGenerationResult] =
     useState<RentBillGenerationResult | null>(null)
 
@@ -142,18 +152,25 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     setPageError('')
 
     try {
-      const [nextRates, nextBills, nextRooms, nextProperties] =
-        await Promise.all([
-          listRoomRentRates(ownerUid),
-          listRentBills(ownerUid),
-          listRooms(ownerUid),
-          listProperties(ownerUid),
-        ])
+      const [
+        nextRates,
+        nextBills,
+        nextRooms,
+        nextProperties,
+        nextTenantAssignments,
+      ] = await Promise.all([
+        listRoomRentRates(ownerUid),
+        listRentBills(ownerUid),
+        listRooms(ownerUid),
+        listProperties(ownerUid),
+        listTenantAssignments(ownerUid),
+      ])
 
       setRates(nextRates)
       setBills(nextBills)
       setRooms(nextRooms)
       setProperties(nextProperties)
+      setTenantAssignments(nextTenantAssignments)
     } catch (error: unknown) {
       setPageError(getRentBillErrorMessage(error))
     } finally {
@@ -174,6 +191,18 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     () => new Map(rooms.map((room) => [room.id, room])),
     [rooms],
   )
+
+  const currentTenantByRoomId = useMemo(() => {
+    const currentByRoomId = new Map<string, TenantAssignmentRecord>()
+
+    for (const assignment of tenantAssignments) {
+      if (assignment.status === 'current' && assignment.moveOutDate === null) {
+        currentByRoomId.set(assignment.roomId, assignment)
+      }
+    }
+
+    return currentByRoomId
+  }, [tenantAssignments])
 
   const activePropertyIds = useMemo(
     () => new Set(
@@ -306,6 +335,43 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
       setRateFormError(getRentBillErrorMessage(error))
     } finally {
       setIsSavingRate(false)
+    }
+  }
+
+  async function handleDownloadRentReport() {
+    if (isDownloadingReport) return
+    if (billMonthFilter === 'all') {
+      setPageError('Choose one billing month before downloading the rent bill report.')
+      return
+    }
+
+    const reportBills = bills.filter((bill) => bill.billingMonth === billMonthFilter)
+    if (reportBills.length === 0) {
+      setPageError(`No issued rent bills exist for ${formatBillingMonth(billMonthFilter)}.`)
+      return
+    }
+
+    setPageError('')
+    setPageSuccess('')
+    setIsDownloadingReport(true)
+    try {
+      const { settings } = await loadWorkspaceSettings(ownerUid)
+      await downloadMonthlyBillReportPdf({
+        kind: 'rent',
+        houseName: settings.houseName,
+        billingMonth: billMonthFilter,
+        rows: reportBills.map((bill) => ({
+          tenantName: bill.tenantName,
+          roomNumber: bill.roomNumber,
+          propertyName: propertyById.get(bill.propertyId)?.name || bill.propertyCode,
+          amountMinor: bill.totalMinor,
+        })),
+      })
+      setPageSuccess(`Monthly rent bill PDF downloaded for ${formatBillingMonth(billMonthFilter)}. Only issued rent amounts are included; previous dues and payments are excluded.`)
+    } catch (error: unknown) {
+      setPageError(error instanceof Error ? error.message : 'Could not generate the monthly rent bill PDF.')
+    } finally {
+      setIsDownloadingReport(false)
     }
   }
 
@@ -531,12 +597,16 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                 {rates.map((rate) => {
                   const room = roomById.get(rate.roomId)
                   const property = propertyById.get(rate.propertyId)
+                  const currentTenant = currentTenantByRoomId.get(rate.roomId)
+                  const roomName = room ? `Room ${room.roomNumber}` : `Room ${rate.roomCode}`
 
                   return (
                     <article className="rent-rate-item" key={rate.id}>
                       <div className="rent-rate-main">
                         <div className="rent-rate-heading">
-                          <strong>{rate.roomCode}</strong>
+                          <strong>
+                            {roomName} · {currentTenant?.tenantName || 'No current tenant'}
+                          </strong>
                           <span>{formatTaka(rate.monthlyRentMinor)} <small>/ month</small></span>
                         </div>
                         <p>
@@ -584,6 +654,16 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                 ))}
               </select>
             </label>
+            <button
+              className="button button-secondary rent-download-report-button"
+              type="button"
+              onClick={() => void handleDownloadRentReport()}
+              disabled={isLoading || isDownloadingReport || billMonthFilter === 'all' || !bills.some((bill) => bill.billingMonth === billMonthFilter)}
+              title={billMonthFilter === 'all' ? 'Choose one month to download a monthly report' : 'Download only this month’s issued rent bills'}
+            >
+              {isDownloadingReport ? <LoaderCircle className="rent-spin" size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
+              {isDownloadingReport ? 'Preparing PDF…' : 'Download PDF'}
+            </button>
           </div>
 
           {isLoading ? (
