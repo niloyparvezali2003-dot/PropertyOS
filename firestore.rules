@@ -1924,13 +1924,31 @@ service cloud.firestore {
         && value <= 1000000000;
     }
 
-    function validElectricityRate(userId, rateId, data) {
+    function validSharedElectricityRate(rateId, data) {
+      // Workspace defaults intentionally have no roomId/roomCode fields.
+      return !('roomId' in data)
+        && !('roomCode' in data)
+        && rateId == 'rate__' + data.effectiveFrom;
+    }
+
+    function validRoomElectricityRate(userId, rateId, data) {
       let roomPath =
         /databases/$(database)/documents/users/$(userId)/rooms/$(data.roomId);
 
+      return ('roomId' in data)
+        && ('roomCode' in data)
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.roomCode != 'R0000'
+        && exists(roomPath)
+        && get(roomPath).data.roomCode == data.roomCode
+        && rateId == 'rate__' + data.roomId + '__' + data.effectiveFrom;
+    }
+
+    function validElectricityRate(userId, rateId, data) {
       return data.keys().hasAll([
-          'roomId',
-          'roomCode',
           'effectiveFrom',
           'pricePerUnitMinor',
           'notes',
@@ -1950,13 +1968,6 @@ service cloud.firestore {
           'createdBy',
           'updatedBy'
         ])
-        && data.roomId is string
-        && data.roomId.size() > 0
-        && data.roomCode is string
-        && data.roomCode.matches('^R[0-9]{4}$')
-        && data.roomCode != 'R0000'
-        && exists(roomPath)
-        && get(roomPath).data.roomCode == data.roomCode
         && validElectricityDate(data.effectiveFrom)
         && data.pricePerUnitMinor is int
         && data.pricePerUnitMinor >= 1
@@ -1967,7 +1978,10 @@ service cloud.firestore {
         && data.updatedAt is timestamp
         && data.createdBy is string && data.createdBy.size() > 0
         && data.updatedBy == request.auth.uid
-        && rateId == 'rate__' + data.roomId + '__' + data.effectiveFrom;
+        && (
+          validSharedElectricityRate(rateId, data)
+          || validRoomElectricityRate(userId, rateId, data)
+        );
     }
     // ==================================================
     // 26. ELECTRICITY METER READING HISTORY

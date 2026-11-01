@@ -1,4 +1,4 @@
-import { getCachedList } from './listCache'
+import { getCachedList, invalidateOwnerDataCache } from './listCache'
 
 import {
   collection,
@@ -79,6 +79,13 @@ export class ElectricityRateAlreadyExistsError extends Error {
   constructor() {
     super('An electricity rate already exists for this room and effective date. Choose another date.')
     this.name = 'ElectricityRateAlreadyExistsError'
+  }
+}
+
+export class ElectricityDefaultRateAlreadyExistsError extends Error {
+  constructor(effectiveFrom: string) {
+    super(`A workspace default rate already exists from ${effectiveFrom}. Choose another effective date to add a new history entry.`)
+    this.name = 'ElectricityDefaultRateAlreadyExistsError'
   }
 }
 
@@ -409,6 +416,51 @@ export async function createElectricityRate(ownerUid: string, rawInput: Electric
       updatedBy: actorUid,
     })
   })
+  invalidateOwnerDataCache(ownerUid)
+  return id
+}
+
+/**
+ * Add an immutable workspace-wide electricity rate. Room-specific rates
+ * continue to take precedence for their own rooms; this rate is the fallback
+ * for every room that has no applicable room-specific rate on the reading date.
+ */
+export async function createWorkspaceDefaultElectricityRate(
+  ownerUid: string,
+  input: { effectiveFrom: string; pricePerUnitMinor: number; notes?: string },
+): Promise<string> {
+  if (!ownerUid.trim()) throw new Error('A signed-in workspace is required to save the default electricity rate.')
+  if (!isDate(input.effectiveFrom)) throw new InvalidElectricityDataError('Enter a valid effective date for the workspace default rate.')
+  if (!Number.isSafeInteger(input.pricePerUnitMinor) || input.pricePerUnitMinor < 1 || input.pricePerUnitMinor > 10_000_000) {
+    throw new InvalidElectricityDataError('Enter a valid electricity rate greater than zero and within the permitted limit.')
+  }
+  const notes = input.notes?.trim() ?? ''
+  if (notes.length > 1000) throw new InvalidElectricityDataError('Rate notes cannot exceed 1,000 characters.')
+
+  const id = `rate__${input.effectiveFrom}`
+  const ref = rateRef(ownerUid, id)
+  const { db } = getFirebaseServices()
+  const actorUid = getCurrentActorUid()
+
+  await runTransaction(db, async (transaction) => {
+    const existing = await transaction.get(ref)
+    if (existing.exists()) throw new ElectricityDefaultRateAlreadyExistsError(input.effectiveFrom)
+
+    // Shared rates intentionally omit roomId and roomCode. This is the
+    // established legacy-compatible shape recognized by rate validation and
+    // bill security rules, and avoids assigning the default to one room.
+    transaction.set(ref, {
+      effectiveFrom: input.effectiveFrom,
+      pricePerUnitMinor: input.pricePerUnitMinor,
+      notes,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: actorUid,
+      updatedBy: actorUid,
+    })
+  })
+
+  invalidateOwnerDataCache(ownerUid)
   return id
 }
 
@@ -438,8 +490,8 @@ export async function createElectricityBillFromReading(
     .filter((rate) => rate.effectiveFrom <= input.readingDate)
     .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))
   // Room-specific rates always take precedence and remain in force until a
-  // later rate is recorded for that same room. Legacy shared rates are used
-  // only for a room that has no applicable room-specific rate yet.
+  // later rate is recorded for that same room. The workspace-wide default is
+  // used only when the room has no applicable room-specific rate.
   const roomRate = ratesEffectiveByDate(
     rates.filter((rate) => rate.roomId === assignment.roomId),
   )[0]

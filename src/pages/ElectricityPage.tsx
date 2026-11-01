@@ -47,9 +47,6 @@ type ElectricityPageProps = { ownerUid: string }
 type RateFormState = { roomId: string; effectiveFrom: string; pricePerUnit: string; notes: string }
 type ReadingFormState = { meterAssignmentId: string; readingDate: string; currentReading: string; notes: string }
 
-// The default ৳10.00/unit rate remains active for billing, but is hidden from the visible rate history.
-const DEFAULT_ELECTRICITY_RATE_MINOR = 10 * 100
-
 function todayIso(): string {
   const date = new Date()
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -101,7 +98,7 @@ function getApplicableRate(
     .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))
 
   // A room-specific rate remains active until a newer rate is added for that
-  // room. Legacy shared rates are used only until that room has its own rate.
+  // room. The workspace default is used only when the room has no custom rate.
   return eligible(rates.filter((rate) => rate.roomId === roomId))[0]
     ?? eligible(rates.filter((rate) => rate.roomId === null))[0]
 }
@@ -190,10 +187,7 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
     ),
     [rooms, currentTenantByRoomId],
   )
-  const visibleRates = useMemo(
-    () => rates.filter((rate) => rate.pricePerUnitMinor !== DEFAULT_ELECTRICITY_RATE_MINOR),
-    [rates],
-  )
+  const visibleRates = rates
   const billDisplayLabel = useCallback((bill: ElectricityBillRecord) => {
     // Use the room's CURRENT tenant assignment for display only. The issued bill
     // keeps its original meter, room, property, reading, rate, and amount snapshots.
@@ -434,8 +428,8 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
           </section>
 
           <section className="electricity-panel electricity-rate-history-panel">
-            <div className="electricity-panel-heading"><div><h2>Electricity rate history</h2><p>Room-specific rates remain effective until a newer rate is added for that room.</p></div><span className="electricity-panel-icon"><CircleDollarSign size={20} /></span></div>
-            {visibleRates.length === 0 ? <div className="electricity-empty-inline"><Zap size={24} /><strong>No custom electricity rates to display</strong><p>Rates set to the default ৳10.00 per unit are hidden here. Other saved rates remain visible.</p><button className="button button-primary" type="button" onClick={() => setIsRateFormOpen(true)}><Plus size={16} /> Add rate</button></div> : <div className="electricity-rate-list">{visibleRates.map((rate) => {
+            <div className="electricity-panel-heading"><div><h2>Electricity rate history</h2><p>Room-specific rates override the workspace default for that room. All other rooms use the workspace default rate.</p></div><span className="electricity-panel-icon"><CircleDollarSign size={20} /></span></div>
+            {visibleRates.length === 0 ? <div className="electricity-empty-inline"><Zap size={24} /><strong>No electricity rate history yet</strong><p>Set the workspace default rate in Settings, or add a custom rate for an individual room.</p><button className="button button-primary" type="button" onClick={() => setIsRateFormOpen(true)}><Plus size={16} /> Add room rate</button></div> : <div className="electricity-rate-list">{visibleRates.map((rate) => {
               const room = rate.roomId ? roomById.get(rate.roomId) : undefined
               const tenantAssignment = rate.roomId ? currentTenantByRoomId.get(rate.roomId) : undefined
               const roomNumber = room?.roomNumber || tenantAssignment?.roomNumber || rate.roomCode || 'Unknown'
@@ -444,8 +438,8 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
 
               return <article className="electricity-rate-card" key={rate.id}>
                 <div>
-                  <strong>{rate.roomId ? `Room ${roomNumber}` : 'Legacy shared rate'}</strong>
-                  <span>{rate.roomId ? tenantName : 'Fallback for rooms without a specific rate'}</span>
+                  <strong>{rate.roomId ? `Room ${roomNumber}` : 'Workspace default rate'}</strong>
+                  <span>{rate.roomId ? tenantName : 'Applies to all rooms without a custom room-specific rate'}</span>
                   <small>{rate.roomId && roomCode ? `${roomCode} · ` : ''}Effective {formatDate(rate.effectiveFrom)}</small>
                   {rate.notes && <small className="electricity-rate-notes">{rate.notes}</small>}
                 </div>

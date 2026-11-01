@@ -13,7 +13,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 
 export type AuditAction =
   | 'created'
@@ -166,7 +166,7 @@ export async function recordAuditEvent(
       entityId,
       entityLabel,
       summary,
-      actorUid: ownerUid,
+      actorUid: getCurrentActorUid(),
       occurredAt: serverTimestamp(),
     }
 

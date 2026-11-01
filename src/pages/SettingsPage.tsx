@@ -4,11 +4,13 @@ import {
   Building2,
   CheckCircle2,
   ContactRound,
+  CircleDollarSign,
   FileText,
   LoaderCircle,
   RotateCcw,
   Save,
   ShieldCheck,
+  Zap,
 } from 'lucide-react'
 
 import {
@@ -17,6 +19,12 @@ import {
   saveWorkspaceSettings,
   type WorkspaceSettings,
 } from '../services/firebase/workspaceSettings'
+import {
+  createWorkspaceDefaultElectricityRate,
+  listElectricityRates,
+  type ElectricityRateRecord,
+} from '../services/firebase/electricity'
+import { recordAuditEvent } from '../services/firebase/audit'
 import './settings.css'
 
 type SettingsPageProps = { ownerUid: string }
@@ -29,6 +37,38 @@ type FieldProps = {
   maxLength?: number
   type?: 'text' | 'email' | 'tel'
   help?: string
+}
+
+type DefaultRateForm = { pricePerUnit: string; effectiveFrom: string }
+
+function todayIso(): string {
+  const date = new Date()
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function nextAvailableDefaultRateDate(rates: ElectricityRateRecord[]): string {
+  const usedDates = new Set(rates.filter((rate) => rate.roomId === null).map((rate) => rate.effectiveFrom))
+  const candidate = new Date(`${todayIso()}T00:00:00`)
+  while (usedDates.has(`${candidate.getFullYear()}-${String(candidate.getMonth() + 1).padStart(2, '0')}-${String(candidate.getDate()).padStart(2, '0')}`)) {
+    candidate.setDate(candidate.getDate() + 1)
+  }
+  return `${candidate.getFullYear()}-${String(candidate.getMonth() + 1).padStart(2, '0')}-${String(candidate.getDate()).padStart(2, '0')}`
+}
+
+function takaToPoisha(value: string): number | null {
+  const normalized = value.trim()
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null
+  const [wholePart, decimalPart = ''] = normalized.split('.')
+  const result = Number(wholePart) * 100 + Number((decimalPart + '00').slice(0, 2))
+  return Number.isSafeInteger(result) && result > 0 && result <= 10_000_000 ? result : null
+}
+
+function formatRateInput(amountMinor: number): string {
+  return (amountMinor / 100).toFixed(2)
+}
+
+function formatTaka(amountMinor: number): string {
+  return `৳${new Intl.NumberFormat('en-BD', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amountMinor / 100)}`
 }
 
 function TextField({ label, value, onChange, placeholder, maxLength, type = 'text', help }: FieldProps) {
@@ -49,21 +89,35 @@ function TextField({ label, value, onChange, placeholder, maxLength, type = 'tex
 
 export function SettingsPage({ ownerUid }: SettingsPageProps) {
   const [values, setValues] = useState<WorkspaceSettings>({ ...DEFAULT_WORKSPACE_SETTINGS })
+  const [defaultRateForm, setDefaultRateForm] = useState<DefaultRateForm>({ pricePerUnit: '', effectiveFrom: todayIso() })
+  const [currentDefaultRate, setCurrentDefaultRate] = useState<ElectricityRateRecord | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [isSavingDefaultRate, setIsSavingDefaultRate] = useState(false)
   const [isSaved, setIsSaved] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [defaultRateError, setDefaultRateError] = useState('')
+  const [defaultRateSuccess, setDefaultRateSuccess] = useState('')
 
   useEffect(() => {
     let mounted = true
     setIsLoading(true)
     setError('')
-    void loadWorkspaceSettings(ownerUid)
-      .then((result) => {
+    void Promise.all([loadWorkspaceSettings(ownerUid), listElectricityRates(ownerUid)])
+      .then(([result, rates]) => {
         if (!mounted) return
         setValues(result.settings)
         setIsSaved(result.isSaved)
+        const today = todayIso()
+        const activeDefault = rates
+          .filter((rate) => rate.roomId === null && rate.effectiveFrom <= today)
+          .sort((left, right) => right.effectiveFrom.localeCompare(left.effectiveFrom))[0] ?? null
+        setCurrentDefaultRate(activeDefault)
+        setDefaultRateForm({
+          pricePerUnit: activeDefault ? formatRateInput(activeDefault.pricePerUnitMinor) : '',
+          effectiveFrom: nextAvailableDefaultRateDate(rates),
+        })
       })
       .catch((loadError: unknown) => {
         if (!mounted) return
@@ -99,6 +153,59 @@ export function SettingsPage({ ownerUid }: SettingsPageProps) {
     }
   }
 
+  async function handleSaveDefaultRate() {
+    if (isSavingDefaultRate || isLoading) return
+    const pricePerUnitMinor = takaToPoisha(defaultRateForm.pricePerUnit)
+    if (pricePerUnitMinor === null) {
+      setDefaultRateError('Enter a valid rate greater than ৳0.00, with up to two decimal places.')
+      setDefaultRateSuccess('')
+      return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(defaultRateForm.effectiveFrom)) {
+      setDefaultRateError('Select a valid effective date.')
+      setDefaultRateSuccess('')
+      return
+    }
+
+    setIsSavingDefaultRate(true)
+    setDefaultRateError('')
+    setDefaultRateSuccess('')
+    try {
+      const rateId = await createWorkspaceDefaultElectricityRate(ownerUid, {
+        effectiveFrom: defaultRateForm.effectiveFrom,
+        pricePerUnitMinor,
+      })
+      await recordAuditEvent(ownerUid, {
+        action: 'rate_added',
+        entityType: 'electricity_rate',
+        entityId: rateId,
+        entityLabel: 'Workspace default electricity rate',
+        summary: `Set workspace default electricity rate to ${formatTaka(pricePerUnitMinor)} per unit, effective ${defaultRateForm.effectiveFrom}. Room-specific rates remain unchanged.`,
+      })
+
+      const savedRate: ElectricityRateRecord = {
+        id: rateId,
+        roomId: null,
+        roomCode: null,
+        effectiveFrom: defaultRateForm.effectiveFrom,
+        pricePerUnitMinor,
+        notes: '',
+        createdAt: null,
+        updatedAt: null,
+        createdBy: ownerUid,
+        updatedBy: ownerUid,
+      }
+      if (savedRate.effectiveFrom <= todayIso()) setCurrentDefaultRate(savedRate)
+      setDefaultRateSuccess(`Workspace default rate ${formatTaka(pricePerUnitMinor)} / unit saved from ${savedRate.effectiveFrom}. Rooms with their own rate-history entry will continue using that room-specific rate.`)
+      const updatedRates = await listElectricityRates(ownerUid)
+      setDefaultRateForm((current) => ({ ...current, effectiveFrom: nextAvailableDefaultRateDate(updatedRates) }))
+    } catch (saveError: unknown) {
+      setDefaultRateError(saveError instanceof Error ? saveError.message : 'The workspace default electricity rate could not be saved.')
+    } finally {
+      setIsSavingDefaultRate(false)
+    }
+  }
+
   function resetForm() {
     setValues({ ...DEFAULT_WORKSPACE_SETTINGS })
     setSuccess('Default values loaded into the form. Select Save changes to persist them.')
@@ -111,7 +218,7 @@ export function SettingsPage({ ownerUid }: SettingsPageProps) {
         <div>
           <p className="settings-eyebrow">Workspace configuration</p>
           <h1>Settings</h1>
-          <p>Manage your house profile and the contact details used by your PropertyOS workspace.</p>
+          <p>Manage your house profile, contact details, and default electricity rate for your PropertyOS workspace.</p>
         </div>
         <span className={`settings-save-status ${isSaved ? 'is-saved' : 'is-default'}`}>
           <span className="settings-status-dot" />
@@ -196,6 +303,64 @@ export function SettingsPage({ ownerUid }: SettingsPageProps) {
                 type="email"
               />
             </div>
+          </section>
+
+          <section className="settings-card settings-electricity-rate-card">
+            <div className="settings-card-heading">
+              <span className="settings-card-icon"><Zap size={20} /></span>
+              <div>
+                <h2>Default electricity rate</h2>
+                <p>One workspace-wide rate for every room without its own custom rate.</p>
+              </div>
+            </div>
+            <div className="settings-current-rate">
+              <span>Current workspace default</span>
+              <strong>{currentDefaultRate ? `${formatTaka(currentDefaultRate.pricePerUnitMinor)} / unit` : 'Not configured'}</strong>
+              {currentDefaultRate && <small>Effective from {currentDefaultRate.effectiveFrom}</small>}
+            </div>
+            <div className="settings-form-fields">
+              <label className="settings-field">
+                <span className="settings-field-label">Default rate per unit (৳)</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  max="100000"
+                  step="0.01"
+                  placeholder="e.g. 12.50"
+                  value={defaultRateForm.pricePerUnit}
+                  onChange={(event) => {
+                    setDefaultRateForm((current) => ({ ...current, pricePerUnit: event.target.value }))
+                    setDefaultRateError('')
+                    setDefaultRateSuccess('')
+                  }}
+                />
+                <small>Applied automatically to all rooms that do not have a room-specific rate-history entry.</small>
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">Effective from</span>
+                <input
+                  type="date"
+                  value={defaultRateForm.effectiveFrom}
+                  onChange={(event) => {
+                    setDefaultRateForm((current) => ({ ...current, effectiveFrom: event.target.value }))
+                    setDefaultRateError('')
+                    setDefaultRateSuccess('')
+                  }}
+                />
+                <small>Rate changes are added to history; existing bills and earlier rate records are never rewritten.</small>
+              </label>
+            </div>
+            {defaultRateError && <p className="settings-inline-error" role="alert">{defaultRateError}</p>}
+            {defaultRateSuccess && <p className="settings-inline-success" role="status">{defaultRateSuccess}</p>}
+            <button
+              className="settings-save-button settings-rate-save-button"
+              type="button"
+              onClick={() => void handleSaveDefaultRate()}
+              disabled={isLoading || isSavingDefaultRate}
+            >
+              {isSavingDefaultRate ? <LoaderCircle size={17} className="settings-spin" aria-hidden="true" /> : <CircleDollarSign size={17} aria-hidden="true" />}
+              {isSavingDefaultRate ? 'Saving default rate…' : 'Save default rate'}
+            </button>
           </section>
 
           <section className="settings-card">
