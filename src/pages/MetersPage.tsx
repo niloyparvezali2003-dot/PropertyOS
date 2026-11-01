@@ -38,6 +38,7 @@ import {
     listProperties,
     type PropertyRecord,
 } from '../services/firebase/properties'
+import { compareTenantNames } from '../utils/tenantNameSort'
 import type {
     MeterFormValues,
     MeterAssignmentFormValues,
@@ -222,13 +223,20 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
     const assignableRooms = useMemo(
         () =>
-            rooms.filter(
-                (room) =>
-                    room.status !== 'inactive' &&
-                    !assignedRoomIds.has(room.id) &&
-                    propertyById.get(room.propertyId)?.status === 'active',
-            ),
-        [rooms, assignedRoomIds, propertyById],
+            rooms
+                .filter(
+                    (room) =>
+                        room.status !== 'inactive' &&
+                        !assignedRoomIds.has(room.id) &&
+                        propertyById.get(room.propertyId)?.status === 'active',
+                )
+                .sort((left, right) =>
+                    compareTenantNames(
+                        currentTenantAssignmentByRoom.get(left.id)?.tenantName,
+                        currentTenantAssignmentByRoom.get(right.id)?.tenantName,
+                    ),
+                ),
+        [rooms, assignedRoomIds, propertyById, currentTenantAssignmentByRoom],
     )
 
     const filteredMeters = useMemo(() => {
@@ -715,10 +723,12 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
                                             {assignableRooms.map((room) => {
                                                 const property = propertyById.get(room.propertyId)
+                                                const tenantAssignment = currentTenantAssignmentByRoom.get(room.id)
+                                                const tenantName = tenantAssignment?.tenantName?.trim() || 'No current tenant'
 
                                                 return (
                                                     <option key={room.id} value={room.id}>
-                                                        {property?.name ?? 'Property'} · Room {room.roomNumber} · {room.floorName}
+                                                        {tenantName} - Room {room.roomNumber} - {room.floorName} - {property?.name ?? room.propertyCode}
                                                     </option>
                                                 )
                                             })}

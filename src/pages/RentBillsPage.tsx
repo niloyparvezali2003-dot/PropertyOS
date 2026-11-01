@@ -40,6 +40,7 @@ import {
 import { roomRentRateFormSchema } from '../schemas/rentBill'
 import { loadWorkspaceSettings } from '../services/firebase/workspaceSettings'
 import { downloadMonthlyBillReportPdf } from '../utils/monthlyBillReportPdf'
+import { compareTenantNames } from '../utils/tenantNameSort'
 import './rent-bills.css'
 
 type RentBillsPageProps = {
@@ -214,8 +215,15 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   )
 
   const selectableRooms = useMemo(
-    () => rooms.filter((room) => activePropertyIds.has(room.propertyId)),
-    [rooms, activePropertyIds],
+    () => rooms
+      .filter((room) => activePropertyIds.has(room.propertyId))
+      .sort((left, right) =>
+        compareTenantNames(
+          currentTenantByRoomId.get(left.id)?.tenantName,
+          currentTenantByRoomId.get(right.id)?.tenantName,
+        ),
+      ),
+    [rooms, activePropertyIds, currentTenantByRoomId],
   )
 
   const billMonths = useMemo(
@@ -262,7 +270,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   )
 
   function openRateDialog() {
-    setRateForm(emptyRateForm(selectableRooms[0]?.id ?? ''))
+    setRateForm(emptyRateForm())
     setRateFormError('')
     setPageError('')
     setPageSuccess('')
@@ -273,7 +281,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     if (isSavingRate) return
 
     setIsRateDialogOpen(false)
-    setRateForm(emptyRateForm(selectableRooms[0]?.id ?? ''))
+    setRateForm(emptyRateForm())
     setRateFormError('')
   }
 
@@ -328,7 +336,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
         summary: `Set monthly rent for ${roomLabel} to ${formatTaka(parsed.data.monthlyRentMinor)}, effective ${parsed.data.effectiveFrom}.`,
       })
       setIsRateDialogOpen(false)
-      setRateForm(emptyRateForm(selectableRooms[0]?.id ?? ''))
+      setRateForm(emptyRateForm())
       setPageSuccess('Rent rate saved. Previously issued bills and their rate snapshots were not changed.')
       await loadData()
     } catch (error: unknown) {
@@ -767,7 +775,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                   <option value="">Select a room</option>
                   {selectableRooms.map((room) => (
                     <option value={room.id} key={room.id}>
-                      {room.roomCode} · {propertyById.get(room.propertyId)?.name ?? room.propertyCode} · Floor {room.floorName} · Room {room.roomNumber}
+                      {currentTenantByRoomId.get(room.id)?.tenantName?.trim() || 'No current tenant'} - Room {room.roomNumber} - {propertyById.get(room.propertyId)?.name ?? room.propertyCode}
                     </option>
                   ))}
                 </select>

@@ -51,6 +51,7 @@ import type { RentBillRecord } from '../services/firebase/rentBills'
 import type { RoomRecord } from '../services/firebase/rooms'
 import type { TenantRecord } from '../services/firebase/tenants'
 import type { TenantAssignmentRecord } from '../services/firebase/tenantAssignments'
+import { compareTenantNames } from '../utils/tenantNameSort'
 
 import './ledgers.css'
 
@@ -61,6 +62,7 @@ type LedgerEntity = {
   title: string
   subtitle: string
   optionLabel?: string
+  tenantSortName?: string | null
 }
 
 type LedgerEntry = {
@@ -485,7 +487,7 @@ function buildEntities(
         subtitle: `${tenant.tenantCode} · ${tenant.phone}`,
         optionLabel: `${tenant.fullName} · ${tenant.phone}`,
       }))
-      .sort((a, b) => a.title.localeCompare(b.title))
+      .sort((a, b) => compareTenantNames(a.title, b.title))
   }
 
   if (scope === 'room') {
@@ -518,9 +520,13 @@ function buildEntities(
             currentTenantLabel,
           ].filter(Boolean).join(' · '),
           optionLabel: `${currentTenant} · Room ${room.roomNumber} · Floor/Level: ${room.floorName}`,
+          tenantSortName: currentAssignments.length === 1 ? currentAssignments[0].tenantName : null,
         }
       })
-      .sort((a, b) => a.title.localeCompare(b.title))
+      .sort((a, b) =>
+        compareTenantNames(a.tenantSortName, b.tenantSortName)
+        || a.title.localeCompare(b.title),
+      )
   }
 
   return data.meters
@@ -585,9 +591,13 @@ function buildEntities(
         ].filter(Boolean).join(' · '),
         optionLabel: [meterOptionTenant, meterOptionRoom, meterOptionFloor]
           .filter(Boolean).join(' · '),
+        tenantSortName: currentTenantAssignments.length === 1 ? currentTenantAssignments[0].tenantName : null,
       }
     })
-    .sort((a, b) => a.title.localeCompare(b.title))
+    .sort((a, b) =>
+      compareTenantNames(a.tenantSortName, b.tenantSortName)
+      || a.title.localeCompare(b.title),
+    )
 }
 
 function findTenantAssignmentForElectricityBill(

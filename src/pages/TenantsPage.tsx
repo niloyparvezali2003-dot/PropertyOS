@@ -52,6 +52,41 @@ const statusLabels: Record<TenantStatus, string> = {
     archived: 'Archived',
 }
 
+// The tenant directory is ordered by the tenant's name only.
+// Keep English names in A-Z order, then Bengali names in Bengali collation order.
+const englishTenantNameCollator = new Intl.Collator('en-BD', {
+    usage: 'sort',
+    sensitivity: 'base',
+    numeric: true,
+})
+
+const bengaliTenantNameCollator = new Intl.Collator('bn-BD', {
+    usage: 'sort',
+    sensitivity: 'base',
+    numeric: true,
+})
+
+function compareTenantDirectoryNames(left: string, right: string): number {
+    const leftName = left.trim()
+    const rightName = right.trim()
+
+    const firstLetter = (value: string) =>
+        Array.from(value).find((character) => /[A-Za-z\u0980-\u09FF]/.test(character)) ?? ''
+
+    const leftStartsWithBengali = /[\u0980-\u09FF]/.test(firstLetter(leftName))
+    const rightStartsWithBengali = /[\u0980-\u09FF]/.test(firstLetter(rightName))
+
+    if (leftStartsWithBengali !== rightStartsWithBengali) {
+        return leftStartsWithBengali ? 1 : -1
+    }
+
+    const collator = leftStartsWithBengali
+        ? bengaliTenantNameCollator
+        : englishTenantNameCollator
+
+    return collator.compare(leftName, rightName)
+}
+
 export function TenantsPage({ ownerUid }: TenantsPageProps) {
     const [tenants, setTenants] = useState<TenantRecord[]>([])
     const [search, setSearch] = useState('')
@@ -93,25 +128,29 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
     const filteredTenants = useMemo(() => {
         const query = search.trim().toLowerCase()
 
-        return tenants.filter((tenant) => {
-            if (statusFilter !== 'all' && tenant.status !== statusFilter) {
-                return false
-            }
+        return tenants
+            .filter((tenant) => {
+                if (statusFilter !== 'all' && tenant.status !== statusFilter) {
+                    return false
+                }
 
-            if (!query) return true
+                if (!query) return true
 
-            return [
-                tenant.tenantCode,
-                tenant.fullName,
-                tenant.phone,
-                tenant.email,
-                tenant.address,
-                tenant.notes,
-            ]
-                .join(' ')
-                .toLowerCase()
-                .includes(query)
-        })
+                return [
+                    tenant.tenantCode,
+                    tenant.fullName,
+                    tenant.phone,
+                    tenant.email,
+                    tenant.address,
+                    tenant.notes,
+                ]
+                    .join(' ')
+                    .toLowerCase()
+                    .includes(query)
+            })
+            .sort((left, right) =>
+                compareTenantDirectoryNames(left.fullName, right.fullName),
+            )
     }, [tenants, search, statusFilter])
 
     function openCreateDialog() {

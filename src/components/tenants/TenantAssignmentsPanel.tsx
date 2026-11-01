@@ -6,6 +6,7 @@ import { listRooms, type RoomRecord } from '../../services/firebase/rooms'
 import { recordAuditEvent } from '../../services/firebase/audit'
 import { listTenants, type TenantRecord } from '../../services/firebase/tenants'
 import { listProperties, type PropertyRecord } from '../../services/firebase/properties'
+import { compareTenantNames } from '../../utils/tenantNameSort'
 import {
   createTenantAssignment,
   endTenantAssignment,
@@ -108,7 +109,9 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
   // A tenant can occupy several rooms at once. The room, not the tenant,
   // is the unique side of the current occupancy relationship.
   const availableTenants = useMemo(
-    () => tenants.filter((tenant) => tenant.status === 'active'),
+    () => tenants
+      .filter((tenant) => tenant.status === 'active')
+      .sort((left, right) => compareTenantNames(left.fullName, right.fullName)),
     [tenants],
   )
 

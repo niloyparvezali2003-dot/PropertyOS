@@ -46,6 +46,8 @@ import { listRentBills, type RentBillRecord } from '../services/firebase/rentBil
 import { listTenantAssignments, type TenantAssignmentRecord } from '../services/firebase/tenantAssignments'
 import { recordAuditEvent } from '../services/firebase/audit'
 import { listTenants, type TenantRecord } from '../services/firebase/tenants'
+import { listProperties, type PropertyRecord } from '../services/firebase/properties'
+import { compareTenantNames } from '../utils/tenantNameSort'
 import { DEFAULT_WORKSPACE_SETTINGS, loadWorkspaceSettings, type WorkspaceSettings } from '../services/firebase/workspaceSettings'
 import type { PaymentAllocationFormValues, PaymentBillType, PaymentMethod } from '../schemas/payment'
 import './payments.css'
@@ -320,6 +322,7 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
   const [electricityBills, setElectricityBills] = useState<ElectricityBillRecord[]>([])
   const [assignments, setAssignments] = useState<TenantAssignmentRecord[]>([])
   const [tenants, setTenants] = useState<TenantRecord[]>([])
+  const [properties, setProperties] = useState<PropertyRecord[]>([])
   const [payments, setPayments] = useState<PaymentRecord[]>([])
   const [balances, setBalances] = useState<PaymentBillBalanceRecord[]>([])
   const [openingBalances, setOpeningBalances] = useState<OpeningBalanceRecord[]>([])
@@ -345,7 +348,7 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
     setIsLoading(true)
     setPageError('')
     try {
-      const [nextRentBills, nextElectricityBills, nextAssignments, nextTenants, nextPayments, nextBalances, nextCredits, nextApplications, nextOpeningBalances, settingsResult] = await Promise.all([
+      const [nextRentBills, nextElectricityBills, nextAssignments, nextTenants, nextPayments, nextBalances, nextCredits, nextApplications, nextOpeningBalances, nextProperties, settingsResult] = await Promise.all([
         listRentBills(ownerUid),
         listElectricityBills(ownerUid),
         listTenantAssignments(ownerUid),
@@ -355,12 +358,14 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
         listTenantCredits(ownerUid),
         listCreditApplications(ownerUid),
         listOpeningBalances(ownerUid),
+        listProperties(ownerUid),
         loadWorkspaceSettings(ownerUid),
       ])
       setRentBills(nextRentBills)
       setElectricityBills(nextElectricityBills)
       setAssignments(nextAssignments)
       setTenants(nextTenants)
+      setProperties(nextProperties)
       setPayments(nextPayments)
       setBalances(nextBalances)
       setOpeningBalances(nextOpeningBalances)
@@ -396,9 +401,52 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
   const payableState = useMemo(() => makePayableBills(rentBills, electricityBills, assignments, balances), [rentBills, electricityBills, assignments, balances])
   const openBills = payableState.bills
   const tenantsById = useMemo(() => new Map(tenants.map((tenant) => [tenant.id, tenant])), [tenants])
-  const tenantOptions = useMemo(() => tenants
-    .map((tenant) => ({ id: tenant.id, code: tenant.tenantCode, name: tenant.fullName }))
-    .sort((left, right) => left.name.localeCompare(right.name)), [tenants])
+  const propertyById = useMemo(() => new Map(properties.map((property) => [property.id, property])), [properties])
+  const tenantOptions = useMemo(() => {
+    const assignmentsByTenantId = new Map<string, TenantAssignmentRecord[]>()
+    const currentAssignmentsByTenantId = new Map<string, TenantAssignmentRecord[]>()
+
+    for (const assignment of assignments) {
+      const tenantRecords = assignmentsByTenantId.get(assignment.tenantId) ?? []
+      tenantRecords.push(assignment)
+      assignmentsByTenantId.set(assignment.tenantId, tenantRecords)
+
+      if (assignment.status === 'current' && assignment.moveOutDate === null) {
+        const current = currentAssignmentsByTenantId.get(assignment.tenantId) ?? []
+        current.push(assignment)
+        currentAssignmentsByTenantId.set(assignment.tenantId, current)
+      }
+    }
+
+    return tenants
+      .map((tenant) => {
+        const tenantAssignments = assignmentsByTenantId.get(tenant.id) ?? []
+        const currentAssignments = currentAssignmentsByTenantId.get(tenant.id) ?? []
+        // Prefer every current room. If the tenant has moved out but still has
+        // an unpaid bill, show the latest historical room instead of hiding
+        // the useful room/property context from the payment selector.
+        const displayAssignments = currentAssignments.length > 0
+          ? currentAssignments
+          : [...tenantAssignments].sort((left, right) =>
+              (right.moveOutDate ?? right.moveInDate).localeCompare(left.moveOutDate ?? left.moveInDate),
+            ).slice(0, 1)
+        const locations = displayAssignments
+          .map((assignment) => {
+            const propertyName = propertyById.get(assignment.propertyId)?.name || assignment.propertyCode
+            return `Room ${assignment.roomNumber} - ${propertyName}`
+          })
+          .filter((location, index, all) => all.indexOf(location) === index)
+
+        return {
+          id: tenant.id,
+          name: tenant.fullName,
+          label: locations.length > 0
+            ? `${tenant.fullName} - ${locations.join(' / ')}`
+            : `${tenant.fullName} - No room assignment`,
+        }
+      })
+      .sort((left, right) => compareTenantNames(left.name, right.name))
+  }, [tenants, assignments, propertyById])
   const creditByTenantId = useMemo(() => new Map(credits.map((credit) => [credit.tenantId, credit])), [credits])
   const selectedTenant = tenantsById.get(selectedTenantId) ?? null
   const selectedTenantCredit = selectedTenantId ? creditByTenantId.get(selectedTenantId)?.creditMinor ?? 0 : 0
@@ -673,7 +721,7 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
             <label className="property-form-field payment-field-full"><span>Tenant <span>*</span></span>
               <select value={selectedTenantId} onChange={(event) => handleTenantChange(event.target.value)} required>
                 <option value="">Select tenant</option>
-                {tenantOptions.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.code} — {tenant.name}</option>)}
+                {tenantOptions.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.label}</option>)}
               </select>
             </label>
             <label className="property-form-field"><span>Amount actually received (BDT) <span>*</span></span>

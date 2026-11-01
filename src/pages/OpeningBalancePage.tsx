@@ -15,6 +15,7 @@ import {
 
 import { recordAuditEvent } from '../services/firebase/audit'
 import { listTenants, type TenantRecord } from '../services/firebase/tenants'
+import { compareTenantNames } from '../utils/tenantNameSort'
 import {
   adjustOpeningBalance,
   createOpeningBalance,
@@ -100,7 +101,12 @@ export function OpeningBalancePage({ ownerUid }: OpeningBalancePageProps) {
 
   const balanceByTenant = useMemo(() => new Map(balances.map((balance) => [balance.tenantId, balance])), [balances])
   const tenantById = useMemo(() => new Map(tenants.map((tenant) => [tenant.id, tenant])), [tenants])
-  const availableTenants = useMemo(() => tenants.filter((tenant) => !balanceByTenant.has(tenant.id)), [tenants, balanceByTenant])
+  const availableTenants = useMemo(
+    () => tenants
+      .filter((tenant) => !balanceByTenant.has(tenant.id))
+      .sort((left, right) => compareTenantNames(left.fullName, right.fullName)),
+    [tenants, balanceByTenant],
+  )
   const filteredBalances = useMemo(() => {
     const term = search.trim().toLowerCase()
     const displayName = (balance: OpeningBalanceRecord) => tenantById.get(balance.tenantId)?.fullName ?? balance.tenantName
