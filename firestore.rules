@@ -1973,6 +1973,44 @@ service cloud.firestore {
     // 26. ELECTRICITY METER READING HISTORY
     // ==================================================
 
+    // A reading may carry an immutable snapshot of the tenant assigned to
+    // the room when the bill was issued. Keep the six snapshot fields
+    // optional for legacy/unoccupied-room records, but require them together.
+    function validElectricityTenantSnapshot(data) {
+      let hasAssignmentId = 'tenantAssignmentId' in data;
+      let hasTenantId = 'tenantId' in data;
+      let hasTenantCode = 'tenantCode' in data;
+      let hasTenantName = 'tenantName' in data;
+      let hasRoomNumber = 'tenantRoomNumber' in data;
+      let hasFloorName = 'tenantFloorName' in data;
+
+      return (
+        (!hasAssignmentId && !hasTenantId && !hasTenantCode && !hasTenantName
+          && !hasRoomNumber && !hasFloorName)
+        || (
+          hasAssignmentId && hasTenantId && hasTenantCode && hasTenantName
+          && hasRoomNumber && hasFloorName
+          && data.tenantAssignmentId is string
+          && data.tenantAssignmentId.size() > 0
+          && data.tenantAssignmentId.size() <= 200
+          && data.tenantId is string
+          && data.tenantId.size() > 0
+          && data.tenantId.size() <= 200
+          && data.tenantCode is string
+          && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+          && data.tenantName is string
+          && data.tenantName.size() >= 2
+          && data.tenantName.size() <= 100
+          && data.tenantRoomNumber is string
+          && data.tenantRoomNumber.size() >= 1
+          && data.tenantRoomNumber.size() <= 30
+          && data.tenantFloorName is string
+          && data.tenantFloorName.size() >= 1
+          && data.tenantFloorName.size() <= 80
+        )
+      );
+    }
+
     function validElectricityReading(userId, readingId, data) {
       let assignmentPath =
         /databases/$(database)/documents/users/$(userId)/meterAssignments/$(data.meterAssignmentId);
@@ -2027,8 +2065,15 @@ service cloud.firestore {
           'createdAt',
           'updatedAt',
           'createdBy',
-          'updatedBy'
+          'updatedBy',
+          'tenantAssignmentId',
+          'tenantId',
+          'tenantCode',
+          'tenantName',
+          'tenantRoomNumber',
+          'tenantFloorName'
         ])
+        && validElectricityTenantSnapshot(data)
         && data.meterAssignmentId is string
         && data.meterAssignmentId.size() > 0
         && data.meterId is string
@@ -2204,8 +2249,15 @@ service cloud.firestore {
           'createdAt',
           'updatedAt',
           'createdBy',
-          'updatedBy'
+          'updatedBy',
+          'tenantAssignmentId',
+          'tenantId',
+          'tenantCode',
+          'tenantName',
+          'tenantRoomNumber',
+          'tenantFloorName'
         ])
+        && validElectricityTenantSnapshot(data)
         && data.readingId == billId
         && data.meterAssignmentId is string
         && data.meterId is string
@@ -2238,7 +2290,19 @@ service cloud.firestore {
         && getAfter(readingPath).data.rateEffectiveFrom == data.rateEffectiveFrom
         && getAfter(readingPath).data.pricePerUnitMinor == data.pricePerUnitMinor
         && getAfter(readingPath).data.amountMinor == data.amountMinor
-        && getAfter(readingPath).data.notes == data.notes;
+        && getAfter(readingPath).data.notes == data.notes
+        && (('tenantAssignmentId' in data) == ('tenantAssignmentId' in getAfter(readingPath).data))
+        && (
+          !('tenantAssignmentId' in data)
+          || (
+            getAfter(readingPath).data.tenantAssignmentId == data.tenantAssignmentId
+            && getAfter(readingPath).data.tenantId == data.tenantId
+            && getAfter(readingPath).data.tenantCode == data.tenantCode
+            && getAfter(readingPath).data.tenantName == data.tenantName
+            && getAfter(readingPath).data.tenantRoomNumber == data.tenantRoomNumber
+            && getAfter(readingPath).data.tenantFloorName == data.tenantFloorName
+          )
+        );
     }
 
     match /users/{userId}/electricityBills/{billId} {

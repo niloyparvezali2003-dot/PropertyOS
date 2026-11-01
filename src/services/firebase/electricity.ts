@@ -11,7 +11,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getFirebaseServices } from './client'
+import { getCurrentActorUid, getFirebaseServices } from './client'
 import { listMeterAssignments } from './meters'
 import type { TenantAssignmentRecord } from './tenantAssignments'
 import {
@@ -381,6 +381,7 @@ export async function createElectricityRate(ownerUid: string, rawInput: Electric
   const id = `rate__${input.roomId}__${input.effectiveFrom}`
   const ref = rateRef(ownerUid, id)
   const selectedRoomRef = doc(db, 'users', ownerUid, 'rooms', input.roomId)
+  const actorUid = getCurrentActorUid()
 
   await runTransaction(db, async (transaction) => {
     const [existing, roomSnapshot] = await Promise.all([
@@ -404,8 +405,8 @@ export async function createElectricityRate(ownerUid: string, rawInput: Electric
       notes: input.notes,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: actorUid,
+      updatedBy: actorUid,
     })
   })
   return id
@@ -458,6 +459,7 @@ export async function createElectricityBillFromReading(
   const meterAssignmentDocument = assignmentRef(ownerUid, assignment.id)
   const rateDocument = rateRef(ownerUid, applicableRate.id)
   const stateRef = readingStateRef(ownerUid, assignment.id)
+  const actorUid = getCurrentActorUid()
 
   await runTransaction(db, async (transaction) => {
     const [assignmentSnapshot, rateSnapshot, savedReading, savedBill, stateSnapshot, currentTenantIndexSnapshot] = await Promise.all([
@@ -586,8 +588,8 @@ export async function createElectricityBillFromReading(
       ...(tenantSnapshot ?? {}),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: ownerUid,
-      updatedBy: ownerUid,
+      createdBy: actorUid,
+      updatedBy: actorUid,
     }
 
     transaction.set(targetReadingRef, snapshot)
@@ -604,8 +606,8 @@ export async function createElectricityBillFromReading(
       lastReadingValue: input.currentReading,
       createdAt: stateSnapshot.exists() ? stateSnapshot.data().createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: stateSnapshot.exists() ? stateSnapshot.data().createdBy : ownerUid,
-      updatedBy: ownerUid,
+      createdBy: stateSnapshot.exists() ? stateSnapshot.data().createdBy : actorUid,
+      updatedBy: actorUid,
     })
   })
   return billId
