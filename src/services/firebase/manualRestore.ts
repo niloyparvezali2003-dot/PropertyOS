@@ -17,7 +17,6 @@ import {
 
 import { getFirebaseServices } from './client'
 import { resetPropertyCodeMigration } from './properties'
-import { assertWorkspaceAccess } from './workspace'
 
 type JsonValue =
   | null
@@ -80,7 +79,6 @@ const RESTORE_COLLECTIONS = [
   'auditEvents',
   'billBalances',
   'creditApplications',
-  'creditApplicationReferenceIndex',
   'noteTasks',
   'notes',
   'openingBalanceAdjustments',
@@ -100,7 +98,9 @@ const RESTORE_COLLECTIONS = [
   'properties',
   'propertyNameIndex',
   'rentBills',
+  'rentBillRoomMonthLocks',
   'roomNameIndex',
+  'roomRentRateUsageLocks',
   'roomRentRates',
   'settings',
   'rooms',
@@ -112,7 +112,6 @@ const RESTORE_COLLECTIONS = [
 ] as const
 
 const BUSINESS_UNIQUE_FIELDS: Record<string, string[]> = {
-  creditApplicationReferenceIndex: ['applicationNumber'],
   properties: ['propertyCode'],
   rooms: ['roomCode'],
   tenants: ['tenantCode'],
@@ -263,7 +262,8 @@ function validateArchive(raw: unknown): BackupArchive {
     'openingBalances',
     'openingBalanceAdjustments',
     'openingBalanceCreditApplications',
-    'creditApplicationReferenceIndex',
+    'roomRentRateUsageLocks',
+    'rentBillRoomMonthLocks',
   ]) {
     if (!(optionalCollection in archiveCollections)) {
       archiveCollections[optionalCollection] = []
@@ -442,8 +442,9 @@ export async function inspectManualFirestoreBackup(
   if (!destinationUid.trim()) throw new Error('A signed-in destination account is required.')
 
   const { app, auth, db } = getFirebaseServices()
-  if (!auth.currentUser) throw new Error('Sign in before restoring a workspace backup.')
-  await assertWorkspaceAccess(destinationUid)
+  if (!auth.currentUser || auth.currentUser.uid !== destinationUid) {
+    throw new Error('Restore denied: the signed-in account does not match the destination account.')
+  }
   const projectId = app.options.projectId
   if (!projectId) throw new Error('Unable to identify the current Firebase project.')
 
@@ -469,10 +470,9 @@ export async function restoreManualFirestoreBackup(
   onProgress?: (progress: ManualRestoreProgress) => void,
 ): Promise<ManualRestoreResult> {
   const { app, auth, db } = getFirebaseServices()
-  if (!auth.currentUser || plan.destinationUid !== destinationUid) {
-    throw new Error('Restore denied: the destination workspace changed after the backup preview.')
+  if (!auth.currentUser || auth.currentUser.uid !== destinationUid || plan.destinationUid !== destinationUid) {
+    throw new Error('Restore denied: the signed-in account changed after the backup preview.')
   }
-  await assertWorkspaceAccess(destinationUid)
   const projectId = app.options.projectId
   if (!projectId || projectId !== plan.projectId) throw new Error('Firebase project changed. Re-preview the backup before restoring.')
 

@@ -59,6 +59,7 @@ const actionLabels: Record<AuditEventRecord['action'], string> = {
   moved_out: 'Move-out recorded',
   replaced: 'Replaced',
   rate_added: 'Rate added',
+  rate_deleted: 'Rate deleted',
   bills_generated: 'Bills generated',
   bill_issued: 'Bill issued',
   payment_recorded: 'Payment recorded',

@@ -335,6 +335,11 @@
   color: var(--color-success);
 }
 
+.ledger-type-pill.is-informational {
+  background: #eaf0f7;
+  color: #355777;
+}
+
 .ledger-reference {
   max-width: 220px;
   color: var(--text-primary);

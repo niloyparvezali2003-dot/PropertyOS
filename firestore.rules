@@ -889,14 +889,14 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    // The assignment and both unique-current indexes must agree after a transaction.
+    // An active tenant assignment must agree with its room and its unique
+    // currentTenantByRoom index. A tenant may have multiple room assignments,
+    // so currentRoomByTenant is retained only as a legacy reverse pointer.
     function validCurrentTenantAssignmentPair(userId, assignmentId, data) {
       let assignmentPath =
         /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(assignmentId);
       let roomIndexPath =
         /databases/$(database)/documents/users/$(userId)/currentTenantByRoom/$(data.roomId);
-      let tenantIndexPath =
-        /databases/$(database)/documents/users/$(userId)/currentRoomByTenant/$(data.tenantId);
 
       return existsAfter(assignmentPath)
         && getAfter(assignmentPath).data.status == 'current'
@@ -921,19 +921,32 @@ service cloud.firestore {
         && getAfter(roomIndexPath).data.floorName == data.floorName
         && getAfter(roomIndexPath).data.propertyId == data.propertyId
         && getAfter(roomIndexPath).data.propertyCode == data.propertyCode
-        && getAfter(roomIndexPath).data.moveInDate == data.moveInDate
-        && existsAfter(tenantIndexPath)
-        && getAfter(tenantIndexPath).data.assignmentId == assignmentId
-        && getAfter(tenantIndexPath).data.tenantId == data.tenantId
-        && getAfter(tenantIndexPath).data.tenantCode == data.tenantCode
-        && getAfter(tenantIndexPath).data.tenantName == data.tenantName
-        && getAfter(tenantIndexPath).data.roomId == data.roomId
-        && getAfter(tenantIndexPath).data.roomCode == data.roomCode
-        && getAfter(tenantIndexPath).data.roomNumber == data.roomNumber
-        && getAfter(tenantIndexPath).data.floorName == data.floorName
-        && getAfter(tenantIndexPath).data.propertyId == data.propertyId
-        && getAfter(tenantIndexPath).data.propertyCode == data.propertyCode
-        && getAfter(tenantIndexPath).data.moveInDate == data.moveInDate;
+        && getAfter(roomIndexPath).data.moveInDate == data.moveInDate;
+    }
+
+    // Older project versions created one currentRoomByTenant reverse pointer.
+    // During a move-out it may either be removed (when it points to the ended
+    // assignment) or retained (when it still points to another current room).
+    function validLegacyTenantPointerAfter(userId, tenantId, endedAssignmentId) {
+      let tenantIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentRoomByTenant/$(tenantId);
+      let tenantIndex = getAfter(tenantIndexPath).data;
+      let linkedAssignmentPath =
+        /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(tenantIndex.assignmentId);
+
+      return tenantIndex.tenantId == tenantId
+        && tenantIndex.assignmentId is string
+        && tenantIndex.assignmentId != endedAssignmentId
+        && existsAfter(linkedAssignmentPath)
+        && getAfter(linkedAssignmentPath).data.status == 'current'
+        && getAfter(linkedAssignmentPath).data.tenantId == tenantId;
+    }
+
+    function legacyTenantPointerRemovedOrValidAfter(userId, tenantId, endedAssignmentId) {
+      let tenantIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentRoomByTenant/$(tenantId);
+      return !existsAfter(tenantIndexPath)
+        || validLegacyTenantPointerAfter(userId, tenantId, endedAssignmentId);
     }
 
     function validTenantAssignmentEndedAfter(userId, assignmentId, data) {
@@ -941,18 +954,36 @@ service cloud.firestore {
         /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(assignmentId);
       let roomIndexPath =
         /databases/$(database)/documents/users/$(userId)/currentTenantByRoom/$(data.roomId);
-      let tenantIndexPath =
-        /databases/$(database)/documents/users/$(userId)/currentRoomByTenant/$(data.tenantId);
 
       return existsAfter(assignmentPath)
         && getAfter(assignmentPath).data.status == 'ended'
         && getAfter(assignmentPath).data.tenantId == data.tenantId
         && getAfter(assignmentPath).data.roomId == data.roomId
         && !existsAfter(roomIndexPath)
-        && !existsAfter(tenantIndexPath);
+        && legacyTenantPointerRemovedOrValidAfter(userId, data.tenantId, assignmentId);
     }
 
-    function validTenantAssignmentIndexRemoval(userId, data) {
+    // Deleting the room index is valid once its assignment has ended. A
+    // legacy tenant-wide pointer may remain for a different active room.
+    function validTenantRoomIndexRemoval(userId, data) {
+      let assignmentPath =
+        /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(data.assignmentId);
+      let roomIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentTenantByRoom/$(data.roomId);
+
+      return existsAfter(assignmentPath)
+        && getAfter(assignmentPath).data.status == 'ended'
+        && getAfter(assignmentPath).data.tenantId == data.tenantId
+        && getAfter(assignmentPath).data.tenantCode == data.tenantCode
+        && getAfter(assignmentPath).data.roomId == data.roomId
+        && getAfter(assignmentPath).data.roomCode == data.roomCode
+        && !existsAfter(roomIndexPath)
+        && legacyTenantPointerRemovedOrValidAfter(userId, data.tenantId, data.assignmentId);
+    }
+
+    // The legacy reverse pointer itself can only be removed if it points to
+    // the assignment being ended, and that room's current index is removed too.
+    function validLegacyTenantIndexRemoval(userId, data) {
       let assignmentPath =
         /databases/$(database)/documents/users/$(userId)/tenantAssignments/$(data.assignmentId);
       let roomIndexPath =
@@ -1478,7 +1509,7 @@ service cloud.firestore {
     }
 
     // ==================================================
-    // 19. ONE CURRENT TENANT PER ROOM
+    // 19. ONE CURRENT TENANT PER ROOM (MULTIPLE ROOMS PER TENANT ARE ALLOWED)
     // ==================================================
 
     match /users/{userId}/currentTenantByRoom/{roomId} {
@@ -1497,11 +1528,11 @@ service cloud.firestore {
       allow update: if false;
 
       allow delete: if isOwner(userId)
-        && validTenantAssignmentIndexRemoval(userId, resource.data);
+        && validTenantRoomIndexRemoval(userId, resource.data);
     }
 
     // ==================================================
-    // 20. ONE CURRENT ROOM PER TENANT
+    // 20. LEGACY TENANT-TO-ROOM REVERSE INDEX
     // ==================================================
 
     match /users/{userId}/currentRoomByTenant/{tenantId} {
@@ -1519,7 +1550,7 @@ service cloud.firestore {
       allow update: if false;
 
       allow delete: if isOwner(userId)
-        && validTenantAssignmentIndexRemoval(userId, resource.data);
+        && validLegacyTenantIndexRemoval(userId, resource.data);
     }
 
     // ==================================================
@@ -1725,6 +1756,114 @@ service cloud.firestore {
         );
     }
 
+    function validRentBillRoomMonthLock(userId, lockId, data) {
+      let billPath =
+        /databases/$(database)/documents/users/$(userId)/rentBills/$(data.billId);
+
+      return data.keys().hasAll([
+          'roomId', 'roomCode', 'billingMonth', 'billId', 'assignmentId',
+          'tenantId', 'tenantCode', 'tenantName', 'createdAt', 'createdBy'
+        ])
+        && data.keys().hasOnly([
+          'roomId', 'roomCode', 'billingMonth', 'billId', 'assignmentId',
+          'tenantId', 'tenantCode', 'tenantName', 'createdAt', 'createdBy'
+        ])
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.billingMonth is string
+        && validRentBillingMonth(data.billingMonth)
+        && lockId == data.roomId + '__' + data.billingMonth
+        && data.assignmentId is string
+        && data.assignmentId.size() > 0
+        && data.billId is string
+        && data.billId == data.assignmentId + '__' + data.billingMonth
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.createdAt is timestamp
+        && data.createdBy == request.auth.uid
+        && existsAfter(billPath)
+        && getAfter(billPath).data.roomId == data.roomId
+        && getAfter(billPath).data.roomCode == data.roomCode
+        && getAfter(billPath).data.billingMonth == data.billingMonth
+        && getAfter(billPath).data.assignmentId == data.assignmentId
+        && getAfter(billPath).data.tenantId == data.tenantId
+        && getAfter(billPath).data.tenantCode == data.tenantCode
+        && getAfter(billPath).data.tenantName == data.tenantName
+        && getAfter(billPath).data.status == 'issued';
+    }
+
+    function rentBillRoomMonthLockMatchesAfter(userId, billId, data) {
+      let lockId = data.roomId + '__' + data.billingMonth;
+      let lockPath =
+        /databases/$(database)/documents/users/$(userId)/rentBillRoomMonthLocks/$(lockId);
+
+      return existsAfter(lockPath)
+        && getAfter(lockPath).data.billId == billId
+        && getAfter(lockPath).data.assignmentId == data.assignmentId
+        && getAfter(lockPath).data.roomId == data.roomId
+        && getAfter(lockPath).data.billingMonth == data.billingMonth
+        && getAfter(lockPath).data.tenantId == data.tenantId;
+    }
+
+    // One room may receive at most one issued rent bill in a billing month.
+    // The lock and bill are created atomically to prevent concurrent duplicates.
+    match /users/{userId}/rentBillRoomMonthLocks/{lockId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validRentBillRoomMonthLock(userId, lockId, request.resource.data)
+        && createdByCurrentActor(request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    function validRentRateUsageLock(userId, rateId, data) {
+      let ratePath =
+        /databases/$(database)/documents/users/$(userId)/roomRentRates/$(rateId);
+      let billPath =
+        /databases/$(database)/documents/users/$(userId)/rentBills/$(data.billId);
+
+      return data.keys().hasAll([
+          'rateId', 'billId', 'roomId', 'rateSnapshot', 'createdAt', 'createdBy'
+        ])
+        && data.keys().hasOnly([
+          'rateId', 'billId', 'roomId', 'rateSnapshot', 'createdAt', 'createdBy'
+        ])
+        && data.rateId == rateId
+        && data.rateId is string
+        && data.billId is string
+        && data.billId.size() > 0
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.rateSnapshot is map
+        && data.rateSnapshot.rateId == rateId
+        && data.createdAt is timestamp
+        && data.createdBy == request.auth.uid
+        && exists(ratePath)
+        && get(ratePath).data.roomId == data.roomId
+        && existsAfter(billPath)
+        && getAfter(billPath).data.roomId == data.roomId
+        && getAfter(billPath).data.rateBreakdown is list
+        && getAfter(billPath).data.rateBreakdown.hasAny([data.rateSnapshot]);
+    }
+
+    // One append-only usage lock protects each rent rate once an issued bill
+    // references it. This makes deletion safe even after older bills are loaded
+    // and their missing usage locks are backfilled by the Rent & Bills page.
+    match /users/{userId}/roomRentRateUsageLocks/{rateId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && validRentRateUsageLock(userId, rateId, request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
     // ==================================================
     // 23. ROOM RENT RATE HISTORY
     // ==================================================
@@ -1734,11 +1873,18 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validRentRate(userId, rateId, request.resource.data)
-        && createdByCurrentActor(request.resource.data);
+        && createdByCurrentActor(request.resource.data)
+        && !exists(
+          /databases/$(database)/documents/users/$(userId)/roomRentRateUsageLocks/$(rateId)
+        );
 
-      // Rate records are immutable. Add a new effective date to change rent.
+      // Rate values are immutable. An unused mistaken rate may be deleted;
+      // an append-only usage lock protects any rate referenced by an issued bill.
       allow update: if false;
-      allow delete: if false;
+      allow delete: if isOwner(userId)
+        && !exists(
+          /databases/$(database)/documents/users/$(userId)/roomRentRateUsageLocks/$(rateId)
+        );
     }
 
     // ==================================================
@@ -1750,6 +1896,7 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validRentBill(userId, billId, request.resource.data)
+        && rentBillRoomMonthLockMatchesAfter(userId, billId, request.resource.data)
         && createdByCurrentActor(request.resource.data);
 
       // Issued bills are historical financial records and cannot be rewritten.
@@ -3099,7 +3246,7 @@ service cloud.firestore {
         && data.actorUid == request.auth.uid
         && data.action in [
           'created', 'updated', 'assigned', 'moved_out', 'replaced',
-          'rate_added', 'bills_generated', 'bill_issued',
+          'rate_added', 'rate_deleted', 'bills_generated', 'bill_issued',
           'payment_recorded', 'credit_applied',
           'opening_balance_added', 'opening_balance_adjusted',
           'invitation_created', 'invitation_accepted',
@@ -3217,7 +3364,7 @@ service cloud.firestore {
           'electricityBills', 'electricityRates', 'electricityReadings',
           'electricityReadingState', 'meterAssignments', 'meters',
           'payments', 'properties', 'propertyNameIndex', 'rentBills',
-          'roomNameIndex', 'roomRentRates', 'rooms', 'tenantAssignments',
+          'rentBillRoomMonthLocks', 'roomNameIndex', 'roomRentRateUsageLocks', 'roomRentRates', 'rooms', 'tenantAssignments',
           'settings', 'tenantCredits', 'tenants', 'transactionReferences', 'system'
         ];
     }

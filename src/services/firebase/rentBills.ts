@@ -1,4 +1,4 @@
-import { getCachedList } from './listCache'
+import { getCachedList, invalidateOwnerDataCache } from './listCache'
 
 import {
   collection,
@@ -121,6 +121,22 @@ export class RentRateAlreadyExistsError extends Error {
   }
 }
 
+export class RentRateInUseError extends Error {
+  constructor() {
+    super(
+      'This rent rate is already used by an issued rent bill and cannot be deleted. Add a new rate with a different effective date to correct future bills.',
+    )
+    this.name = 'RentRateInUseError'
+  }
+}
+
+export class RentRateNotFoundError extends Error {
+  constructor() {
+    super('This rent rate no longer exists. Refresh the page and try again.')
+    this.name = 'RentRateNotFoundError'
+  }
+}
+
 export class RentRoomNotFoundError extends Error {
   constructor() {
     super(
@@ -203,6 +219,21 @@ function getRoomRentRateRef(
   )
 }
 
+function getRoomRentRateUsageLockRef(
+  ownerUid: string,
+  rateId: string,
+) {
+  const { db } = getFirebaseServices()
+
+  return doc(
+    db,
+    'users',
+    ownerUid,
+    'roomRentRateUsageLocks',
+    rateId,
+  )
+}
+
 function getRentBillRef(
   ownerUid: string,
   billId: string,
@@ -215,6 +246,22 @@ function getRentBillRef(
     ownerUid,
     'rentBills',
     billId,
+  )
+}
+
+function getRentBillRoomMonthLockRef(
+  ownerUid: string,
+  roomId: string,
+  billingMonth: string,
+) {
+  const { db } = getFirebaseServices()
+
+  return doc(
+    db,
+    'users',
+    ownerUid,
+    'rentBillRoomMonthLocks',
+    `${roomId}__${billingMonth}`,
   )
 }
 
@@ -545,6 +592,7 @@ function assertNoOverlappingAssignment(
   records: AssignmentSnapshotRecord[],
   startDate: string,
   endDate: string,
+  type: 'room' | 'tenant',
 ): void {
   for (const record of records) {
     if (record.id === target.id) continue
@@ -572,9 +620,12 @@ function assertNoOverlappingAssignment(
       effectiveOtherEnd >= startDate
 
     if (overlaps) {
-      throw new RentAssignmentOverlapError(
-        `Room ${target.roomCode} has overlapping tenant assignments during ${startDate} to ${endDate}. No bill was generated for this assignment.`,
-      )
+      const message =
+        type === 'room'
+          ? `Room ${target.roomCode} has overlapping tenant assignments during ${startDate} to ${endDate}. No bill was generated for this assignment.`
+          : `Tenant ${target.tenantCode} has overlapping assignments during ${startDate} to ${endDate}. No bill was generated for this assignment.`
+
+      throw new RentAssignmentOverlapError(message)
     }
   }
 }
@@ -765,6 +816,219 @@ export async function listRentBills(
   })
 }
 
+/**
+ * Backfill permanent usage locks for existing rates already referenced by
+ * issued bills. This makes old bills protected before the Delete action is
+ * offered in the Rent & Bills page.
+ */
+export async function ensureRentRateUsageLocks(
+  ownerUid: string,
+  bills: RentBillRecord[],
+): Promise<void> {
+  const usageByRateId = new Map<
+    string,
+    { billId: string; roomId: string; rateSnapshot: RentBillRateSnapshot }
+  >()
+
+  for (const bill of bills) {
+    for (const rateSnapshot of bill.rateBreakdown) {
+      if (!usageByRateId.has(rateSnapshot.rateId)) {
+        usageByRateId.set(rateSnapshot.rateId, {
+          billId: bill.id,
+          roomId: bill.roomId,
+          rateSnapshot,
+        })
+      }
+    }
+  }
+
+  if (usageByRateId.size === 0) return
+
+  const { db } = getFirebaseServices()
+  const actorUid = getCurrentActorUid()
+  const existingLocks = await getDocs(
+    collection(db, 'users', ownerUid, 'roomRentRateUsageLocks'),
+  )
+  const lockedRateIds = new Set(existingLocks.docs.map((item) => item.id))
+  const missing = [...usageByRateId.entries()].filter(
+    ([rateId]) => !lockedRateIds.has(rateId),
+  )
+
+  for (let offset = 0; offset < missing.length; offset += 8) {
+    const batch = missing.slice(offset, offset + 8)
+    await Promise.all(batch.map(async ([rateId, usage]) => {
+      const rateRef = getRoomRentRateRef(ownerUid, rateId)
+      const usageLockRef = getRoomRentRateUsageLockRef(ownerUid, rateId)
+      const billRef = getRentBillRef(ownerUid, usage.billId)
+
+      await runTransaction(db, async (transaction) => {
+        const [lockSnapshot, billSnapshot, rateSnapshot] = await Promise.all([
+          transaction.get(usageLockRef),
+          transaction.get(billRef),
+          transaction.get(rateRef),
+        ])
+
+        if (lockSnapshot.exists()) return
+        if (!billSnapshot.exists() || !rateSnapshot.exists()) return
+
+        const billData = billSnapshot.data() as UnknownRecord
+        const rateData = rateSnapshot.data() as UnknownRecord
+        const storedBreakdown = billData.rateBreakdown
+        const storedSnapshot = Array.isArray(storedBreakdown)
+          ? storedBreakdown.find(
+            (item) => isRecord(item) && item.rateId === rateId,
+          )
+          : undefined
+
+        if (
+          !storedSnapshot ||
+          billData.roomId !== usage.roomId ||
+          rateData.roomId !== usage.roomId
+        ) {
+          throw new InvalidRentBillingDataError(
+            `Rent rate ${rateId} does not match the issued bill that references it.`,
+          )
+        }
+
+        transaction.set(usageLockRef, {
+          rateId,
+          billId: usage.billId,
+          roomId: usage.roomId,
+          rateSnapshot: storedSnapshot,
+          createdAt: serverTimestamp(),
+          createdBy: actorUid,
+        })
+      })
+    }))
+  }
+}
+
+/**
+ * Backfill one permanent room/month lock for every previously issued bill.
+ * If legacy data already contains duplicate bills for a room/month, retain all
+ * bills unchanged and let the first deterministic bill reserve the lock so no
+ * additional duplicate can be created.
+ */
+export async function ensureRentBillRoomMonthLocks(
+  ownerUid: string,
+  bills: RentBillRecord[],
+): Promise<void> {
+  if (bills.length === 0) return
+
+  const { db } = getFirebaseServices()
+  const actorUid = getCurrentActorUid()
+  const firstBillByRoomMonth = new Map<string, RentBillRecord>()
+
+  const orderedBills = [...bills].sort((a, b) =>
+    a.billingMonth.localeCompare(b.billingMonth) ||
+    (a.createdAt?.toMillis() ?? 0) - (b.createdAt?.toMillis() ?? 0) ||
+    a.id.localeCompare(b.id),
+  )
+
+  for (const bill of orderedBills) {
+    const lockId = `${bill.roomId}__${bill.billingMonth}`
+    if (!firstBillByRoomMonth.has(lockId)) {
+      firstBillByRoomMonth.set(lockId, bill)
+    }
+  }
+
+  const existingLocks = await getDocs(
+    collection(db, 'users', ownerUid, 'rentBillRoomMonthLocks'),
+  )
+  const lockedIds = new Set(existingLocks.docs.map((item) => item.id))
+  const missing = [...firstBillByRoomMonth.entries()].filter(
+    ([lockId]) => !lockedIds.has(lockId),
+  )
+
+  for (let offset = 0; offset < missing.length; offset += 8) {
+    const batch = missing.slice(offset, offset + 8)
+    await Promise.all(batch.map(async ([lockId, bill]) => {
+      const lockRef = doc(db, 'users', ownerUid, 'rentBillRoomMonthLocks', lockId)
+      const billRef = getRentBillRef(ownerUid, bill.id)
+
+      await runTransaction(db, async (transaction) => {
+        const [lockSnapshot, billSnapshot] = await Promise.all([
+          transaction.get(lockRef),
+          transaction.get(billRef),
+        ])
+
+        if (lockSnapshot.exists() || !billSnapshot.exists()) return
+
+        const stored = billSnapshot.data() as UnknownRecord
+        if (
+          stored.roomId !== bill.roomId ||
+          stored.roomCode !== bill.roomCode ||
+          stored.billingMonth !== bill.billingMonth ||
+          stored.assignmentId !== bill.assignmentId ||
+          stored.tenantId !== bill.tenantId ||
+          stored.tenantCode !== bill.tenantCode ||
+          stored.tenantName !== bill.tenantName ||
+          stored.status !== 'issued'
+        ) {
+          throw new InvalidRentBillingDataError(
+            `Rent bill ${bill.id} does not match its room/month lock data.`,
+          )
+        }
+
+        transaction.set(lockRef, {
+          roomId: bill.roomId,
+          roomCode: bill.roomCode,
+          billingMonth: bill.billingMonth,
+          billId: bill.id,
+          assignmentId: bill.assignmentId,
+          tenantId: bill.tenantId,
+          tenantCode: bill.tenantCode,
+          tenantName: bill.tenantName,
+          createdAt: serverTimestamp(),
+          createdBy: actorUid,
+        })
+      })
+    }))
+  }
+}
+
+/**
+ * Delete a mistaken rent rate only when no issued bill has ever used it.
+ * Reading the append-only lock in the same transaction as deleting the rate
+ * prevents a race with monthly bill generation.
+ */
+export async function deleteRoomRentRate(
+  ownerUid: string,
+  rateId: string,
+): Promise<void> {
+  const { db } = getFirebaseServices()
+  const rentBillsSnapshot = await getDocs(
+    collection(db, 'users', ownerUid, 'rentBills'),
+  )
+
+  const isReferencedByIssuedBill = rentBillsSnapshot.docs.some((billDocument) => {
+    const data = billDocument.data() as UnknownRecord
+    const breakdown = data.rateBreakdown
+    return Array.isArray(breakdown) && breakdown.some(
+      (item) => isRecord(item) && item.rateId === rateId,
+    )
+  })
+
+  if (isReferencedByIssuedBill) throw new RentRateInUseError()
+
+  const rateRef = getRoomRentRateRef(ownerUid, rateId)
+  const usageLockRef = getRoomRentRateUsageLockRef(ownerUid, rateId)
+
+  await runTransaction(db, async (transaction) => {
+    const [rateSnapshot, usageLockSnapshot] = await Promise.all([
+      transaction.get(rateRef),
+      transaction.get(usageLockRef),
+    ])
+
+    if (!rateSnapshot.exists()) throw new RentRateNotFoundError()
+    if (usageLockSnapshot.exists()) throw new RentRateInUseError()
+
+    transaction.delete(rateRef)
+  })
+
+  invalidateOwnerDataCache(ownerUid)
+}
+
 /* =========================================================
    CREATE A ROOM RENT RATE
 ========================================================= */
@@ -775,6 +1039,7 @@ export async function createRoomRentRate(
 ): Promise<string> {
   const input = roomRentRateFormSchema.parse(rawInput)
   const { db } = getFirebaseServices()
+  const actorUid = getCurrentActorUid()
 
   const roomRef = doc(
     db,
@@ -787,16 +1052,21 @@ export async function createRoomRentRate(
   // One immutable rate record per room and effective date.
   const rateId = `${input.roomId}__${input.effectiveFrom}`
   const rateRef = getRoomRentRateRef(ownerUid, rateId)
+  const usageLockRef = getRoomRentRateUsageLockRef(ownerUid, rateId)
 
   await runTransaction(db, async (transaction) => {
-    const [roomSnapshot, existingRateSnapshot] =
+    const [roomSnapshot, existingRateSnapshot, usageLockSnapshot] =
       await Promise.all([
         transaction.get(roomRef),
         transaction.get(rateRef),
+        transaction.get(usageLockRef),
       ])
 
     if (existingRateSnapshot.exists()) {
       throw new RentRateAlreadyExistsError()
+    }
+    if (usageLockSnapshot.exists()) {
+      throw new RentRateInUseError()
     }
 
     if (!roomSnapshot.exists()) {
@@ -848,11 +1118,12 @@ export async function createRoomRentRate(
       notes: input.notes.trim(),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: getCurrentActorUid(),
-      updatedBy: getCurrentActorUid(),
+      createdBy: actorUid,
+      updatedBy: actorUid,
     })
   })
 
+  invalidateOwnerDataCache(ownerUid)
   return rateId
 }
 
@@ -868,6 +1139,7 @@ async function createRentBillForAssignmentMonth(
   allRates: RoomRentRateRecord[],
 ): Promise<BillCreationResult> {
   const { db } = getFirebaseServices()
+  const actorUid = getCurrentActorUid()
 
   // Deterministic ID prevents repeated generation for the
   // same assignment and month.
@@ -896,6 +1168,12 @@ async function createRentBillForAssignmentMonth(
     previewAssignment.roomId,
   )
 
+  const roomMonthLockRef = getRentBillRoomMonthLockRef(
+    ownerUid,
+    previewAssignment.roomId,
+    billingMonth,
+  )
+
   const roomIndexRef = doc(
     db,
     'users',
@@ -910,14 +1188,20 @@ async function createRentBillForAssignmentMonth(
       assignmentSnapshot,
       roomSnapshot,
       roomIndexSnapshot,
+      roomMonthLockSnapshot,
     ] = await Promise.all([
       transaction.get(billRef),
       transaction.get(assignmentRef),
       transaction.get(roomRef),
       transaction.get(roomIndexRef),
+      transaction.get(roomMonthLockRef),
     ])
 
     if (existingBillSnapshot.exists()) {
+      return 'exists'
+    }
+
+    if (roomMonthLockSnapshot.exists()) {
       return 'exists'
     }
 
@@ -967,16 +1251,19 @@ async function createRentBillForAssignmentMonth(
       typeof roomCurrentAssignmentId !== 'string'
     ) {
       throw new InvalidRentBillingDataError(
-        'The room’s current tenant-assignment index is invalid.',
+        'The room current-assignment index is invalid.',
       )
     }
 
+    // A tenant may occupy multiple rooms at the same time. The room-side
+    // index is the authoritative uniqueness constraint; the legacy
+    // currentRoomByTenant pointer is intentionally not used for billing.
     if (
       assignment.status === 'current' &&
       roomCurrentAssignmentId !== assignment.id
     ) {
       throw new RentAssignmentOverlapError(
-        'The current assignment indexes do not match this tenant. No bill was generated.',
+        'The room current-assignment index does not match this tenant assignment. No bill was generated.',
       )
     }
 
@@ -985,7 +1272,7 @@ async function createRentBillForAssignmentMonth(
       roomCurrentAssignmentId === assignment.id
     ) {
       throw new InvalidRentBillingDataError(
-        'An ended assignment still has a current-assignment index.',
+        'An ended assignment still has a current room-assignment index.',
       )
     }
 
@@ -1017,10 +1304,10 @@ async function createRentBillForAssignmentMonth(
           record.data.roomId === assignment.roomId,
       )
 
-    // Only the room may have one active tenant assignment at a time.
-    // A tenant can legitimately have simultaneous assignments in other rooms.
-    // Include a room-indexed assignment missing from the initial list before
-    // checking room overlap; there is no one-room-per-tenant index anymore.
+    // Only room assignments are checked for occupancy overlap. A single
+    // tenant is allowed to occupy several different rooms concurrently.
+    // Include the room's indexed assignment if it is absent from the initial
+    // history snapshot, then validate overlap for this room only.
     const linkedAssignmentIds = [
       ...new Set(
         [roomCurrentAssignmentId].filter(
@@ -1065,6 +1352,7 @@ async function createRentBillForAssignmentMonth(
       roomAssignmentRecords,
       occupancyStartDate,
       occupancyEndDate,
+      'room',
     )
 
     const rates = allRates.filter(
@@ -1100,6 +1388,43 @@ async function createRentBillForAssignmentMonth(
       )
     }
 
+    const uniqueRateSnapshots = [
+      ...new Map(rateBreakdown.map((item) => [item.rateId, item])).values(),
+    ]
+    const rateUsageChecks = await Promise.all(
+      uniqueRateSnapshots.map(async (rateSnapshot) => {
+        const referencedRateRef = getRoomRentRateRef(ownerUid, rateSnapshot.rateId)
+        const usageLockRef = getRoomRentRateUsageLockRef(ownerUid, rateSnapshot.rateId)
+        const [referencedRateSnapshot, usageLockSnapshot] = await Promise.all([
+          transaction.get(referencedRateRef),
+          transaction.get(usageLockRef),
+        ])
+
+        if (!referencedRateSnapshot.exists()) {
+          throw new InvalidRentBillingDataError(
+            `Rent rate ${rateSnapshot.rateId} was removed while this bill was being prepared. Refresh and try again.`,
+          )
+        }
+
+        const referencedRate = referencedRateSnapshot.data()
+        if (
+          referencedRate.roomId !== assignment.roomId ||
+          referencedRate.effectiveFrom !== rateSnapshot.effectiveFrom ||
+          referencedRate.monthlyRentMinor !== rateSnapshot.monthlyRentMinor
+        ) {
+          throw new InvalidRentBillingDataError(
+            `Rent rate ${rateSnapshot.rateId} changed while this bill was being prepared. Refresh and try again.`,
+          )
+        }
+
+        return {
+          rateSnapshot,
+          usageLockRef,
+          alreadyLocked: usageLockSnapshot.exists(),
+        }
+      }),
+    )
+
     transaction.set(billRef, {
       assignmentId: assignment.id,
       tenantId: assignment.tenantId,
@@ -1122,9 +1447,34 @@ async function createRentBillForAssignmentMonth(
       status: 'issued',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      createdBy: getCurrentActorUid(),
-      updatedBy: getCurrentActorUid(),
+      createdBy: actorUid,
+      updatedBy: actorUid,
     })
+
+    transaction.set(roomMonthLockRef, {
+      roomId: assignment.roomId,
+      roomCode: assignment.roomCode,
+      billingMonth,
+      billId,
+      assignmentId: assignment.id,
+      tenantId: assignment.tenantId,
+      tenantCode: assignment.tenantCode,
+      tenantName: assignment.tenantName,
+      createdAt: serverTimestamp(),
+      createdBy: actorUid,
+    })
+
+    for (const usage of rateUsageChecks) {
+      if (usage.alreadyLocked) continue
+      transaction.set(usage.usageLockRef, {
+        rateId: usage.rateSnapshot.rateId,
+        billId,
+        roomId: assignment.roomId,
+        rateSnapshot: usage.rateSnapshot,
+        createdAt: serverTimestamp(),
+        createdBy: actorUid,
+      })
+    }
 
     return 'created'
   })
@@ -1141,15 +1491,33 @@ export async function generateRentBillsForMonth(
   const billingMonth =
     rentBillingMonthSchema.parse(rawBillingMonth)
 
-  const [assignments, rates] = await Promise.all([
+  const [assignments, rates, existingBills] = await Promise.all([
     listTenantAssignments(ownerUid),
     listRoomRentRates(ownerUid),
+    listRentBills(ownerUid),
   ])
 
-  const relevantAssignments = assignments.filter(
-    (assignment) =>
+  // Make legacy issued bills reserve their room/month before attempting any
+  // new bill. The Firestore rules require this lock on every new bill.
+  await ensureRentBillRoomMonthLocks(ownerUid, existingBills)
+  await ensureRentRateUsageLocks(ownerUid, existingBills)
+
+  const relevantAssignments = assignments
+    .filter((assignment) =>
       assignmentOverlapsMonth(assignment, billingMonth),
-  )
+    )
+    // The room/month lock permits one bill for a room in a month. When a
+    // room has multiple assignment records in that month, bill the current
+    // occupant first; if vacant, prefer the most recent occupancy. This keeps
+    // the room-level duplicate guard deterministic without conflating tenants
+    // who occupy different rooms.
+    .sort((a, b) =>
+      a.roomId.localeCompare(b.roomId) ||
+      Number(b.status === 'current') - Number(a.status === 'current') ||
+      b.moveInDate.localeCompare(a.moveInDate) ||
+      (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0) ||
+      a.id.localeCompare(b.id),
+    )
 
   const result: RentBillGenerationResult = {
     billingMonth,
@@ -1201,6 +1569,8 @@ export function getRentBillErrorMessage(
 ): string {
   if (
     error instanceof RentRateAlreadyExistsError ||
+    error instanceof RentRateInUseError ||
+    error instanceof RentRateNotFoundError ||
     error instanceof RentRoomNotFoundError ||
     error instanceof MissingRentRateError ||
     error instanceof RentAssignmentOverlapError ||

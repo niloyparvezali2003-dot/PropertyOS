@@ -10,12 +10,12 @@ import {
   CalendarDays,
   CheckCircle2,
   CircleDollarSign,
-  Download,
   FileText,
   LoaderCircle,
   Plus,
   ReceiptText,
   RefreshCw,
+  Trash2,
   X,
 } from 'lucide-react'
 
@@ -23,6 +23,9 @@ import { SearchInput } from '../components/ui/SearchInput'
 import { recordAuditEvent } from '../services/firebase/audit'
 import {
   createRoomRentRate,
+  deleteRoomRentRate,
+  ensureRentBillRoomMonthLocks,
+  ensureRentRateUsageLocks,
   generateRentBillsForMonth,
   getRentBillErrorMessage,
   listRentBills,
@@ -33,14 +36,8 @@ import {
 } from '../services/firebase/rentBills'
 import { listProperties, type PropertyRecord } from '../services/firebase/properties'
 import { listRooms, type RoomRecord } from '../services/firebase/rooms'
-import {
-  listTenantAssignments,
-  type TenantAssignmentRecord,
-} from '../services/firebase/tenantAssignments'
+import { listTenantAssignments, type TenantAssignmentRecord } from '../services/firebase/tenantAssignments'
 import { roomRentRateFormSchema } from '../schemas/rentBill'
-import { loadWorkspaceSettings } from '../services/firebase/workspaceSettings'
-import { downloadMonthlyBillReportPdf } from '../utils/monthlyBillReportPdf'
-import { compareTenantNames } from '../utils/tenantNameSort'
 import './rent-bills.css'
 
 type RentBillsPageProps = {
@@ -126,8 +123,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const [bills, setBills] = useState<RentBillRecord[]>([])
   const [rooms, setRooms] = useState<RoomRecord[]>([])
   const [properties, setProperties] = useState<PropertyRecord[]>([])
-  const [tenantAssignments, setTenantAssignments] =
-    useState<TenantAssignmentRecord[]>([])
+  const [tenantAssignments, setTenantAssignments] = useState<TenantAssignmentRecord[]>([])
 
   const [isLoading, setIsLoading] = useState(true)
   const [pageError, setPageError] = useState('')
@@ -137,11 +133,11 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const [rateForm, setRateForm] = useState<RateFormState>(emptyRateForm())
   const [rateFormError, setRateFormError] = useState('')
   const [isSavingRate, setIsSavingRate] = useState(false)
+  const [deletingRateId, setDeletingRateId] = useState('')
 
   const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
   const [isGenerationConfirmOpen, setIsGenerationConfirmOpen] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
-  const [isDownloadingReport, setIsDownloadingReport] = useState(false)
   const [generationResult, setGenerationResult] =
     useState<RentBillGenerationResult | null>(null)
 
@@ -153,19 +149,19 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     setPageError('')
 
     try {
-      const [
-        nextRates,
-        nextBills,
-        nextRooms,
-        nextProperties,
-        nextTenantAssignments,
-      ] = await Promise.all([
-        listRoomRentRates(ownerUid),
-        listRentBills(ownerUid),
-        listRooms(ownerUid),
-        listProperties(ownerUid),
-        listTenantAssignments(ownerUid),
-      ])
+      const [nextRates, nextBills, nextRooms, nextProperties, nextTenantAssignments] =
+        await Promise.all([
+          listRoomRentRates(ownerUid),
+          listRentBills(ownerUid),
+          listRooms(ownerUid),
+          listProperties(ownerUid),
+          listTenantAssignments(ownerUid),
+        ])
+
+      // Protect rate records referenced by older issued bills before the
+      // user can attempt to delete an unused rate.
+      await ensureRentRateUsageLocks(ownerUid, nextBills)
+      await ensureRentBillRoomMonthLocks(ownerUid, nextBills)
 
       setRates(nextRates)
       setBills(nextBills)
@@ -193,17 +189,102 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     [rooms],
   )
 
-  const currentTenantByRoomId = useMemo(() => {
-    const currentByRoomId = new Map<string, TenantAssignmentRecord>()
+  const rateIdsUsedByIssuedBills = useMemo(
+    () => new Set(
+      bills.flatMap((bill) => bill.rateBreakdown.map((snapshot) => snapshot.rateId)),
+    ),
+    [bills],
+  )
 
-    for (const assignment of tenantAssignments) {
-      if (assignment.status === 'current' && assignment.moveOutDate === null) {
-        currentByRoomId.set(assignment.roomId, assignment)
+  const ratePreview = useMemo(() => {
+    if (!rateForm.roomId || !rateForm.effectiveFrom) return null
+
+    const proposedRentMinor = parseTakaToPoisha(rateForm.monthlyRent)
+    if (proposedRentMinor === null || proposedRentMinor <= 0) return null
+
+    const roomRates = rates.filter((rate) => rate.roomId === rateForm.roomId)
+    const duplicateRate = roomRates.find(
+      (rate) => rate.effectiveFrom === rateForm.effectiveFrom,
+    ) ?? null
+    const previousRate = roomRates
+      .filter((rate) => rate.effectiveFrom < rateForm.effectiveFrom)
+      .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0] ?? null
+
+    return {
+      proposedRentMinor,
+      duplicateRate,
+      previousRate,
+      differenceMinor: previousRate
+        ? proposedRentMinor - previousRate.monthlyRentMinor
+        : 0,
+    }
+  }, [rates, rateForm.roomId, rateForm.effectiveFrom, rateForm.monthlyRent])
+
+  const rentRateOverview = useMemo(() => {
+    // Keep every immutable rate record for billing and ledger history, but show
+    // only the latest effective rate once per room in this overview.
+    const latestRateByRoom = new Map<string, RoomRentRateRecord>()
+    for (const rate of rates) {
+      const existing = latestRateByRoom.get(rate.roomId)
+      if (!existing || rate.effectiveFrom > existing.effectiveFrom) {
+        latestRateByRoom.set(rate.roomId, rate)
       }
     }
 
-    return currentByRoomId
-  }, [tenantAssignments])
+    const englishCollator = new Intl.Collator('en', {
+      sensitivity: 'base',
+      numeric: true,
+    })
+    const banglaCollator = new Intl.Collator('bn', {
+      sensitivity: 'base',
+      numeric: true,
+    })
+
+    return [...latestRateByRoom.values()]
+      .map((rate) => {
+        const room = roomById.get(rate.roomId)
+        const property = propertyById.get(rate.propertyId)
+        const currentTenantNames: string[] = Array.from(new Set<string>(
+          tenantAssignments
+            .filter((assignment) =>
+              assignment.roomId === rate.roomId &&
+              assignment.status === 'current' &&
+              assignment.moveOutDate === null,
+            )
+            .map((assignment) => assignment.tenantName.trim())
+            .filter((name): name is string => Boolean(name)),
+        )).sort((a, b) => a.localeCompare(b, 'bn', { sensitivity: 'base' }))
+
+        return {
+          rate,
+          room,
+          property,
+          tenantLabel: currentTenantNames.length > 0
+            ? currentTenantNames.join(', ')
+            : 'Vacant',
+          sortName: currentTenantNames[0] ?? '',
+        }
+      })
+      .sort((a, b) => {
+        if (!a.sortName && b.sortName) return 1
+        if (a.sortName && !b.sortName) return -1
+        if (!a.sortName && !b.sortName) {
+          return (a.room?.roomNumber ?? a.rate.roomCode).localeCompare(
+            b.room?.roomNumber ?? b.rate.roomCode,
+            'en',
+            { numeric: true, sensitivity: 'base' },
+          )
+        }
+
+        const aIsBangla = /[\u0980-\u09FF]/.test(a.sortName)
+        const bIsBangla = /[\u0980-\u09FF]/.test(b.sortName)
+        if (aIsBangla !== bIsBangla) return aIsBangla ? 1 : -1
+        return (aIsBangla ? banglaCollator : englishCollator).compare(
+          a.sortName,
+          b.sortName,
+        )
+      })
+  }, [rates, roomById, propertyById, tenantAssignments])
 
   const activePropertyIds = useMemo(
     () => new Set(
@@ -215,16 +296,77 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   )
 
   const selectableRooms = useMemo(
-    () => rooms
-      .filter((room) => activePropertyIds.has(room.propertyId))
-      .sort((left, right) =>
-        compareTenantNames(
-          currentTenantByRoomId.get(left.id)?.tenantName,
-          currentTenantByRoomId.get(right.id)?.tenantName,
-        ),
-      ),
-    [rooms, activePropertyIds, currentTenantByRoomId],
+    () => rooms.filter((room) => activePropertyIds.has(room.propertyId)),
+    [rooms, activePropertyIds],
   )
+
+  const rentRateCoverage = useMemo(() => {
+    const roomIdsWithRates = new Set(rates.map((rate) => rate.roomId))
+    const currentTenantNamesByRoom = new Map<string, string[]>()
+
+    for (const assignment of tenantAssignments) {
+      if (
+        assignment.status !== 'current' ||
+        assignment.moveOutDate !== null
+      ) {
+        continue
+      }
+
+      const tenantName = assignment.tenantName.trim()
+      if (!tenantName) continue
+
+      const names = currentTenantNamesByRoom.get(assignment.roomId) ?? []
+      if (!names.includes(tenantName)) names.push(tenantName)
+      currentTenantNamesByRoom.set(assignment.roomId, names)
+    }
+
+    const missingRooms = selectableRooms
+      .filter((room) => !roomIdsWithRates.has(room.id))
+      .map((room) => ({
+        room,
+        property: propertyById.get(room.propertyId),
+        tenantNames: (currentTenantNamesByRoom.get(room.id) ?? []).sort((a, b) => {
+          const aIsBangla = /[\u0980-\u09FF]/.test(a)
+          const bIsBangla = /[\u0980-\u09FF]/.test(b)
+          if (aIsBangla !== bIsBangla) return aIsBangla ? 1 : -1
+          return a.localeCompare(b, aIsBangla ? 'bn' : 'en', {
+            sensitivity: 'base',
+            numeric: true,
+          })
+        }),
+      }))
+      .sort((a, b) => {
+        const propertyOrder = (a.property?.name ?? a.room.propertyCode).localeCompare(
+          b.property?.name ?? b.room.propertyCode,
+          'en',
+          { sensitivity: 'base', numeric: true },
+        )
+        if (propertyOrder !== 0) return propertyOrder
+
+        const floorOrder = a.room.floorName.localeCompare(
+          b.room.floorName,
+          'en',
+          { sensitivity: 'base', numeric: true },
+        )
+        if (floorOrder !== 0) return floorOrder
+
+        return a.room.roomNumber.localeCompare(b.room.roomNumber, 'en', {
+          sensitivity: 'base',
+          numeric: true,
+        })
+      })
+
+    const coveredRooms = selectableRooms.length - missingRooms.length
+
+    return {
+      totalRooms: selectableRooms.length,
+      coveredRooms,
+      missingRooms,
+      coveragePercent: selectableRooms.length > 0
+        ? Math.round((coveredRooms / selectableRooms.length) * 100)
+        : 0,
+    }
+  }, [rates, selectableRooms, tenantAssignments, propertyById])
 
   const billMonths = useMemo(
     () =>
@@ -269,8 +411,8 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     [bills],
   )
 
-  function openRateDialog() {
-    setRateForm(emptyRateForm())
+  function openRateDialog(roomId = '') {
+    setRateForm(emptyRateForm(roomId))
     setRateFormError('')
     setPageError('')
     setPageSuccess('')
@@ -346,40 +488,46 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     }
   }
 
-  async function handleDownloadRentReport() {
-    if (isDownloadingReport) return
-    if (billMonthFilter === 'all') {
-      setPageError('Choose one billing month before downloading the rent bill report.')
+  async function handleDeleteRate(rate: RoomRentRateRecord) {
+    if (deletingRateId || isSavingRate || isGenerating) return
+
+    if (rateIdsUsedByIssuedBills.has(rate.id)) {
+      setPageError(
+        'This rent rate is already used by an issued bill. It cannot be deleted; add a new rate with a different effective date instead.',
+      )
       return
     }
 
-    const reportBills = bills.filter((bill) => bill.billingMonth === billMonthFilter)
-    if (reportBills.length === 0) {
-      setPageError(`No issued rent bills exist for ${formatBillingMonth(billMonthFilter)}.`)
-      return
-    }
+    const room = roomById.get(rate.roomId)
+    const roomLabel = room
+      ? `Room ${room.roomNumber} (${room.roomCode})`
+      : `Room ${rate.roomCode}`
+    const confirmed = window.confirm(
+      `Delete the unused rent rate for ${roomLabel}, effective ${rate.effectiveFrom}? You can add it again with the same effective date. Issued bills will not be changed.`,
+    )
+    if (!confirmed) return
 
+    setDeletingRateId(rate.id)
     setPageError('')
     setPageSuccess('')
-    setIsDownloadingReport(true)
+
     try {
-      const { settings } = await loadWorkspaceSettings(ownerUid)
-      await downloadMonthlyBillReportPdf({
-        kind: 'rent',
-        houseName: settings.houseName,
-        billingMonth: billMonthFilter,
-        rows: reportBills.map((bill) => ({
-          tenantName: bill.tenantName,
-          roomNumber: bill.roomNumber,
-          propertyName: propertyById.get(bill.propertyId)?.name || bill.propertyCode,
-          amountMinor: bill.totalMinor,
-        })),
+      await deleteRoomRentRate(ownerUid, rate.id)
+      await recordAuditEvent(ownerUid, {
+        action: 'rate_deleted',
+        entityType: 'rent_rate',
+        entityId: rate.id,
+        entityLabel: `${roomLabel} rent rate`,
+        summary: `Deleted unused rent rate ${formatTaka(rate.monthlyRentMinor)}, effective ${rate.effectiveFrom}.`,
       })
-      setPageSuccess(`Monthly rent bill PDF downloaded for ${formatBillingMonth(billMonthFilter)}. Only issued rent amounts are included; previous dues and payments are excluded.`)
+      setPageSuccess(
+        `Unused rent rate for ${roomLabel} was deleted. You can now enter the corrected rate using the same effective date.`,
+      )
+      await loadData()
     } catch (error: unknown) {
-      setPageError(error instanceof Error ? error.message : 'Could not generate the monthly rent bill PDF.')
+      setPageError(getRentBillErrorMessage(error))
     } finally {
-      setIsDownloadingReport(false)
+      setDeletingRateId('')
     }
   }
 
@@ -573,12 +721,81 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
             <div className="panel-heading">
               <div>
                 <h2>Rent rate history</h2>
-                <p>Rates are stored by effective date; existing records are never overwritten.</p>
+                <p>One latest rate per room is shown here. Every rent change remains recorded in that room's ledger.</p>
               </div>
               <span className="rent-panel-icon">
                 <CircleDollarSign size={19} aria-hidden="true" />
               </span>
             </div>
+
+            {!isLoading && (
+              <div className="rent-rate-coverage" role="status" aria-live="polite">
+                <div className="rent-rate-coverage-top">
+                  <div>
+                    <strong>{rentRateCoverage.coveredRooms} of {rentRateCoverage.totalRooms} rooms have rent rates</strong>
+                    <span>
+                      {rentRateCoverage.missingRooms.length === 0
+                        ? 'Every selectable room has at least one rent rate.'
+                        : `${rentRateCoverage.missingRooms.length} ${rentRateCoverage.missingRooms.length === 1 ? 'room needs' : 'rooms need'} a rent rate.`}
+                    </span>
+                  </div>
+                  <strong className={rentRateCoverage.missingRooms.length > 0 ? 'rent-rate-coverage-count is-missing' : 'rent-rate-coverage-count'}>
+                    {rentRateCoverage.coveragePercent}%
+                  </strong>
+                </div>
+                <div
+                  className="rent-rate-coverage-track"
+                  role="progressbar"
+                  aria-label="Rooms with rent rates"
+                  aria-valuemin={0}
+                  aria-valuemax={rentRateCoverage.totalRooms}
+                  aria-valuenow={rentRateCoverage.coveredRooms}
+                >
+                  <span style={{ width: `${rentRateCoverage.coveragePercent}%` }} />
+                </div>
+              </div>
+            )}
+
+            {!isLoading && rentRateCoverage.missingRooms.length > 0 && (
+              <details
+                className="rent-missing-rate-panel"
+                open={rentRateCoverage.missingRooms.length <= 10}
+              >
+                <summary>
+                  <span>
+                    <strong>Rooms without rent rates</strong>
+                    <small>Identify rooms that still need a monthly rent amount.</small>
+                  </span>
+                  <b>{rentRateCoverage.missingRooms.length} missing</b>
+                </summary>
+                <div className="rent-missing-rate-list">
+                  {rentRateCoverage.missingRooms.map(({ room, property, tenantNames }) => (
+                    <article className="rent-missing-rate-item" key={room.id}>
+                      <div className="rent-missing-rate-copy">
+                        <strong>
+                          {tenantNames.length > 0 ? tenantNames.join(', ') : 'Vacant'}
+                          {' · '}Room {room.roomNumber}
+                        </strong>
+                        <span>
+                          {property?.name ?? room.propertyCode}
+                          {' · '}Floor {room.floorName}
+                          {' · '}{room.roomCode}
+                        </span>
+                      </div>
+                      <button
+                        className="button button-secondary rent-missing-rate-action"
+                        type="button"
+                        onClick={() => openRateDialog(room.id)}
+                        disabled={isSavingRate}
+                      >
+                        <Plus size={14} aria-hidden="true" />
+                        Set rate
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              </details>
+            )}
 
             {isLoading ? (
               <div className="properties-state rent-inline-state" role="status">
@@ -602,33 +819,59 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
               </div>
             ) : (
               <div className="rent-rate-list">
-                {rates.map((rate) => {
-                  const room = roomById.get(rate.roomId)
-                  const property = propertyById.get(rate.propertyId)
-                  const currentTenant = currentTenantByRoomId.get(rate.roomId)
-                  const roomName = room ? `Room ${room.roomNumber}` : `Room ${rate.roomCode}`
-
-                  return (
-                    <article className="rent-rate-item" key={rate.id}>
-                      <div className="rent-rate-main">
-                        <div className="rent-rate-heading">
-                          <strong>
-                            {roomName} · {currentTenant?.tenantName || 'No current tenant'}
-                          </strong>
-                          <span>{formatTaka(rate.monthlyRentMinor)} <small>/ month</small></span>
-                        </div>
-                        <p>
-                          {property?.name ?? rate.propertyCode}
-                          {room ? ` · Floor ${room.floorName} · Room ${room.roomNumber}` : ''}
-                        </p>
-                        <div className="rent-rate-meta">
-                          <span>Effective {formatDate(rate.effectiveFrom)}</span>
-                          {rate.notes && <span className="rent-rate-note">{rate.notes}</span>}
-                        </div>
+                {rentRateOverview.map(({ rate, room, property, tenantLabel }) => (
+                  <article className="rent-rate-item" key={rate.roomId}>
+                    <div className="rent-rate-main">
+                      <div className="rent-rate-heading">
+                        <strong>{tenantLabel} - Room {room?.roomNumber ?? rate.roomCode}</strong>
+                        <span>{formatTaka(rate.monthlyRentMinor)} <small>/ month</small></span>
                       </div>
-                    </article>
-                  )
-                })}
+                      <p>
+                        {property?.name ?? rate.propertyCode}
+                        {room ? ` · Floor ${room.floorName}` : ''}
+                      </p>
+                      <div className="rent-rate-meta">
+                        <span>Effective {formatDate(rate.effectiveFrom)}</span>
+                        {rate.notes && <span className="rent-rate-note">{rate.notes}</span>}
+                      </div>
+                      <div className="rent-rate-actions">
+                        {rateIdsUsedByIssuedBills.has(rate.id) ? (
+                          <span className="rent-rate-locked-note">
+                            Used in an issued bill · protected
+                          </span>
+                        ) : (
+                          <span className="rent-rate-available-note">
+                            Not used in an issued bill · can be deleted
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          className="button button-secondary rent-rate-delete-button"
+                          onClick={() => void handleDeleteRate(rate)}
+                          disabled={
+                            rateIdsUsedByIssuedBills.has(rate.id) ||
+                            Boolean(deletingRateId) ||
+                            isSavingRate ||
+                            isGenerating ||
+                            isLoading
+                          }
+                          title={
+                            rateIdsUsedByIssuedBills.has(rate.id)
+                              ? 'This rate is used by an issued bill and cannot be deleted.'
+                              : 'Delete this unused rent rate'
+                          }
+                        >
+                          {deletingRateId === rate.id ? (
+                            <LoaderCircle className="rent-spin" size={14} aria-hidden="true" />
+                          ) : (
+                            <Trash2 size={14} aria-hidden="true" />
+                          )}
+                          {deletingRateId === rate.id ? 'Deleting…' : 'Delete'}
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
               </div>
             )}
           </section>
@@ -662,16 +905,6 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                 ))}
               </select>
             </label>
-            <button
-              className="button button-secondary rent-download-report-button"
-              type="button"
-              onClick={() => void handleDownloadRentReport()}
-              disabled={isLoading || isDownloadingReport || billMonthFilter === 'all' || !bills.some((bill) => bill.billingMonth === billMonthFilter)}
-              title={billMonthFilter === 'all' ? 'Choose one month to download a monthly report' : 'Download only this month’s issued rent bills'}
-            >
-              {isDownloadingReport ? <LoaderCircle className="rent-spin" size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-              {isDownloadingReport ? 'Preparing PDF…' : 'Download PDF'}
-            </button>
           </div>
 
           {isLoading ? (
@@ -773,11 +1006,37 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                   disabled={isSavingRate || selectableRooms.length === 0}
                 >
                   <option value="">Select a room</option>
-                  {selectableRooms.map((room) => (
-                    <option value={room.id} key={room.id}>
-                      {currentTenantByRoomId.get(room.id)?.tenantName?.trim() || 'No current tenant'} - Room {room.roomNumber} - {propertyById.get(room.propertyId)?.name ?? room.propertyCode}
-                    </option>
-                  ))}
+                  {[...selectableRooms]
+                    .map((room) => {
+                      const currentTenants = tenantAssignments.filter((assignment) =>
+                        assignment.roomId === room.id &&
+                        assignment.status === 'current' &&
+                        assignment.moveOutDate === null,
+                      )
+                      const tenantName = currentTenants.length === 1
+                        ? currentTenants[0].tenantName
+                        : currentTenants.length > 1
+                          ? 'Multiple tenants — review'
+                          : 'Vacant'
+                      const propertyName = propertyById.get(room.propertyId)?.name ?? 'Property unavailable'
+                      return {
+                        room,
+                        tenantName,
+                        label: `${tenantName} - Room ${room.roomNumber} - ${propertyName}`,
+                      }
+                    })
+                    .sort((a, b) => {
+                      const aVacant = a.tenantName === 'Vacant'
+                      const bVacant = b.tenantName === 'Vacant'
+                      if (aVacant !== bVacant) return aVacant ? 1 : -1
+                      const aBangla = /[\u0980-\u09FF]/.test(a.tenantName)
+                      const bBangla = /[\u0980-\u09FF]/.test(b.tenantName)
+                      if (aBangla !== bBangla) return aBangla ? 1 : -1
+                      return a.tenantName.localeCompare(b.tenantName, aBangla ? 'bn' : 'en', { sensitivity: 'base', numeric: true })
+                    })
+                    .map(({ room, label }) => (
+                      <option value={room.id} key={room.id}>{label}</option>
+                    ))}
                 </select>
                 {selectableRooms.length === 0 && (
                   <small className="field-hint">Create a room under an active property before adding a rent rate.</small>
@@ -814,6 +1073,45 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
               </div>
               <p className="field-hint rent-currency-hint">Enter the amount in taka. The database stores integer poisha (100 poisha = ৳1).</p>
 
+              {ratePreview && (
+                <section className="rent-rate-preview" aria-live="polite" aria-label="Rent rate preview">
+                  <div className="rent-rate-preview-heading">
+                    <strong>Review before saving</strong>
+                    <span>Effective {formatDate(rateForm.effectiveFrom)}</span>
+                  </div>
+                  {ratePreview.duplicateRate ? (
+                    <p className="rent-rate-preview-warning">A rate already exists for this room and effective date. Delete it first if it is unused, or choose a different date.</p>
+                  ) : ratePreview.previousRate ? (
+                    <div className="rent-rate-preview-grid">
+                      <div>
+                        <small>Previous monthly rent</small>
+                        <strong>{formatTaka(ratePreview.previousRate.monthlyRentMinor)}</strong>
+                      </div>
+                      <div>
+                        <small>{ratePreview.differenceMinor === 0 ? 'Change' : ratePreview.differenceMinor > 0 ? 'Monthly increase' : 'Monthly decrease'}</small>
+                        <strong className={ratePreview.differenceMinor === 0 ? '' : ratePreview.differenceMinor > 0 ? 'is-increase' : 'is-decrease'}>
+                          {ratePreview.differenceMinor === 0
+                            ? 'No change'
+                            : `${ratePreview.differenceMinor > 0 ? '+' : '−'}${formatTaka(Math.abs(ratePreview.differenceMinor))}`}
+                        </strong>
+                      </div>
+                      <div>
+                        <small>New monthly rent</small>
+                        <strong>{formatTaka(ratePreview.proposedRentMinor)}</strong>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rent-rate-preview-grid is-initial">
+                      <div>
+                        <small>Initial monthly rent</small>
+                        <strong>{formatTaka(ratePreview.proposedRentMinor)}</strong>
+                      </div>
+                    </div>
+                  )}
+                  <p className="rent-rate-preview-note">This rate-history entry is informational. It does not create a debit or change the Room Ledger balance. Only an issued rent bill creates a charge.</p>
+                </section>
+              )}
+
               <div className="property-form-field">
                 <label htmlFor="rent-rate-notes">Notes</label>
                 <textarea
@@ -840,10 +1138,10 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                 <button
                   className="button button-primary"
                   type="submit"
-                  disabled={isSavingRate || selectableRooms.length === 0}
+                  disabled={isSavingRate || selectableRooms.length === 0 || Boolean(ratePreview?.duplicateRate)}
                 >
                   {isSavingRate && <LoaderCircle className="rent-spin" size={16} aria-hidden="true" />}
-                  {isSavingRate ? 'Saving rate…' : 'Save rent rate'}
+                  {isSavingRate ? 'Saving rate…' : 'Confirm & save rate'}
                 </button>
               </div>
             </form>

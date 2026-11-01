@@ -36,22 +36,18 @@ import {
   type WorkspaceSettings,
 } from '../services/firebase/workspaceSettings'
 
-import {
-  resolveElectricityBillTenantAssignment,
-  type ElectricityBillRecord,
-} from '../services/firebase/electricity'
-import type { MeterAssignmentRecord, MeterRecord } from '../services/firebase/meters'
+import type { ElectricityBillRecord } from '../services/firebase/electricity'
+import type { MeterRecord } from '../services/firebase/meters'
 import type { PaymentAllocationFormValues } from '../schemas/payment'
 
 import type {
   PaymentRecord,
 } from '../services/firebase/payments'
 
-import type { RentBillRecord } from '../services/firebase/rentBills'
+import type { RentBillRecord, RoomRentRateRecord } from '../services/firebase/rentBills'
 import type { RoomRecord } from '../services/firebase/rooms'
 import type { TenantRecord } from '../services/firebase/tenants'
 import type { TenantAssignmentRecord } from '../services/firebase/tenantAssignments'
-import { compareTenantNames } from '../utils/tenantNameSort'
 
 import './ledgers.css'
 
@@ -61,15 +57,14 @@ type LedgerEntity = {
   id: string
   title: string
   subtitle: string
-  optionLabel?: string
-  tenantSortName?: string | null
+  sortName?: string
 }
 
 type LedgerEntry = {
   id: string
   date: string
   time: string
-  sortTimestamp: number
+  sortMinute: number
   type: string
   reference: string
   description: string
@@ -78,6 +73,7 @@ type LedgerEntry = {
   creditMinor: number
   balanceMinor: number
   searchableText: string
+  isInformational?: boolean
 }
 
 type LedgerPageProps = {
@@ -98,311 +94,6 @@ const STATEMENT_COLORS = {
   muted: [100, 116, 139] as [number, number, number],
   border: [232, 225, 213] as [number, number, number],
   white: [255, 255, 255] as [number, number, number],
-}
-
-const BENGALI_TEXT_PATTERN = /[\u0980-\u09FF]/
-const BENGALI_FONT_FAMILY = 'Noto Serif Bengali'
-const PDF_IMAGE_SCALE = 3
-let statementBengaliFontPromise: Promise<void> | null = null
-let statementBengaliFontLoaded = false
-
-type PdfRgb = [number, number, number]
-type BengaliTextImage = {
-  dataUrl: string
-  widthPt: number
-  heightPt: number
-  baselineOffsetPt: number
-}
-type StatementTextOptions = {
-  fontSize: number
-  color: PdfRgb
-  bold?: boolean
-  align?: 'left' | 'center' | 'right'
-  maxWidth?: number
-}
-type StatementTableCell = {
-  raw: unknown
-  text: string[]
-  x: number
-  y: number
-  width: number
-  height: number
-  styles: {
-    fontSize: number
-    fontStyle: string
-    textColor: unknown
-    fillColor: unknown
-    valign: 'top' | 'middle' | 'bottom'
-    halign: 'left' | 'center' | 'right' | 'justify'
-    lineWidth: unknown
-  }
-  padding: (side: 'left' | 'right' | 'top' | 'bottom') => number
-}
-
-async function ensureStatementBengaliFont(): Promise<void> {
-  if (statementBengaliFontLoaded) return
-
-  if (!statementBengaliFontPromise) {
-    statementBengaliFontPromise = Promise.all([
-      document.fonts.load(`400 12px "${BENGALI_FONT_FAMILY}"`, 'বাংলা পরীক্ষা'),
-      document.fonts.load(`700 12px "${BENGALI_FONT_FAMILY}"`, 'বাংলা পরীক্ষা'),
-    ]).then(async ([regularFaces, boldFaces]) => {
-      await document.fonts.ready
-      if (regularFaces.length === 0 || boldFaces.length === 0) {
-        throw new Error('The Bengali font is unavailable. Please refresh the page and try the PDF download again.')
-      }
-      statementBengaliFontLoaded = true
-    }).catch((error: unknown) => {
-      statementBengaliFontPromise = null
-      throw error
-    })
-  }
-
-  await statementBengaliFontPromise
-}
-
-function colorAsCss(color: PdfRgb): string {
-  return `rgb(${color[0]}, ${color[1]}, ${color[2]})`
-}
-
-function normalizePdfColor(value: unknown, fallback: PdfRgb): PdfRgb {
-  if (Array.isArray(value) && value.length >= 3) {
-    return [
-      Number(value[0]) || 0,
-      Number(value[1]) || 0,
-      Number(value[2]) || 0,
-    ]
-  }
-
-  if (typeof value === 'number') {
-    return [value, value, value]
-  }
-
-  if (typeof value === 'string') {
-    const hex = value.trim().replace(/^#/, '')
-    if (/^[0-9a-fA-F]{6}$/.test(hex)) {
-      return [
-        Number.parseInt(hex.slice(0, 2), 16),
-        Number.parseInt(hex.slice(2, 4), 16),
-        Number.parseInt(hex.slice(4, 6), 16),
-      ]
-    }
-  }
-
-  return fallback
-}
-
-function renderBengaliTextImage(
-  text: string,
-  options: {
-    fontSizePt: number
-    color: PdfRgb
-    bold?: boolean
-    maxWidthPt?: number
-    maxHeightPt?: number
-  },
-): BengaliTextImage {
-  if (!statementBengaliFontLoaded) {
-    throw new Error('The Bengali font could not be loaded. Check your internet connection and try the PDF download again.')
-  }
-
-  const pointToCanvasPixel = (96 / 72) * PDF_IMAGE_SCALE
-  const maxWidthPx = options.maxWidthPt === undefined
-    ? Number.POSITIVE_INFINITY
-    : options.maxWidthPt * pointToCanvasPixel
-  const maxHeightPx = options.maxHeightPt === undefined
-    ? Number.POSITIVE_INFINITY
-    : options.maxHeightPt * pointToCanvasPixel
-
-  let fontSizePt = options.fontSizePt
-  let result: {
-    canvas: HTMLCanvasElement
-    baselinePx: number
-  } | null = null
-
-  // Shrink only when the existing PDF cell cannot contain the shaped text.
-  // The normal case uses the exact point size already configured by the PDF.
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const fontSizePx = fontSizePt * pointToCanvasPixel
-    const canvas = document.createElement('canvas')
-    const context = canvas.getContext('2d')
-    if (!context) {
-      throw new Error('The browser could not prepare Bengali text for the PDF.')
-    }
-
-    context.font = `${options.bold ? '700' : '400'} ${fontSizePx}px "${BENGALI_FONT_FAMILY}"`
-    context.textBaseline = 'alphabetic'
-
-    const lines: string[] = []
-    const paragraphs = text.replace(/\r/g, '').split('\n')
-    for (const paragraph of paragraphs) {
-      if (!paragraph) {
-        lines.push('')
-        continue
-      }
-
-      const words = paragraph.split(/\s+/).filter(Boolean)
-      let currentLine = ''
-      for (const word of words) {
-        const candidate = currentLine ? `${currentLine} ${word}` : word
-        if (currentLine && context.measureText(candidate).width > maxWidthPx) {
-          lines.push(currentLine)
-          currentLine = word
-        } else {
-          currentLine = candidate
-        }
-      }
-      lines.push(currentLine)
-    }
-
-    const metrics = context.measureText(lines.find(Boolean) ?? 'বাংলা')
-    const ascent = metrics.actualBoundingBoxAscent || fontSizePx * 0.84
-    const descent = metrics.actualBoundingBoxDescent || fontSizePx * 0.26
-    const paddingX = fontSizePx * 0.12
-    const paddingY = fontSizePx * 0.1
-    const lineHeight = fontSizePx * 1.28
-    const lineWidths = lines.map((line) => context.measureText(line).width)
-    const contentWidth = Math.max(1, ...lineWidths)
-    const baselinePx = paddingY + ascent
-    const contentHeight = paddingY * 2 + ascent + descent + Math.max(0, lines.length - 1) * lineHeight
-
-    canvas.width = Math.ceil(contentWidth + paddingX * 2)
-    canvas.height = Math.ceil(contentHeight)
-    const drawContext = canvas.getContext('2d')
-    if (!drawContext) {
-      throw new Error('The browser could not prepare Bengali text for the PDF.')
-    }
-
-    drawContext.font = `${options.bold ? '700' : '400'} ${fontSizePx}px "${BENGALI_FONT_FAMILY}"`
-    drawContext.textBaseline = 'alphabetic'
-    drawContext.fillStyle = colorAsCss(options.color)
-    lines.forEach((line, index) => {
-      drawContext.fillText(line, paddingX, baselinePx + index * lineHeight)
-    })
-
-    result = { canvas, baselinePx }
-    const widthFits = canvas.width <= maxWidthPx
-    const heightFits = canvas.height <= maxHeightPx
-    if (widthFits && heightFits) break
-
-    const widthRatio = Number.isFinite(maxWidthPx) ? maxWidthPx / canvas.width : 1
-    const heightRatio = Number.isFinite(maxHeightPx) ? maxHeightPx / canvas.height : 1
-    const shrinkRatio = Math.min(widthRatio, heightRatio, 0.92)
-    if (!Number.isFinite(shrinkRatio) || shrinkRatio <= 0 || fontSizePt * shrinkRatio < 3.5) {
-      break
-    }
-    fontSizePt *= shrinkRatio
-  }
-
-  if (!result) {
-    throw new Error('The browser could not render Bengali text for the PDF.')
-  }
-
-  const pixelsPerPoint = pointToCanvasPixel
-  return {
-    dataUrl: result.canvas.toDataURL('image/png'),
-    widthPt: result.canvas.width / pixelsPerPoint,
-    heightPt: result.canvas.height / pixelsPerPoint,
-    baselineOffsetPt: result.baselinePx / pixelsPerPoint,
-  }
-}
-
-function drawStatementText(
-  pdf: jsPDF,
-  text: string,
-  x: number,
-  baselineY: number,
-  options: StatementTextOptions,
-): void {
-  if (!BENGALI_TEXT_PATTERN.test(text)) {
-    pdf.text(text, x, baselineY, {
-      ...(options.maxWidth ? { maxWidth: options.maxWidth } : {}),
-      ...(options.align ? { align: options.align } : {}),
-    })
-    return
-  }
-
-  const image = renderBengaliTextImage(text, {
-    fontSizePt: options.fontSize,
-    color: options.color,
-    bold: options.bold,
-    maxWidthPt: options.maxWidth,
-  })
-  const drawX = options.align === 'right'
-    ? x - image.widthPt
-    : options.align === 'center'
-      ? x - image.widthPt / 2
-      : x
-
-  pdf.addImage(
-    image.dataUrl,
-    'PNG',
-    drawX,
-    baselineY - image.baselineOffsetPt,
-    image.widthPt,
-    image.heightPt,
-  )
-}
-
-function getStatementCellText(cell: StatementTableCell): string {
-  if (typeof cell.raw === 'string' || typeof cell.raw === 'number') {
-    return String(cell.raw)
-  }
-  if (Array.isArray(cell.raw)) {
-    return cell.raw.map((value) => String(value ?? '')).join('\n')
-  }
-  if (cell.raw && typeof cell.raw === 'object' && 'content' in cell.raw) {
-    const content = (cell.raw as { content?: unknown }).content
-    if (Array.isArray(content)) return content.map((value) => String(value ?? '')).join('\n')
-    if (typeof content === 'string' || typeof content === 'number') return String(content)
-  }
-  return cell.text.join('\n')
-}
-
-function drawBengaliTableCell(pdf: jsPDF, cell: StatementTableCell): void {
-  const text = getStatementCellText(cell)
-  if (!BENGALI_TEXT_PATTERN.test(text)) return
-
-  const paddingLeft = cell.padding('left')
-  const paddingRight = cell.padding('right')
-  const paddingTop = cell.padding('top')
-  const paddingBottom = cell.padding('bottom')
-  const availableWidth = Math.max(1, cell.width - paddingLeft - paddingRight)
-  const availableHeight = Math.max(1, cell.height - paddingTop - paddingBottom)
-  const lineInset = Math.max(0.5, Number(cell.styles.lineWidth) || 0.35)
-  const background = normalizePdfColor(cell.styles.fillColor, STATEMENT_COLORS.white)
-  const textColor = normalizePdfColor(cell.styles.textColor, STATEMENT_COLORS.ink)
-
-  // Mask only the old, incorrectly shaped glyphs; keep the original cell
-  // dimensions, fill, grid, and table pagination unchanged.
-  pdf.setFillColor(...background)
-  pdf.rect(
-    cell.x + lineInset,
-    cell.y + lineInset,
-    Math.max(0, cell.width - lineInset * 2),
-    Math.max(0, cell.height - lineInset * 2),
-    'F',
-  )
-
-  const image = renderBengaliTextImage(text, {
-    fontSizePt: cell.styles.fontSize,
-    color: textColor,
-    bold: cell.styles.fontStyle === 'bold' || cell.styles.fontStyle === 'bolditalic',
-    maxWidthPt: availableWidth,
-    maxHeightPt: availableHeight,
-  })
-  const drawX = cell.styles.halign === 'right'
-    ? cell.x + cell.width - paddingRight - image.widthPt
-    : cell.styles.halign === 'center'
-      ? cell.x + paddingLeft + (availableWidth - image.widthPt) / 2
-      : cell.x + paddingLeft
-  const drawY = cell.styles.valign === 'top'
-    ? cell.y + paddingTop
-    : cell.styles.valign === 'bottom'
-      ? cell.y + cell.height - paddingBottom - image.heightPt
-      : cell.y + paddingTop + (availableHeight - image.heightPt) / 2
-
-  pdf.addImage(image.dataUrl, 'PNG', drawX, drawY, image.widthPt, image.heightPt)
 }
 
 function pad(value: number): string {
@@ -435,10 +126,17 @@ function getTimeFromTimestamp(
   }).format(value.toDate())
 }
 
-function getSortTimestamp(
+function getSortMinute(
   value: Timestamp | null,
 ): number {
-  return value ? value.toMillis() : 0
+  if (!value) return 0
+
+  const date = value.toDate()
+
+  return (
+    date.getHours() * 60 +
+    date.getMinutes()
+  )
 }
 
 function formatMoney(minor: number): string {
@@ -475,6 +173,16 @@ function formatMonth(value: string): string {
   }).format(date)
 }
 
+function compareTenantNames(a: string, b: string): number {
+  const aIsBangla = /[\u0980-\u09FF]/.test(a)
+  const bIsBangla = /[\u0980-\u09FF]/.test(b)
+  if (aIsBangla !== bIsBangla) return aIsBangla ? 1 : -1
+  return a.localeCompare(b, aIsBangla ? 'bn' : 'en', {
+    sensitivity: 'base',
+    numeric: true,
+  })
+}
+
 function buildEntities(
   data: LedgerSourceData,
   scope: LedgerScope,
@@ -484,8 +192,10 @@ function buildEntities(
       .map((tenant: TenantRecord) => ({
         id: tenant.id,
         title: tenant.fullName,
-        subtitle: `${tenant.tenantCode} · ${tenant.phone}`,
-        optionLabel: `${tenant.fullName} · ${tenant.phone}`,
+        sortName: tenant.fullName,
+        // This project has no separate per-tenant contractNumber field.
+        // The tenant's saved phone number is the number shown to users.
+        subtitle: tenant.phone,
       }))
       .sort((a, b) => compareTenantNames(a.title, b.title))
   }
@@ -499,34 +209,27 @@ function buildEntities(
             assignment.status === 'current' &&
             assignment.moveOutDate === null,
         )
-        const currentTenant = currentAssignments.length === 1
+        const tenantName = currentAssignments.length === 1
           ? currentAssignments[0].tenantName
           : currentAssignments.length > 1
-            ? 'Multiple tenants — review assignments'
-            : 'No current tenant / vacant'
-        const currentTenantLabel = currentAssignments.length === 1
-          ? `Current tenant: ${currentAssignments[0].tenantName}`
-          : currentAssignments.length > 1
-            ? 'Current tenant: Multiple assignments — review'
-            : 'Current tenant: None / vacant'
+            ? 'Multiple tenants — review'
+            : 'Vacant'
+        const propertyName = data.properties.find(
+          (property) => property.id === room.propertyId,
+        )?.name ?? 'Property unavailable'
 
         return {
           id: room.id,
-          title: `Room ${room.roomNumber}`,
-          subtitle: [
-            room.roomCode,
-            room.floorName,
-            room.propertyCode,
-            currentTenantLabel,
-          ].filter(Boolean).join(' · '),
-          optionLabel: `${currentTenant} · Room ${room.roomNumber} · Floor/Level: ${room.floorName}`,
-          tenantSortName: currentAssignments.length === 1 ? currentAssignments[0].tenantName : null,
+          title: tenantName,
+          subtitle: `Room ${room.roomNumber} - ${room.floorName} - ${propertyName}`,
+          sortName: tenantName === 'Vacant' ? '' : tenantName,
         }
       })
-      .sort((a, b) =>
-        compareTenantNames(a.tenantSortName, b.tenantSortName)
-        || a.title.localeCompare(b.title),
-      )
+      .sort((a, b) => {
+        if (!a.sortName && b.sortName) return 1
+        if (a.sortName && !b.sortName) return -1
+        return compareTenantNames(a.sortName ?? a.title, b.sortName ?? b.title) || a.subtitle.localeCompare(b.subtitle, 'en', { numeric: true })
+      })
   }
 
   return data.meters
@@ -551,110 +254,77 @@ function buildEntities(
               assignment.moveOutDate === null,
           )
         : []
-      const currentTenantLabel = currentTenantAssignments.length === 1
-        ? `Current tenant: ${currentTenantAssignments[0].tenantName}`
-        : currentTenantAssignments.length > 1
-          ? 'Current tenant: Multiple assignments — review'
-          : currentMeterAssignment
-            ? 'Current tenant: None / vacant'
-            : currentMeterAssignments.length > 1
-              ? 'Current room: Multiple assignments — review'
-              : 'Not currently assigned'
-      const meterOptionTenant = currentTenantAssignments.length === 1
+      const tenantName = currentTenantAssignments.length === 1
         ? currentTenantAssignments[0].tenantName
         : currentTenantAssignments.length > 1
-          ? 'Multiple tenants — review assignments'
-          : currentMeterAssignment
-            ? 'No current tenant / vacant'
-            : currentMeterAssignments.length > 1
-              ? 'Multiple room assignments — review'
-              : 'Unassigned meter'
-      const meterOptionRoom = currentMeterAssignment
-        ? `Room ${currentRoom?.roomNumber ?? currentMeterAssignment.roomCode}`
-        : currentMeterAssignments.length > 1
-          ? 'Multiple rooms — review'
-          : 'No room assigned'
-      const meterOptionFloor = currentRoom?.floorName
-        ? `Floor/Level: ${currentRoom.floorName}`
-        : null
+          ? 'Multiple tenants — review'
+          : 'Vacant'
+      const propertyName = currentRoom
+        ? data.properties.find((property) => property.id === currentRoom.propertyId)?.name ?? 'Property unavailable'
+        : 'Not assigned'
+      const roomNumber = currentRoom?.roomNumber ?? 'No room'
+      const floorName = currentRoom?.floorName ?? 'No floor'
 
       return {
         id: meter.id,
-        title: meter.meterCode,
-        subtitle: [
-          meter.serialNumber ? `Serial: ${meter.serialNumber}` : `Status: ${meter.status}`,
-          currentMeterAssignment
-            ? `Room ${currentRoom?.roomNumber ?? currentMeterAssignment.roomCode}`
-            : null,
-          currentMeterAssignment ? `Property ${currentMeterAssignment.propertyCode}` : null,
-          currentTenantLabel,
-        ].filter(Boolean).join(' · '),
-        optionLabel: [meterOptionTenant, meterOptionRoom, meterOptionFloor]
-          .filter(Boolean).join(' · '),
-        tenantSortName: currentTenantAssignments.length === 1 ? currentTenantAssignments[0].tenantName : null,
+        title: tenantName,
+        subtitle: `${`Room ${roomNumber}`} - ${floorName} - ${propertyName}`,
+        sortName: tenantName === 'Vacant' ? '' : tenantName,
       }
     })
-    .sort((a, b) =>
-      compareTenantNames(a.tenantSortName, b.tenantSortName)
-      || a.title.localeCompare(b.title),
-    )
+    .sort((a, b) => {
+      if (!a.sortName && b.sortName) return 1
+      if (a.sortName && !b.sortName) return -1
+      return compareTenantNames(a.sortName ?? a.title, b.sortName ?? b.title) || a.subtitle.localeCompare(b.subtitle, 'en', { numeric: true })
+    })
 }
 
 function findTenantAssignmentForElectricityBill(
   data: LedgerSourceData,
   bill: ElectricityBillRecord,
 ): TenantAssignmentRecord | null {
-  // Keep compatibility with historic room snapshots while preferring the
-  // immutable tenant-at-issue snapshot saved on newer electricity bills.
+  // The reading is tied to an immutable meter-assignment snapshot. Use that
+  // assignment's room whenever available, then resolve the tenant on the
+  // actual meter-reading date (not the tenant's current room today).
   const meterAssignment = data.meterAssignments.find(
     (assignment) =>
       assignment.id === bill.meterAssignmentId &&
       assignment.meterId === bill.meterId,
   )
-  return resolveElectricityBillTenantAssignment(
-    meterAssignment && meterAssignment.roomId !== bill.roomId
-      ? { ...bill, roomId: meterAssignment.roomId }
-      : bill,
-    data.tenantAssignments,
-  )
-}
-
-function tenantLabelForMeterAssignment(
-  data: LedgerSourceData,
-  meterAssignment: MeterAssignmentRecord,
-): string {
-  const currentRoomTenants = data.tenantAssignments.filter(
+  const roomId = meterAssignment?.roomId ?? bill.roomId
+  const candidates = data.tenantAssignments.filter(
     (assignment) =>
-      assignment.roomId === meterAssignment.roomId &&
-      assignment.status === 'current' &&
-      assignment.moveOutDate === null,
+      assignment.roomId === roomId &&
+      assignment.moveInDate <= bill.readingDate &&
+      (assignment.moveOutDate === null || assignment.moveOutDate >= bill.readingDate),
   )
 
-  // For a currently connected meter, the room's current tenant is the person
-  // responsible for new electricity bills, even when older meter/tenant dates
-  // do not overlap cleanly in legacy records.
-  if (meterAssignment.status === 'current' && meterAssignment.endedOn === null) {
-    if (currentRoomTenants.length === 1) return currentRoomTenants[0].tenantName
-    if (currentRoomTenants.length > 1) return 'Multiple assignments — review'
-  }
+  if (candidates.length === 1) return candidates[0] ?? null
+  if (candidates.length === 0) return null
 
-  const historicalTenants = [...new Set(data.tenantAssignments
-    .filter((assignment) =>
-      assignment.roomId === meterAssignment.roomId &&
-      assignment.moveInDate <= (meterAssignment.endedOn ?? '9999-12-31') &&
-      (assignment.moveOutDate === null || assignment.moveOutDate >= meterAssignment.assignedOn),
-    )
-    .map((assignment) => assignment.tenantName))]
+  // If data contains overlapping historical assignments, prefer one unique
+  // current record. Otherwise prefer the uniquely latest move-in date. A tie
+  // remains unresolved rather than assigning a bill to the wrong tenant.
+  const currentCandidates = candidates.filter(
+    (assignment) => assignment.status === 'current' && assignment.moveOutDate === null,
+  )
+  if (currentCandidates.length === 1) return currentCandidates[0] ?? null
+  if (currentCandidates.length > 1) return null
 
-  return historicalTenants.join(', ') || 'Unassigned'
+  const latestMoveInDate = candidates.reduce(
+    (latest, assignment) => assignment.moveInDate > latest ? assignment.moveInDate : latest,
+    candidates[0].moveInDate,
+  )
+  const latestCandidates = candidates.filter(
+    (assignment) => assignment.moveInDate === latestMoveInDate,
+  )
+  return latestCandidates.length === 1 ? latestCandidates[0] ?? null : null
 }
 
 function electricityBillTenantLabel(
   data: LedgerSourceData,
   bill: ElectricityBillRecord,
 ): string {
-  if (bill.tenantName?.trim()) return bill.tenantName.trim()
-
   const tenantAssignment = findTenantAssignmentForElectricityBill(data, bill)
   if (tenantAssignment) return tenantAssignment.tenantName
 
@@ -663,7 +333,10 @@ function electricityBillTenantLabel(
   )
   const roomId = meterAssignment?.roomId ?? bill.roomId
   const candidates = data.tenantAssignments.filter(
-    (assignment) => assignment.roomId === roomId && assignment.status === 'current' && assignment.moveOutDate === null,
+    (assignment) =>
+      assignment.roomId === roomId &&
+      assignment.moveInDate <= bill.readingDate &&
+      (assignment.moveOutDate === null || assignment.moveOutDate >= bill.readingDate),
   )
   return candidates.length > 1 ? 'Multiple assignments — review' : 'Unassigned'
 }
@@ -711,10 +384,10 @@ function paymentTime(payment: PaymentRecord): string {
   return getTimeFromTimestamp(payment.createdAt)
 }
 
-function paymentSortTimestamp(
+function paymentSortMinute(
   payment: PaymentRecord,
 ): number {
-  return getSortTimestamp(payment.createdAt)
+  return getSortMinute(payment.createdAt)
 }
 
 function entrySearchText(
@@ -865,7 +538,7 @@ function buildEntries(
   ) => {
     const debitMinor = safeMinor(entry.debitMinor)
     const creditMinor = safeMinor(entry.creditMinor)
-    if (debitMinor === 0 && creditMinor === 0) return
+    if (debitMinor === 0 && creditMinor === 0 && !entry.isInformational) return
 
     const normalized = { ...entry, debitMinor, creditMinor }
     entries.push({
@@ -884,11 +557,8 @@ function buildEntries(
       add({
         id: `opening-balance:${openingBalance.id}`,
         date: openingBalance.effectiveDate,
-        // The opening balance already stores its creation timestamp. Use it
-        // for the displayed time and exact ordering while retaining the chosen
-        // effective date as the transaction date.
-        time: getTimeFromTimestamp(openingBalance.createdAt),
-        sortTimestamp: getSortTimestamp(openingBalance.createdAt),
+        time: '—',
+        sortMinute: 0,
         type: 'Opening balance',
         reference: `OB-${openingBalance.tenantCode}`,
         description: openingBalance.note || 'Previous outstanding before PropertyOS',
@@ -903,7 +573,7 @@ function buildEntries(
         id: `opening-balance-adjustment:${adjustment.id}`,
         date: adjustment.effectiveDate,
         time: getTimeFromTimestamp(adjustment.createdAt),
-        sortTimestamp: getSortTimestamp(adjustment.createdAt),
+        sortMinute: getSortMinute(adjustment.createdAt),
         type: adjustment.direction === 'increase' ? 'Opening balance increase' : 'Opening balance reduction',
         reference: adjustment.adjustmentNumber,
         description: adjustment.note,
@@ -911,6 +581,81 @@ function buildEntries(
         debitMinor: adjustment.direction === 'increase' ? adjustment.amountMinor : 0,
         creditMinor: adjustment.direction === 'decrease' ? adjustment.amountMinor : 0,
       })
+    }
+  }
+
+  // Room Ledger rate-change rows are derived only from the current
+  // roomRentRates source documents. They are never copied into a separate
+  // permanent ledger collection. Deleting an unused rate invalidates the
+  // owner list cache, so its informational row disappears on the next load.
+  // These rows never debit or credit the balance; issued rent bills remain
+  // the only financial charges for rent.
+  if (scope === 'room') {
+    const roomRates = data.roomRentRates
+      .filter((rate) => rate.roomId === entityId)
+      .sort((a, b) =>
+        a.effectiveFrom.localeCompare(b.effectiveFrom) ||
+        (a.createdAt?.toMillis() ?? 0) - (b.createdAt?.toMillis() ?? 0) ||
+        a.id.localeCompare(b.id),
+      )
+
+    let previousRate: RoomRentRateRecord | null = null
+
+    for (const rate of roomRates) {
+      const deltaMinor = previousRate
+        ? rate.monthlyRentMinor - previousRate.monthlyRentMinor
+        : null
+
+      // A same-value rate record does not represent a rent change. It remains
+      // stored for dated billing, but does not add noise to the room ledger.
+      if (deltaMinor === 0) {
+        previousRate = rate
+        continue
+      }
+
+      const occupants = data.tenantAssignments.filter(
+        (assignment) =>
+          assignment.roomId === entityId &&
+          assignment.moveInDate <= rate.effectiveFrom &&
+          (assignment.moveOutDate === null || assignment.moveOutDate >= rate.effectiveFrom),
+      )
+      const occupantNames = [...new Set(occupants.map((assignment) => assignment.tenantName))]
+      const occupantLabel = occupantNames.length === 1
+        ? occupantNames[0]
+        : occupantNames.length > 1
+          ? 'Multiple assignments — review'
+          : 'Vacant / unassigned'
+
+      let type = 'Rent rate set'
+      let description = `Initial monthly rent: ${formatMoney(rate.monthlyRentMinor)}`
+
+      if (previousRate && deltaMinor !== null) {
+        type = deltaMinor > 0 ? 'Rent increased' : 'Rent decreased'
+        description = [
+          `Previous rent: ${formatMoney(previousRate.monthlyRentMinor)} / month`,
+          `${deltaMinor > 0 ? 'Increase' : 'Decrease'}: ${formatMoney(Math.abs(deltaMinor))}`,
+          `New rent: ${formatMoney(rate.monthlyRentMinor)} / month`,
+        ].join(' · ')
+      }
+
+      description += ` · Effective from ${formatDate(rate.effectiveFrom)}`
+      if (rate.notes) description += ` · Note: ${rate.notes}`
+
+      add({
+        id: `rent-rate-change:${rate.id}`,
+        date: rate.effectiveFrom,
+        time: '—',
+        sortMinute: -1,
+        type,
+        reference: `RR-${rate.roomCode}-${rate.effectiveFrom.replaceAll('-', '')}`,
+        description,
+        contextLabel: occupantLabel,
+        debitMinor: 0,
+        creditMinor: 0,
+        isInformational: true,
+      })
+
+      previousRate = rate
     }
   }
 
@@ -925,7 +670,7 @@ function buildEntries(
       id: `rent:${bill.id}`,
       date: billDate(bill),
       time: getTimeFromTimestamp(bill.createdAt),
-      sortTimestamp: getSortTimestamp(bill.createdAt),
+      sortMinute: getSortMinute(bill.createdAt),
       type: 'Rent bill',
       reference: formatHumanReference(references, 'rent', bill.assignmentId, bill.billingMonth),
       description: `${formatMonth(bill.billingMonth)} · ${bill.tenantName} · ${bill.roomCode}`,
@@ -935,7 +680,7 @@ function buildEntries(
     })
   }
 
-  // TENANT: include electricity bills for the tenant saved when the bill was issued.
+  // TENANT: include electricity bills for the tenant assigned on reading date.
   // METER: include only electricity charges for the selected meter.
   // ROOM: intentionally excludes electricity calculations.
   for (const bill of data.electricityBills) {
@@ -944,9 +689,8 @@ function buildEntries(
 
     const linkedTenantAssignment = findTenantAssignmentForElectricityBill(data, bill)
     const linkedTenantLabel = electricityBillTenantLabel(data, bill)
-    const linkedTenantId = bill.tenantId ?? linkedTenantAssignment?.tenantId
     const matches =
-      (scope === 'tenant' && linkedTenantId === entityId) ||
+      (scope === 'tenant' && linkedTenantAssignment?.tenantId === entityId) ||
       (scope === 'meter' && bill.meterId === entityId)
     if (!matches) continue
 
@@ -955,7 +699,7 @@ function buildEntries(
       id: `electricity:${bill.id}`,
       date: electricityDate(bill),
       time: getTimeFromTimestamp(bill.createdAt),
-      sortTimestamp: getSortTimestamp(bill.createdAt),
+      sortMinute: getSortMinute(bill.createdAt),
       type: 'Electricity bill',
       reference: formatHumanReference(references, 'electricity', bill.meterAssignmentId, bill.readingDate),
       description: `${formatMonth(bill.billingMonth)} · ${roomText} · ${bill.meterCode} · Property ${bill.propertyCode} · ${bill.unitsConsumed} units`,
@@ -977,7 +721,7 @@ function buildEntries(
         id: `payment:${payment.id}`,
         date: payment.paidOn,
         time: paymentTime(payment),
-        sortTimestamp: paymentSortTimestamp(payment),
+        sortMinute: paymentSortMinute(payment),
         type: 'Payment received',
         reference: formatHumanReference(references, 'payment', payment.id),
         description: `${payment.method.replaceAll('_', ' ')}${payment.reference ? ` · ${payment.reference}` : ''}`,
@@ -995,7 +739,7 @@ function buildEntries(
           id: `payment:${payment.id}:rent:${allocation.billId}`,
           date: payment.paidOn,
           time: paymentTime(payment),
-          sortTimestamp: paymentSortTimestamp(payment),
+          sortMinute: paymentSortMinute(payment),
           type: 'Payment allocated',
           reference: formatHumanReference(references, 'payment', payment.id),
           description: `Rent bill · ${allocation.billingMonth} · ${payment.method.replaceAll('_', ' ')}`,
@@ -1016,7 +760,7 @@ function buildEntries(
           id: `payment:${payment.id}:electricity:${allocation.billId}`,
           date: payment.paidOn,
           time: paymentTime(payment),
-          sortTimestamp: paymentSortTimestamp(payment),
+          sortMinute: paymentSortMinute(payment),
           type: 'Payment allocated',
           reference: formatHumanReference(references, 'payment', payment.id),
           description: `Electricity bill · ${roomLabel(data, bill.roomId, bill.roomCode)} · ${bill.billingMonth} · ${bill.meterCode}`,
@@ -1040,7 +784,7 @@ function buildEntries(
           id: `credit-application:${application.id}`,
           date: getDateFromTimestamp(application.createdAt) ?? allocation.referenceDate,
           time: getTimeFromTimestamp(application.createdAt),
-          sortTimestamp: getSortTimestamp(application.createdAt),
+          sortMinute: getSortMinute(application.createdAt),
           type: 'Advance applied',
           reference: formatHumanReference(references, 'advance', application.id),
           description: `Rent bill · ${allocation.billingMonth}`,
@@ -1057,7 +801,7 @@ function buildEntries(
           id: `credit-application:${application.id}`,
           date: getDateFromTimestamp(application.createdAt) ?? allocation.referenceDate,
           time: getTimeFromTimestamp(application.createdAt),
-          sortTimestamp: getSortTimestamp(application.createdAt),
+          sortMinute: getSortMinute(application.createdAt),
           type: 'Advance applied',
           reference: formatHumanReference(references, 'advance', application.id),
           description: `Electricity bill · ${roomLabel(data, bill.roomId, bill.roomCode)} · ${bill.billingMonth} · ${bill.meterCode}`,
@@ -1075,7 +819,7 @@ function buildEntries(
   entries.sort((a, b) => {
     const byDate = a.date.localeCompare(b.date)
     if (byDate !== 0) return byDate
-    if (a.sortTimestamp !== b.sortTimestamp) return a.sortTimestamp - b.sortTimestamp
+    if (a.sortMinute !== b.sortMinute) return a.sortMinute - b.sortMinute
     const typeOrder = (a.debitMinor > 0 ? 0 : 1) - (b.debitMinor > 0 ? 0 : 1)
     if (typeOrder !== 0) return typeOrder
     return a.id.localeCompare(b.id)
@@ -1178,19 +922,14 @@ function drawStatementHeader(
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(9)
   pdf.setTextColor(...STATEMENT_COLORS.white)
-  drawStatementText(pdf, `${scopeLabel(scope)} - ${entity.title}`, margin, 43, {
-    fontSize: 9,
-    color: STATEMENT_COLORS.white,
-    bold: true,
+  pdf.text(`${scopeLabel(scope)} - ${entity.title}`, margin, 43, {
     maxWidth: pageWidth - margin * 2 - 180,
   })
 
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(7.5)
   pdf.setTextColor(226, 232, 240)
-  drawStatementText(pdf, entity.subtitle, margin, 55, {
-    fontSize: 7.5,
-    color: [226, 232, 240],
+  pdf.text(entity.subtitle, margin, 55, {
     maxWidth: pageWidth - margin * 2 - 180,
   })
   pdf.text(
@@ -1230,11 +969,7 @@ function drawFirstPageBranding(
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(16)
   pdf.setTextColor(...STATEMENT_COLORS.white)
-  drawStatementText(pdf, activeStatementSettings.houseName || "T&N House's", brandTextX, 27, {
-    fontSize: 16,
-    color: STATEMENT_COLORS.white,
-    bold: true,
-  })
+  pdf.text(activeStatementSettings.houseName || "T&N House's", brandTextX, 27)
 
   pdf.setFontSize(8)
   pdf.setTextColor(243, 217, 143)
@@ -1242,37 +977,28 @@ function drawFirstPageBranding(
 
   pdf.setFontSize(8.5)
   pdf.setTextColor(...STATEMENT_COLORS.white)
-  drawStatementText(pdf, scopeLabel(scope) + ' - ' + entity.title, brandTextX, 55, {
-    fontSize: 8.5,
-    color: STATEMENT_COLORS.white,
+  pdf.text(scopeLabel(scope) + ' - ' + entity.title, brandTextX, 55, {
     maxWidth: pageWidth - margin * 2 - 225,
   })
 
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(7)
   pdf.setTextColor(226, 232, 240)
-  drawStatementText(pdf, entity.subtitle, brandTextX, 67, {
-    fontSize: 7,
-    color: [226, 232, 240],
+  pdf.text(entity.subtitle, brandTextX, 67, {
     maxWidth: pageWidth - margin * 2 - 225,
   })
 
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(7.5)
   pdf.setTextColor(243, 217, 143)
-  drawStatementText(pdf, 'Contract Number: ' + activeStatementSettings.contractNumber, pageWidth - margin, 18, {
-    fontSize: 7.5,
-    color: [243, 217, 143],
-    bold: true,
+  pdf.text('Contract Number: ' + activeStatementSettings.contractNumber, pageWidth - margin, 18, {
     align: 'right',
   })
 
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(7.2)
   pdf.setTextColor(...STATEMENT_COLORS.white)
-  drawStatementText(pdf, 'Bkash/Nagad/Rocket/Upay: ' + activeStatementSettings.paymentContact, pageWidth - margin, 30, {
-    fontSize: 7.2,
-    color: STATEMENT_COLORS.white,
+  pdf.text('Bkash/Nagad/Rocket/Upay: ' + activeStatementSettings.paymentContact, pageWidth - margin, 30, {
     align: 'right',
   })
 
@@ -1336,11 +1062,7 @@ function addStatementHistoryTable(
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(10)
   pdf.setTextColor(...STATEMENT_COLORS.navy)
-  drawStatementText(pdf, title, 32, 81, {
-    fontSize: 10,
-    color: STATEMENT_COLORS.navy,
-    bold: true,
-  })
+  pdf.text(title, 32, 81)
   pdf.setDrawColor(...STATEMENT_COLORS.gold)
   pdf.setLineWidth(0.8)
   pdf.line(32, 86, pdf.internal.pageSize.getWidth() - 32, 86)
@@ -1367,7 +1089,6 @@ function addStatementHistoryTable(
     },
     alternateRowStyles: { fillColor: STATEMENT_COLORS.ivory },
     didDrawCell: (hookData) => {
-      drawBengaliTableCell(pdf, hookData.cell)
       if (hookData.section === 'head' && hookData.row.index === 0) {
         const { x, y, width, height } = hookData.cell
         pdf.setDrawColor(...STATEMENT_COLORS.gold)
@@ -1381,11 +1102,7 @@ function addStatementHistoryTable(
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10)
         pdf.setTextColor(...STATEMENT_COLORS.navy)
-        drawStatementText(pdf, title, 32, 81, {
-          fontSize: 10,
-          color: STATEMENT_COLORS.navy,
-          bold: true,
-        })
+        pdf.text(title, 32, 81)
         pdf.setDrawColor(...STATEMENT_COLORS.gold)
         pdf.setLineWidth(0.8)
         pdf.line(32, 86, pdf.internal.pageSize.getWidth() - 32, 86)
@@ -1403,22 +1120,6 @@ async function downloadLedgerStatementPdf(
 ): Promise<void> {
   const references = createTransactionReferenceRegistry(data)
   activeStatementSettings = (await loadWorkspaceSettings(ownerUid)).settings
-  const possibleBengaliContent = JSON.stringify([
-    entity,
-    entries,
-    data,
-    activeStatementSettings,
-  ])
-  if (BENGALI_TEXT_PATTERN.test(possibleBengaliContent)) {
-    // Only fail the export if Bangla is actually included in the rendered
-    // statement; unrelated records may also contain Bangla text.
-    try {
-      await ensureStatementBengaliFont()
-    } catch {
-      // drawStatementText / drawBengaliTableCell will show a clear error if
-      // the selected statement itself needs the unavailable font.
-    }
-  }
   const logoDataUrl = await loadStatementLogo()
   const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
   const pageWidth = pdf.internal.pageSize.getWidth()
@@ -1478,20 +1179,17 @@ async function downloadLedgerStatementPdf(
   const transactionRows = entries.length > 0
     ? entries.map((entry) => {
       const time = /\d/.test(entry.time) ? ` ${entry.time}` : ''
-      const baseRow = [
+      return [
         `${formatDate(entry.date)}${time}`,
         entry.type,
         entry.contextLabel,
         `${entry.reference}\n${entry.description}`,
-      ]
-      return [
-        ...baseRow,
         entry.debitMinor ? statementMoney(entry.debitMinor) : '-',
         entry.creditMinor ? statementMoney(entry.creditMinor) : '-',
         statementBalance(entry.balanceMinor),
       ]
     })
-    : [['-', '-', '-', 'No transactions recorded', '-', '-', '-']]
+    : [['-', '-', '-', 'No financial transactions recorded', '-', '-', '-']]
 
   autoTable(pdf, {
     head: [[
@@ -1532,7 +1230,6 @@ async function downloadLedgerStatementPdf(
       6: { cellWidth: 94, halign: 'right' },
     },
     didDrawCell: (hookData) => {
-      drawBengaliTableCell(pdf, hookData.cell)
       if (hookData.section === 'head' && hookData.row.index === 0) {
         const { x, y, width, height } = hookData.cell
         pdf.setDrawColor(...STATEMENT_COLORS.gold)
@@ -1642,14 +1339,20 @@ async function downloadLedgerStatementPdf(
 
     addStatementHistoryTable(pdf, scope, entity, 'METER ASSIGNMENT HISTORY', {
       head: [[
-        'Reference', 'Assigned on', 'Room', 'Tenant / Current occupant', 'Property', 'Initial reading',
+        'Reference', 'Assigned on', 'Room', 'Tenant history', 'Property', 'Initial reading',
         'Ended on', 'Final reading', 'End reason', 'Status',
       ]],
       body: meterAssignments.map((assignment) => [
         formatHumanReference(references, 'meter', assignment.id),
         assignment.assignedOn || '-',
         assignment.roomCode,
-        tenantLabelForMeterAssignment(data, assignment),
+        [...new Set(data.tenantAssignments
+          .filter((tenantAssignment) =>
+            tenantAssignment.roomId === assignment.roomId &&
+            tenantAssignment.moveInDate <= (assignment.endedOn ?? '9999-12-31') &&
+            (tenantAssignment.moveOutDate === null || tenantAssignment.moveOutDate >= assignment.assignedOn),
+          )
+          .map((tenantAssignment) => tenantAssignment.tenantName))].join(', ') || 'Unassigned',
         assignment.propertyCode,
         assignment.initialReading.toLocaleString('en-BD'),
         assignment.endedOn || 'Current',
@@ -1667,7 +1370,7 @@ async function downloadLedgerStatementPdf(
 
     addStatementHistoryTable(pdf, scope, entity, 'RECORDED METER READINGS', {
       head: [[
-        'Reading date', 'Month', 'Room', 'Tenant billed', 'Previous', 'Current',
+        'Reading date', 'Month', 'Room', 'Tenant on reading date', 'Previous', 'Current',
         'Units', 'Rate / unit', 'Amount', 'Bill reference',
       ]],
       body: meterReadings.map((bill) => [
@@ -1697,18 +1400,13 @@ async function downloadLedgerStatementPdf(
     pdf.text(`Page ${page} of ${totalPages}`, pageWidth - margin, pageHeight - 12, {
       align: 'right',
     })
-    drawStatementText(
-      pdf,
+    pdf.text(
       [
         'Amounts shown in BDT where applicable',
         activeStatementSettings.statementFooter.trim(),
       ].filter(Boolean).join(' · '),
       margin,
       pageHeight - 12,
-      {
-        fontSize: 7.5,
-        color: STATEMENT_COLORS.muted,
-      },
     )
   }
 
@@ -1782,14 +1480,7 @@ export function LedgersPage({
   )
 
   useEffect(() => {
-    // Keep the ledger unselected by default. Only clear a selection when it
-    // no longer belongs to the active ledger scope; never auto-pick a record.
-    if (
-      selectedEntityId &&
-      !entities.some(
-        (entity) => entity.id === selectedEntityId,
-      )
-    ) {
+    if (selectedEntityId && !entities.some((entity) => entity.id === selectedEntityId)) {
       setSelectedEntityId('')
     }
   }, [entities, selectedEntityId])
@@ -1831,7 +1522,6 @@ export function LedgersPage({
   const selectedEntity = entities.find(
     (entity) => entity.id === selectedEntityId,
   )
-  const showFinancialColumns = true
 
   return (
     <section className="ledgers-page">
@@ -1899,6 +1589,7 @@ export function LedgersPage({
             onClick={() => {
               setScope(item)
               setSelectedEntityId('')
+              setSearch('')
             }}
           >
             <LedgerPageIcon scope={item} />
@@ -1932,20 +1623,11 @@ export function LedgersPage({
             }
             disabled={isLoading || entities.length === 0}
           >
-            <option value="">
-              {entities.length === 0
-                ? 'No records available'
-                : scope === 'tenant'
-                  ? 'Choose a tenant'
-                  : scope === 'room'
-                    ? 'Choose a room'
-                    : 'Choose a meter'
-              }
-            </option>
+            <option value="">{isLoading ? 'Loading...' : entities.length === 0 ? 'No records available' : scope === 'tenant' ? 'Choose a tenant' : scope === 'room' ? 'Choose a room' : 'Choose a meter'}</option>
 
             {entities.map((entity) => (
               <option value={entity.id} key={entity.id}>
-                {entity.optionLabel ?? `${entity.title} — ${entity.subtitle}`}
+                {entity.title} — {entity.subtitle}
               </option>
             ))}
           </select>
@@ -2162,9 +1844,9 @@ export function LedgersPage({
                     <th>Type</th>
                     <th>{scope === 'tenant' ? 'Room' : 'Tenant'}</th>
                     <th>Reference / Details</th>
-                    {showFinancialColumns && <th className="align-right">Debit</th>}
-                    {showFinancialColumns && <th className="align-right">Credit</th>}
-                    {showFinancialColumns && <th className="align-right">Balance</th>}
+                    <th className="align-right">Debit</th>
+                    <th className="align-right">Credit</th>
+                    <th className="align-right">Balance</th>
                   </tr>
                 </thead>
 
@@ -2181,11 +1863,11 @@ export function LedgersPage({
                         <span
                           className={
                             'ledger-type-pill ' +
-                            (
-                              entry.creditMinor > 0
+                            (entry.isInformational
+                              ? 'is-informational'
+                              : entry.creditMinor > 0
                                 ? 'is-credit'
-                                : 'is-debit'
-                            )
+                                : 'is-debit')
                           }
                         >
                           {entry.type}
@@ -2202,41 +1884,35 @@ export function LedgersPage({
                           {entry.description}
                         </div>
                       </td>
-                      {showFinancialColumns && (
-                        <td className="align-right ledger-money debit">
-                          {entry.debitMinor
-                            ? formatMoney(entry.debitMinor)
-                            : '—'
-                          }
-                        </td>
-                      )}
-                      {showFinancialColumns && (
-                        <td className="align-right ledger-money credit">
-                          {entry.creditMinor
-                            ? formatMoney(entry.creditMinor)
-                            : '—'
-                          }
-                        </td>
-                      )}
-                      {showFinancialColumns && (
-                        <td
-                          className={
-                            'align-right ledger-money ' +
-                            (
-                              entry.balanceMinor > 0
-                                ? 'due'
-                                : entry.balanceMinor < 0
-                                  ? 'credit'
-                                  : ''
-                            )
-                          }
-                        >
-                          {entry.balanceMinor < 0
-                            ? `−${formatMoney(Math.abs(entry.balanceMinor))}`
-                            : formatMoney(entry.balanceMinor)
-                          }
-                        </td>
-                      )}
+                      <td className="align-right ledger-money debit">
+                        {entry.debitMinor
+                          ? formatMoney(entry.debitMinor)
+                          : '—'
+                        }
+                      </td>
+                      <td className="align-right ledger-money credit">
+                        {entry.creditMinor
+                          ? formatMoney(entry.creditMinor)
+                          : '—'
+                        }
+                      </td>
+                      <td
+                        className={
+                          'align-right ledger-money ' +
+                          (
+                            entry.balanceMinor > 0
+                              ? 'due'
+                              : entry.balanceMinor < 0
+                                ? 'credit'
+                                : ''
+                          )
+                        }
+                      >
+                        {entry.balanceMinor < 0
+                          ? `−${formatMoney(Math.abs(entry.balanceMinor))}`
+                          : formatMoney(entry.balanceMinor)
+                        }
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2253,11 +1929,11 @@ export function LedgersPage({
                     <span
                       className={
                         'ledger-type-pill ' +
-                        (
-                          entry.creditMinor > 0
+                        (entry.isInformational
+                          ? 'is-informational'
+                          : entry.creditMinor > 0
                             ? 'is-credit'
-                            : 'is-debit'
-                        )
+                            : 'is-debit')
                       }
                     >
                       {entry.type}
@@ -2283,7 +1959,7 @@ export function LedgersPage({
 
                   <p>{entry.description}</p>
 
-                  {showFinancialColumns && <div className="ledger-mobile-amounts">
+                  <div className="ledger-mobile-amounts">
                     <span>
                       <small>Debit</small>
                       <b>
@@ -2321,7 +1997,7 @@ export function LedgersPage({
                         }
                       </b>
                     </span>
-                  </div>}
+                  </div>
                 </article>
               ))}
             </div>
@@ -2333,7 +2009,7 @@ export function LedgersPage({
         {scope === 'tenant'
           ? 'Tenant ledger combines rent and electricity bills across every room this tenant has occupied.'
           : scope === 'room'
-            ? 'Room ledger shows rent charges and rent payments for this room only. Electricity calculations are kept in Meter ledger.'
+            ? 'Room ledger shows rent charges, rent payments, and informational rent-rate changes for this room only. Rate-change rows do not affect the balance; electricity calculations are kept in Meter ledger.'
             : 'Meter ledger shows electricity readings, electricity bills, and their payments for this meter only.'
         }{' '}
         Balances are calculated from saved issued bills and posted receipts/credit applications. This screen is read-only and does not modify financial records. Date filters change displayed rows; the current balance reflects the full available history.

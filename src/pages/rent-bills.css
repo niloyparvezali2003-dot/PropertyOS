@@ -197,6 +197,43 @@
   gap: 10px;
 }
 
+.rent-rate-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.rent-rate-locked-note,
+.rent-rate-available-note {
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.rent-rate-locked-note { color: var(--color-warning, #9a6700); }
+.rent-rate-available-note { color: var(--text-tertiary, #64748b); }
+
+.rent-rate-delete-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 9px;
+  color: var(--color-danger, #b42318);
+  border-color: color-mix(in srgb, var(--color-danger, #b42318) 24%, var(--border));
+  font-size: 11px;
+}
+
+.rent-rate-delete-button:hover:not(:disabled) {
+  color: var(--color-danger, #b42318);
+  background: var(--color-danger-soft, #fef3f2);
+}
+
+.rent-rate-delete-button:disabled { opacity: .55; cursor: not-allowed; }
+
 .rent-rate-item {
   min-width: 0;
   padding: 13px;
@@ -252,6 +289,81 @@
   overflow-wrap: anywhere;
 }
 
+.rent-rate-preview {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-secondary, var(--surface));
+}
+
+.rent-rate-preview-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+}
+
+.rent-rate-preview-heading strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.rent-rate-preview-heading span,
+.rent-rate-preview-grid small,
+.rent-rate-preview-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rent-rate-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.rent-rate-preview-grid.is-initial {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.rent-rate-preview-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.rent-rate-preview-grid strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rent-rate-preview-grid strong.is-increase { color: var(--color-danger, #b42318); }
+.rent-rate-preview-grid strong.is-decrease { color: var(--color-success, #12805c); }
+
+.rent-rate-preview-warning {
+  margin: 0;
+  color: var(--color-warning, #9a6700);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.rent-rate-preview-note {
+  margin: 0;
+}
+
+@media (max-width: 520px) {
+  .rent-rate-preview-grid { grid-template-columns: 1fr; }
+}
+
 .rent-empty-inline {
   display: flex;
   flex-direction: column;
@@ -303,15 +415,9 @@
 
 .rent-bills-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(145px, 190px) auto;
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr) minmax(145px, 190px);
   gap: 12px;
   margin-bottom: 16px;
-}
-
-.rent-download-report-button {
-  min-height: 43px;
-  white-space: nowrap;
 }
 
 .rent-bills-toolbar .search-input {
@@ -549,11 +655,6 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .rent-download-report-button {
-    width: 100%;
-    justify-content: center;
-  }
-
   .rent-bill-details {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px 10px;
@@ -587,5 +688,170 @@
 @media (prefers-reduced-motion: reduce) {
   .rent-spin {
     animation: none;
+  }
+}
+
+/* Rent-rate coverage: quickly identify rooms that still need a rate. */
+.rent-rate-coverage {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 13px;
+  padding: 13px;
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+
+.rent-rate-coverage-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rent-rate-coverage-top > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rent-rate-coverage-top > div > strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.rent-rate-coverage-top > div > span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rent-rate-coverage-count {
+  flex: 0 0 auto;
+  color: var(--color-success);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rent-rate-coverage-count.is-missing {
+  color: var(--color-warning, #a66a13);
+}
+
+.rent-rate-coverage-track {
+  height: 7px;
+  overflow: hidden;
+  background: var(--border);
+  border-radius: 999px;
+}
+
+.rent-rate-coverage-track > span {
+  display: block;
+  height: 100%;
+  background: var(--color-success);
+  border-radius: inherit;
+  transition: width 180ms ease;
+}
+
+.rent-missing-rate-panel {
+  margin: 0 0 14px;
+  overflow: hidden;
+  border: 1px solid #e9d8b7;
+  border-radius: 11px;
+  background: #fffdf8;
+}
+
+.rent-missing-rate-panel > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 13px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.rent-missing-rate-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.rent-missing-rate-panel > summary > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rent-missing-rate-panel > summary strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.rent-missing-rate-panel > summary small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rent-missing-rate-panel > summary b {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  color: #85550d;
+  background: #fff0d4;
+  border-radius: 999px;
+  font-size: 9px;
+}
+
+.rent-missing-rate-list {
+  display: grid;
+  padding: 0 12px 10px;
+}
+
+.rent-missing-rate-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #f0e5d2;
+}
+
+.rent-missing-rate-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rent-missing-rate-copy strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.rent-missing-rate-copy > span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.rent-missing-rate-action {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 9px;
+  font-size: 10px;
+}
+
+@media (max-width: 520px) {
+  .rent-missing-rate-item {
+    align-items: flex-start;
+  }
+
+  .rent-missing-rate-action {
+    padding-inline: 7px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rent-rate-coverage-track > span {
+    transition: none;
   }
 }

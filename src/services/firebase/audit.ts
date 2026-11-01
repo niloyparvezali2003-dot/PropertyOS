@@ -13,7 +13,7 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-import { getCurrentActorUid, getFirebaseServices } from './client'
+import { getFirebaseServices } from './client'
 
 export type AuditAction =
   | 'created'
@@ -22,16 +22,13 @@ export type AuditAction =
   | 'moved_out'
   | 'replaced'
   | 'rate_added'
+  | 'rate_deleted'
   | 'bills_generated'
   | 'bill_issued'
   | 'payment_recorded'
   | 'credit_applied'
   | 'opening_balance_added'
   | 'opening_balance_adjusted'
-  | 'invitation_created'
-  | 'invitation_accepted'
-  | 'invitation_cancelled'
-  | 'member_revoked'
 
 export type AuditEntityType =
   | 'property'
@@ -47,8 +44,6 @@ export type AuditEntityType =
   | 'payment'
   | 'credit_application'
   | 'opening_balance'
-  | 'member'
-  | 'invitation'
 
 export type AuditEventInput = {
   action: AuditAction
@@ -73,16 +68,13 @@ const allowedActions = new Set<AuditAction>([
   'moved_out',
   'replaced',
   'rate_added',
+  'rate_deleted',
   'bills_generated',
   'bill_issued',
   'payment_recorded',
   'credit_applied',
   'opening_balance_added',
   'opening_balance_adjusted',
-  'invitation_created',
-  'invitation_accepted',
-  'invitation_cancelled',
-  'member_revoked',
 ])
 
 const allowedEntityTypes = new Set<AuditEntityType>([
@@ -99,8 +91,6 @@ const allowedEntityTypes = new Set<AuditEntityType>([
   'payment',
   'credit_application',
   'opening_balance',
-  'member',
-  'invitation',
 ])
 
 function isNonEmptyString(value: unknown, maximumLength: number): value is string {
@@ -164,7 +154,7 @@ export async function recordAuditEvent(
       entityId,
       entityLabel,
       summary,
-      actorUid: getCurrentActorUid(),
+      actorUid: ownerUid,
       occurredAt: serverTimestamp(),
     }
 
