@@ -1,0 +1,22 @@
+PropertyOS - Vercel TypeScript build fixes
+
+Updated:
+- src/services/firebase/audit.ts
+  - Added invitation_created, invitation_accepted, invitation_cancelled, member_revoked to AuditAction.
+  - Added member and invitation to AuditEntityType.
+  - Updated runtime allow-lists so the new audit events are accepted when reading history.
+- src/pages/RentBillsPage.tsx
+  - Changed the two openRateDialog button handlers to onClick={() => openRateDialog()}.
+
+No Firestore data, document IDs, security rules, payment calculations, rent calculations, or billing records were changed.
+
+Validation:
+- The exact TypeScript errors shown in the supplied Vercel log have been addressed.
+- A complete local production build could not be completed in this environment because npm dependency installation timed out.
+- The local environment runs Node 22.16.0, while this project requires Node 24.x (and several installed package versions require Node >=24.12.0).
+- Vercel's log indicates it selects Node 24.x from package.json. Use Node 24.x for local validation too.
+
+Deploy:
+1. Replace the two matching files in your repository with these updated versions, or use the full ZIP.
+2. Commit and push to the main branch.
+3. Redeploy on Vercel. If Vercel still reports stale output, choose Redeploy with build cache disabled.

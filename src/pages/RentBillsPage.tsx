@@ -575,7 +575,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
         <button
           className="button button-primary"
           type="button"
-          onClick={openRateDialog}
+          onClick={() => openRateDialog()}
           disabled={isLoading || selectableRooms.length === 0}
         >
           <Plus size={17} aria-hidden="true" />
@@ -810,7 +810,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                 <button
                   type="button"
                   className="button button-secondary"
-                  onClick={openRateDialog}
+                  onClick={() => openRateDialog()}
                   disabled={selectableRooms.length === 0}
                 >
                   <Plus size={16} aria-hidden="true" />
