@@ -91,7 +91,7 @@ function emptyReplacementForm(): MeterReplacementFormValues {
 }
 
 const meterStatusLabels: Record<MeterStatus, string> = {
-    available: 'Available',
+    available: 'Unassigned',
     assigned: 'Assigned',
     retired: 'Retired',
     voided: 'Cancelled',
@@ -103,6 +103,14 @@ const replacementReasonLabels = {
     slow_reading: 'Slow reading',
     other: 'Other',
 }
+
+const meterStatusFilters: Array<{ value: 'all' | MeterStatus; label: string }> = [
+    { value: 'all', label: 'All meters' },
+    { value: 'assigned', label: 'Assigned' },
+    { value: 'available', label: 'Unassigned' },
+    { value: 'retired', label: 'Retired' },
+    { value: 'voided', label: 'Cancelled' },
+]
 
 export function MetersPage({ ownerUid }: MetersPageProps) {
     const [meters, setMeters] = useState<MeterRecord[]>([])
@@ -251,6 +259,21 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                 ),
         [rooms, assignedRoomIds, propertyById, currentTenantAssignmentByRoom],
     )
+
+    const meterStatusCounts = useMemo(() => {
+        const counts: Record<MeterStatus, number> = {
+            available: 0,
+            assigned: 0,
+            retired: 0,
+            voided: 0,
+        }
+
+        for (const meter of meters) {
+            counts[meter.status] += 1
+        }
+
+        return counts
+    }, [meters])
 
     const filteredMeters = useMemo(() => {
         const query = search.trim().toLowerCase()
@@ -553,31 +576,55 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                 </button>
             </header>
 
+            <nav className="meter-status-overview" aria-label="Filter meters by status">
+                {meterStatusFilters.map((filter) => {
+                    const count = filter.value === 'all'
+                        ? meters.length
+                        : meterStatusCounts[filter.value]
+
+                    return (
+                        <button
+                            className={`meter-status-filter${statusFilter === filter.value ? ' is-active' : ''}`}
+                            type="button"
+                            key={filter.value}
+                            aria-pressed={statusFilter === filter.value}
+                            onClick={() => setStatusFilter(filter.value)}
+                        >
+                            <span>{filter.label}</span>
+                            <strong>{count}</strong>
+                        </button>
+                    )
+                })}
+            </nav>
+
+            <label className="meter-status-mobile" htmlFor="meter-status-mobile-select">
+                <span>Filter by status</span>
+                <select
+                    id="meter-status-mobile-select"
+                    value={statusFilter}
+                    onChange={(event) => setStatusFilter(event.target.value as 'all' | MeterStatus)}
+                >
+                    {meterStatusFilters.map((filter) => {
+                        const count = filter.value === 'all'
+                            ? meters.length
+                            : meterStatusCounts[filter.value]
+                        return (
+                            <option key={filter.value} value={filter.value}>
+                                {filter.label} ({count})
+                            </option>
+                        )
+                    })}
+                </select>
+            </label>
+
             <section className="meters-toolbar">
                 <SearchInput
                     value={search}
                     onChange={setSearch}
                     placeholder="Search meters, rooms, or serial numbers..."
                 />
-
-                <select
-                    className="meter-filter"
-                    aria-label="Filter meters by status"
-                    value={statusFilter}
-                    onChange={(event) =>
-                        setStatusFilter(event.target.value as 'all' | MeterStatus)
-                    }
-                >
-                    <option value="all">All meters</option>
-                    <option value="available">Available</option>
-                    <option value="assigned">Assigned</option>
-                    <option value="retired">Retired</option>
-                    <option value="voided">Cancelled</option>
-                </select>
-
                 <span className="meters-count">
-                    {filteredMeters.length}{' '}
-                    {filteredMeters.length === 1 ? 'meter' : 'meters'}
+                    {filteredMeters.length} of {meters.length} shown
                 </span>
             </section>
 

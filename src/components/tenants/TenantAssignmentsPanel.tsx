@@ -313,7 +313,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
               <option value="">Select a vacant room</option>
               {availableRooms.map((room) => (
                 <option key={room.id} value={room.id}>
-                  {roomDisplayName(room, propertyById.get(room.propertyId)?.name ?? room.propertyCode)}
+                  {roomDisplayName(room, propertyById.get(room.propertyId)?.name ?? room.propertyCode).replace(`${room.roomCode} · `, '')}
                 </option>
               ))}
             </select>

@@ -1,18 +1,20 @@
 import {
+  Component,
   lazy,
   Suspense,
   useEffect,
   useState,
 } from 'react'
-import type { ReactNode } from 'react'
+import type { ComponentType, ErrorInfo, ReactNode } from 'react'
 import type { User } from 'firebase/auth'
-import { LogOut, MailCheck, RefreshCw } from 'lucide-react'
+import { LogOut, MailCheck, RefreshCw, WifiOff } from 'lucide-react'
 
 import {
   MobileNavigation,
   Sidebar,
 } from './components/layout/Sidebar'
 import { LoginPage } from './components/auth/LoginPage'
+import { ModuleLoadingScreen } from './components/layout/ModuleLoadingScreen'
 import { clearAllCachedLists } from './services/firebase/listCache'
 import {
   observeAuthState,
@@ -30,23 +32,45 @@ import {
 } from './services/firebase/workspace'
 import type { AppPage } from './types/navigation'
 
-const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })))
-const PropertiesPage = lazy(() => import('./pages/PropertiesPage').then((m) => ({ default: m.PropertiesPage })))
-const RoomsPage = lazy(() => import('./pages/RoomsPage').then((m) => ({ default: m.RoomsPage })))
-const TenantsPage = lazy(() => import('./pages/TenantsPage').then((m) => ({ default: m.TenantsPage })))
-const MetersPage = lazy(() => import('./pages/MetersPage').then((m) => ({ default: m.MetersPage })))
-const RentBillsPage = lazy(() => import('./pages/RentBillsPage').then((m) => ({ default: m.RentBillsPage })))
-const ElectricityPage = lazy(() => import('./pages/ElectricityPage').then((m) => ({ default: m.ElectricityPage })))
-const PaymentsPage = lazy(() => import('./pages/PaymentsPage').then((m) => ({ default: m.PaymentsPage })))
-const LedgersPage = lazy(() => import('./pages/LedgersPage').then((m) => ({ default: m.LedgersPage })))
-const FinancialReportsPage = lazy(() => import('./pages/FinancialReportsPage').then((m) => ({ default: m.FinancialReportsPage })))
-const HistoryPage = lazy(() => import('./pages/HistoryPage').then((m) => ({ default: m.HistoryPage })))
-const BackupPage = lazy(() => import('./pages/BackupPage').then((m) => ({ default: m.BackupPage })))
-const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
-const NotePage = lazy(() => import('./pages/NotePage').then((m) => ({ default: m.NotePage })))
-const OpeningBalancePage = lazy(() => import('./pages/OpeningBalancePage').then((m) => ({ default: m.OpeningBalancePage })))
-const UsersAccessPage = lazy(() => import('./pages/UsersAccessPage').then((m) => ({ default: m.UsersAccessPage })))
-const ModulePlaceholder = lazy(() => import('./pages/ModulePlaceholder').then((m) => ({ default: m.ModulePlaceholder })))
+function lazyWithRetry<Props extends object>(loadModule: () => Promise<{ default: ComponentType<Props> }>) {
+  return lazy(async () => {
+    let lastError: unknown
+
+    // Retry transient chunk/network failures before showing the manual retry screen.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await loadModule()
+      } catch (error: unknown) {
+        lastError = error
+        if (attempt < 2) {
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 700 * (attempt + 1))
+          })
+        }
+      }
+    }
+
+    throw lastError
+  })
+}
+
+const DashboardPage = lazyWithRetry(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })))
+const PropertiesPage = lazyWithRetry(() => import('./pages/PropertiesPage').then((m) => ({ default: m.PropertiesPage })))
+const RoomsPage = lazyWithRetry(() => import('./pages/RoomsPage').then((m) => ({ default: m.RoomsPage })))
+const TenantsPage = lazyWithRetry(() => import('./pages/TenantsPage').then((m) => ({ default: m.TenantsPage })))
+const MetersPage = lazyWithRetry(() => import('./pages/MetersPage').then((m) => ({ default: m.MetersPage })))
+const RentBillsPage = lazyWithRetry(() => import('./pages/RentBillsPage').then((m) => ({ default: m.RentBillsPage })))
+const ElectricityPage = lazyWithRetry(() => import('./pages/ElectricityPage').then((m) => ({ default: m.ElectricityPage })))
+const PaymentsPage = lazyWithRetry(() => import('./pages/PaymentsPage').then((m) => ({ default: m.PaymentsPage })))
+const LedgersPage = lazyWithRetry(() => import('./pages/LedgersPage').then((m) => ({ default: m.LedgersPage })))
+const FinancialReportsPage = lazyWithRetry(() => import('./pages/FinancialReportsPage').then((m) => ({ default: m.FinancialReportsPage })))
+const HistoryPage = lazyWithRetry(() => import('./pages/HistoryPage').then((m) => ({ default: m.HistoryPage })))
+const BackupPage = lazyWithRetry(() => import('./pages/BackupPage').then((m) => ({ default: m.BackupPage })))
+const SettingsPage = lazyWithRetry(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const NotePage = lazyWithRetry(() => import('./pages/NotePage').then((m) => ({ default: m.NotePage })))
+const OpeningBalancePage = lazyWithRetry(() => import('./pages/OpeningBalancePage').then((m) => ({ default: m.OpeningBalancePage })))
+const UsersAccessPage = lazyWithRetry(() => import('./pages/UsersAccessPage').then((m) => ({ default: m.UsersAccessPage })))
+const ModulePlaceholder = lazyWithRetry(() => import('./pages/ModulePlaceholder').then((m) => ({ default: m.ModulePlaceholder })))
 
 type StatusCardProps = {
   title: string
@@ -75,6 +99,41 @@ function StatusCard({ title, message, detail, action }: StatusCardProps) {
 const ownerUid = import.meta.env.VITE_PROPERTYOS_OWNER_UID?.trim()
 type WorkspaceAccessState = 'checking' | 'active' | 'verification' | 'denied' | 'error'
 
+type ModuleLoadErrorBoundaryProps = {
+  isOnline: boolean
+  children: ReactNode
+}
+
+type ModuleLoadErrorBoundaryState = {
+  hasError: boolean
+}
+
+class ModuleLoadErrorBoundary extends Component<ModuleLoadErrorBoundaryProps, ModuleLoadErrorBoundaryState> {
+  state: ModuleLoadErrorBoundaryState = { hasError: false }
+
+  static getDerivedStateFromError(): ModuleLoadErrorBoundaryState {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[PropertyOS] Unable to load the selected module.', error, info)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <ModuleLoadingScreen
+          isOnline={this.props.isOnline}
+          loadError
+          onRetry={() => window.location.reload()}
+        />
+      )
+    }
+
+    return this.props.children
+  }
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null)
   const [isAuthReady, setIsAuthReady] = useState(false)
@@ -90,6 +149,19 @@ function App() {
   const [invitation, setInvitation] = useState(getInvitationUrlState)
   const [activePage, setActivePage] = useState<AppPage>('Dashboard')
   const [searchValue, setSearchValue] = useState('')
+  const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine)
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true)
+    const handleOffline = () => setIsOnline(false)
+
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined
@@ -321,14 +393,17 @@ function App() {
           </button>
         </div>
 
+        {!isOnline && (
+          <div className="network-status-banner" role="status">
+            <WifiOff size={16} aria-hidden="true" />
+            <span><strong>You're offline.</strong> Some features may be unavailable until your connection returns. Previously cached information may still be accessible.</span>
+          </div>
+        )}
+
         <main className="page-content">
           {sessionError && <p className="auth-error" role="alert">{sessionError}</p>}
-          <Suspense fallback={(
-            <div className="module-placeholder" role="status">
-              <p className="eyebrow">PROPERTYOS</p><h1>Loading module...</h1>
-              <p className="page-description">Preparing your workspace.</p>
-            </div>
-          )}>
+          <ModuleLoadErrorBoundary isOnline={isOnline}>
+            <Suspense fallback={<ModuleLoadingScreen isOnline={isOnline} />}>
             {activePage === 'Dashboard' ? (
               <DashboardPage ownerUid={ownerUid} searchValue={searchValue} onSearchChange={setSearchValue} onNavigate={setActivePage} />
             ) : activePage === 'Properties' ? (
@@ -364,7 +439,8 @@ function App() {
             ) : (
               <ModulePlaceholder page={activePage} onNavigate={setActivePage} />
             )}
-          </Suspense>
+            </Suspense>
+          </ModuleLoadErrorBoundary>
         </main>
       </div>
       <MobileNavigation activePage={activePage} onNavigate={setActivePage} />

@@ -88,6 +88,12 @@ function formatMonth(value: string): string {
   return new Intl.DateTimeFormat('en-BD', { month: 'long', year: 'numeric' }).format(date)
 }
 
+function getMonthEndDate(month: string): string {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const lastDay = new Date(year, monthNumber, 0).getDate()
+  return `${month}-${String(lastDay).padStart(2, '0')}`
+}
+
 function getApplicableRate(
   rates: ElectricityRateRecord[],
   roomId: string,
@@ -123,7 +129,10 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
   const [isSavingRate, setIsSavingRate] = useState(false)
   const [isSavingReading, setIsSavingReading] = useState(false)
   const [billSearch, setBillSearch] = useState('')
-  // Default the dashboard to the current billing month; historical months remain selectable.
+  // The reading coverage card has its own month selector so its progress
+  // remains month-specific even when the issued-bills list is showing all history.
+  const [readingCoverageMonth, setReadingCoverageMonth] = useState(() => todayIso().slice(0, 7))
+  // Default the issued-bills view to the current billing month; historical months remain selectable.
   const [monthFilter, setMonthFilter] = useState(() => todayIso().slice(0, 7))
   const [isDownloadingReport, setIsDownloadingReport] = useState(false)
 
@@ -178,6 +187,62 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
       ),
     [assignments, currentTenantByRoomId],
   )
+  const readingCoverage = useMemo(() => {
+    const monthStart = `${readingCoverageMonth}-01`
+    const monthEnd = getMonthEndDate(readingCoverageMonth)
+    // This panel is an action list for meters that are assigned right now.
+    // Do not include ended/old assignments (including replaced, unassigned, or
+    // retired meters). For a past selected month, only count current assignments
+    // that already existed by the end of that month; never pull in future ones.
+    const monthAssignments = assignments
+      .filter((assignment) =>
+        assignment.status === 'current' &&
+        assignment.endedOn === null &&
+        assignment.assignedOn <= monthEnd,
+      )
+      .sort((left, right) => left.meterCode.localeCompare(right.meterCode) || left.roomCode.localeCompare(right.roomCode))
+
+    const recordedAssignmentIds = new Set(
+      readings
+        .filter((reading) => reading.billingMonth === readingCoverageMonth)
+        .map((reading) => reading.meterAssignmentId),
+    )
+    const missingAssignments = monthAssignments
+      .filter((assignment) => !recordedAssignmentIds.has(assignment.id))
+      .map((assignment) => {
+        const activeFrom = assignment.assignedOn > monthStart ? assignment.assignedOn : monthStart
+        const assignmentEnd = assignment.endedOn ?? monthEnd
+        const activeTo = assignmentEnd < monthEnd ? assignmentEnd : monthEnd
+        const tenantNames = [...new Set(tenantAssignments
+          .filter((tenantAssignment) =>
+            tenantAssignment.roomId === assignment.roomId &&
+            tenantAssignment.moveInDate <= activeTo &&
+            (tenantAssignment.moveOutDate === null || tenantAssignment.moveOutDate >= activeFrom),
+          )
+          .map((tenantAssignment) => tenantAssignment.tenantName.trim())
+          .filter(Boolean))]
+        const room = roomById.get(assignment.roomId)
+        const property = propertyById.get(assignment.propertyId)
+          ?? (room ? propertyById.get(room.propertyId) : undefined)
+
+        return {
+          assignment,
+          tenantLabel: tenantNames.length > 0 ? tenantNames.join(', ') : 'No tenant recorded',
+          roomLabel: room?.roomNumber || assignment.roomCode,
+          propertyLabel: property?.name || assignment.propertyCode,
+        }
+      })
+
+    const total = monthAssignments.length
+    const recorded = total - missingAssignments.length
+
+    return {
+      total,
+      recorded,
+      missingAssignments,
+      coveragePercent: total > 0 ? Math.round((recorded / total) * 100) : 0,
+    }
+  }, [assignments, readings, readingCoverageMonth, tenantAssignments, roomById, propertyById])
   const selectableRooms = useMemo(
     () => [...rooms].sort((left, right) =>
       compareTenantNames(
@@ -271,6 +336,11 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
             roomNumber: bill.tenantRoomNumber || room?.roomNumber || tenantAssignment?.roomNumber || bill.roomCode,
             propertyName: property?.name || bill.propertyCode,
             amountMinor: bill.amountMinor,
+            // These values belong to the meter assignment used when this bill was issued.
+            // Do not look up the room's current meter or latest reading for a historical report.
+            previousReading: bill.previousReading,
+            currentReading: bill.currentReading,
+            unitsConsumed: bill.unitsConsumed,
           }
         }),
       })
@@ -415,6 +485,76 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
         <div className="electricity-content-grid">
           <section className="electricity-panel electricity-reading-panel">
             <div className="electricity-panel-heading"><div><h2>Record a reading</h2><p>Save a meter reading and issue its electricity bill.</p></div><span className="electricity-panel-icon"><Gauge size={20} /></span></div>
+
+            <div className="electricity-reading-coverage">
+              <div className="electricity-reading-coverage-heading">
+                <div>
+                  <strong>Monthly reading progress</strong>
+                  <span>Only meters assigned during the selected month are counted.</span>
+                </div>
+                <label className="electricity-coverage-month" htmlFor="electricity-reading-coverage-month">
+                  <span>Reading month</span>
+                  <input
+                    id="electricity-reading-coverage-month"
+                    type="month"
+                    value={readingCoverageMonth}
+                    max={todayIso().slice(0, 7)}
+                    onChange={(event) => setReadingCoverageMonth(event.target.value || todayIso().slice(0, 7))}
+                  />
+                </label>
+              </div>
+              <div className="electricity-reading-coverage-top" role="status" aria-live="polite">
+                <div>
+                  <strong>{readingCoverage.recorded} of {readingCoverage.total} assigned {readingCoverage.total === 1 ? 'meter has' : 'meters have'} readings</strong>
+                  <span>
+                    {readingCoverage.total === 0
+                      ? `No meters were assigned during ${formatMonth(readingCoverageMonth)}.`
+                      : readingCoverage.missingAssignments.length === 0
+                        ? `Every meter assigned during ${formatMonth(readingCoverageMonth)} has a recorded reading.`
+                        : `${readingCoverage.missingAssignments.length} ${readingCoverage.missingAssignments.length === 1 ? 'assigned meter needs' : 'assigned meters need'} a reading for ${formatMonth(readingCoverageMonth)}.`}
+                  </span>
+                </div>
+                <strong className={readingCoverage.missingAssignments.length > 0 ? 'electricity-reading-coverage-count is-missing' : 'electricity-reading-coverage-count'}>
+                  {readingCoverage.coveragePercent}%
+                </strong>
+              </div>
+              <div
+                className="electricity-reading-coverage-track"
+                role="progressbar"
+                aria-label={`Meters with readings for ${formatMonth(readingCoverageMonth)}`}
+                aria-valuemin={0}
+                aria-valuemax={readingCoverage.total}
+                aria-valuenow={readingCoverage.recorded}
+              >
+                <span style={{ width: `${readingCoverage.coveragePercent}%` }} />
+              </div>
+            </div>
+
+            {readingCoverage.missingAssignments.length > 0 && (
+              <details
+                className="electricity-missing-reading-panel"
+                open={readingCoverage.missingAssignments.length <= 10}
+              >
+                <summary>
+                  <span>
+                    <strong>Assigned meters without readings</strong>
+                    <small>Only meters assigned during {formatMonth(readingCoverageMonth)} are shown.</small>
+                  </span>
+                  <b>{readingCoverage.missingAssignments.length} missing</b>
+                </summary>
+                <div className="electricity-missing-reading-list">
+                  {readingCoverage.missingAssignments.map(({ assignment, tenantLabel, roomLabel, propertyLabel }) => (
+                    <article className="electricity-missing-reading-item" key={assignment.id}>
+                      <div>
+                        <strong>{tenantLabel} | Room {roomLabel}</strong>
+                        <span>{propertyLabel}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </details>
+            )}
+
             <div className="electricity-info-note electricity-reading-note">Readings must be entered in date order and each new reading must be higher than the previous one. Every saved reading creates its own bill.</div>
             {currentAssignments.length === 0 ? <div className="electricity-empty-inline"><Gauge size={24} /><strong>No current meter assignments</strong><p>Assign an available meter to a room in the Meters module before recording readings.</p></div> : <form className="electricity-quick-form electricity-reading-form" onSubmit={handleReadingSubmit}>
               <div className="electricity-field electricity-reading-assignment"><label htmlFor="electricity-assignment">Current meter assignment <span>*</span></label><select id="electricity-assignment" value={readingForm.meterAssignmentId} onChange={(event) => setReadingForm((current) => ({ ...current, meterAssignmentId: event.target.value }))} required><option value="">Select tenant, room and property</option>{currentAssignments.map((assignment) => <option value={assignment.id} key={assignment.id}>{readAssignmentLabel(assignment)}</option>)}</select></div>

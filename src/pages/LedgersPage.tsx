@@ -883,6 +883,249 @@ function statementBalance(amountMinor: number): string {
     : statementMoney(amountMinor)
 }
 
+
+// jsPDF's built-in fonts do not shape Bengali conjuncts or vowel marks.
+// Render Bengali-containing strings with the browser's OpenType text engine
+// to a high-resolution image, then place that image into the PDF. Latin-only
+// text remains selectable vector text in jsPDF.
+const STATEMENT_BENGALI_PATTERN = /[\u0980-\u09FF]/
+const STATEMENT_BENGALI_FONT = 'Noto Serif Bengali'
+const STATEMENT_IMAGE_SCALE = 3
+
+type StatementPdfColor = [number, number, number]
+
+type StatementBengaliCell = {
+  raw?: unknown
+  text?: string[]
+  x: number
+  y: number
+  width: number
+  height: number
+  styles: {
+    fontSize?: number
+    fontStyle?: string
+    textColor?: unknown
+    fillColor?: unknown
+    halign?: string
+    lineWidth?: unknown
+  }
+  padding: (side: 'left' | 'right' | 'top' | 'bottom') => number
+}
+
+type RenderedStatementText = {
+  dataUrl: string
+  widthPt: number
+  heightPt: number
+  baselineOffsetPt: number
+}
+
+async function ensureStatementBengaliFont(): Promise<void> {
+  if (typeof document === 'undefined' || !('fonts' in document)) {
+    throw new Error('Bengali PDF text rendering is unavailable in this browser.')
+  }
+
+  const sample = 'বাংলা পরীক্ষা যুক্তাক্ষর'
+  const [regularFaces, boldFaces] = await Promise.all([
+    document.fonts.load(`400 12px "${STATEMENT_BENGALI_FONT}"`, sample),
+    document.fonts.load(`700 12px "${STATEMENT_BENGALI_FONT}"`, sample),
+  ])
+  await document.fonts.ready
+
+  if (regularFaces.length === 0 || boldFaces.length === 0) {
+    throw new Error('The Bengali font could not be loaded. Check your internet connection and try the statement PDF again.')
+  }
+}
+
+function statementPdfColor(value: unknown, fallback: StatementPdfColor): StatementPdfColor {
+  if (Array.isArray(value) && value.length >= 3) {
+    return [Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0]
+  }
+  if (typeof value === 'number') return [value, value, value]
+  if (typeof value === 'string') {
+    const hex = value.trim().replace(/^#/, '')
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+      return [
+        Number.parseInt(hex.slice(0, 2), 16),
+        Number.parseInt(hex.slice(2, 4), 16),
+        Number.parseInt(hex.slice(4, 6), 16),
+      ]
+    }
+  }
+  return fallback
+}
+
+function renderStatementBengaliText(
+  text: string,
+  fontSizePt: number,
+  color: StatementPdfColor,
+  bold: boolean,
+  maxWidthPt: number,
+  maxHeightPt: number,
+): RenderedStatementText {
+  const pixelsPerPoint = (96 / 72) * STATEMENT_IMAGE_SCALE
+  let fontSizePx = Math.max(4, fontSizePt * pixelsPerPoint)
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const measureCanvas = document.createElement('canvas')
+    const measure = measureCanvas.getContext('2d')
+    if (!measure) throw new Error('Could not prepare Bengali text for the statement PDF.')
+
+    const font = `${bold ? '700' : '400'} ${fontSizePx}px "${STATEMENT_BENGALI_FONT}", "Nirmala UI", serif`
+    measure.font = font
+    measure.textBaseline = 'alphabetic'
+
+    const paddingX = fontSizePx * 0.14
+    const paddingY = fontSizePx * 0.12
+    const maxWidthPx = Math.max(1, maxWidthPt * pixelsPerPoint)
+    const availableLineWidth = Math.max(1, maxWidthPx - paddingX * 2)
+    const lines: string[] = []
+
+    // Keep explicitly supplied line breaks (for reference + description cells)
+    // and wrap each paragraph using the browser's real Bengali glyph metrics.
+    for (const paragraph of text.replace(/\r/g, '').split('\n')) {
+      const words = paragraph.trim().split(/\s+/).filter(Boolean)
+      if (words.length === 0) {
+        lines.push('')
+        continue
+      }
+      let line = ''
+      for (const word of words) {
+        const candidate = line ? `${line} ${word}` : word
+        if (line && measure.measureText(candidate).width > availableLineWidth) {
+          lines.push(line)
+          line = word
+        } else {
+          line = candidate
+        }
+      }
+      if (line) lines.push(line)
+    }
+
+    const metricText = lines.find(Boolean) || text || 'বাংলা'
+    const metrics = measure.measureText(metricText)
+    const ascent = metrics.actualBoundingBoxAscent || fontSizePx * 0.86
+    const descent = metrics.actualBoundingBoxDescent || fontSizePx * 0.28
+    const lineHeight = fontSizePx * 1.3
+    const contentWidth = Math.max(1, ...lines.map((line) => measure.measureText(line).width))
+    const widthPx = contentWidth + paddingX * 2
+    const heightPx = paddingY * 2 + ascent + descent + Math.max(0, lines.length - 1) * lineHeight
+
+    if (widthPx > maxWidthPx || heightPx > maxHeightPt * pixelsPerPoint) {
+      fontSizePx *= 0.88
+      continue
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.ceil(widthPx))
+    canvas.height = Math.max(1, Math.ceil(heightPx))
+    const draw = canvas.getContext('2d')
+    if (!draw) throw new Error('Could not render Bengali text for the statement PDF.')
+    draw.font = font
+    draw.textBaseline = 'alphabetic'
+    draw.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`
+    lines.forEach((line, index) => {
+      if (line) draw.fillText(line, paddingX, paddingY + ascent + index * lineHeight)
+    })
+
+    return {
+      dataUrl: canvas.toDataURL('image/png'),
+      widthPt: canvas.width / pixelsPerPoint,
+      heightPt: canvas.height / pixelsPerPoint,
+      baselineOffsetPt: (paddingY + ascent) / pixelsPerPoint,
+    }
+  }
+
+  throw new Error('A Bengali name or description is too long to fit in the statement PDF.')
+}
+
+function drawStatementText(
+  pdf: jsPDF,
+  text: string,
+  x: number,
+  baselineY: number,
+  options: {
+    fontSize: number
+    color: StatementPdfColor
+    bold?: boolean
+    maxWidth: number
+    align?: 'left' | 'center' | 'right'
+  },
+): void {
+  const bold = options.bold ?? false
+  const align = options.align ?? 'left'
+
+  if (!STATEMENT_BENGALI_PATTERN.test(text)) {
+    pdf.setFont('helvetica', bold ? 'bold' : 'normal')
+    pdf.setFontSize(options.fontSize)
+    pdf.setTextColor(...options.color)
+    pdf.text(text, x, baselineY, { maxWidth: options.maxWidth, align })
+    return
+  }
+
+  const image = renderStatementBengaliText(
+    text,
+    options.fontSize,
+    options.color,
+    bold,
+    options.maxWidth,
+    Math.max(options.fontSize * 1.5, options.fontSize * 2.8),
+  )
+  const imageX = align === 'right'
+    ? x - image.widthPt
+    : align === 'center'
+      ? x - image.widthPt / 2
+      : x
+  pdf.addImage(image.dataUrl, 'PNG', imageX, baselineY - image.baselineOffsetPt, image.widthPt, image.heightPt)
+}
+
+function statementCellText(cell: StatementBengaliCell): string {
+  if (typeof cell.raw === 'string' || typeof cell.raw === 'number') return String(cell.raw)
+  if (Array.isArray(cell.raw)) return cell.raw.map((value) => String(value ?? '')).join('\n')
+  return (cell.text ?? []).join('\n')
+}
+
+function drawStatementBengaliCell(pdf: jsPDF, cell: StatementBengaliCell): void {
+  const text = statementCellText(cell)
+  if (!STATEMENT_BENGALI_PATTERN.test(text)) return
+
+  const paddingLeft = cell.padding('left')
+  const paddingRight = cell.padding('right')
+  const paddingTop = cell.padding('top')
+  const paddingBottom = cell.padding('bottom')
+  const availableWidth = Math.max(1, cell.width - paddingLeft - paddingRight)
+  const availableHeight = Math.max(1, cell.height - paddingTop - paddingBottom)
+  const borderInset = Math.max(0.45, Number(cell.styles.lineWidth) || 0.35)
+  const fill = statementPdfColor(cell.styles.fillColor, STATEMENT_COLORS.white)
+  const textColor = statementPdfColor(cell.styles.textColor, STATEMENT_COLORS.ink)
+
+  // Cover only the cell interior, leaving the table grid/borders untouched.
+  pdf.setFillColor(...fill)
+  pdf.rect(
+    cell.x + borderInset,
+    cell.y + borderInset,
+    Math.max(0, cell.width - borderInset * 2),
+    Math.max(0, cell.height - borderInset * 2),
+    'F',
+  )
+
+  const image = renderStatementBengaliText(
+    text,
+    Number(cell.styles.fontSize) || 7.5,
+    textColor,
+    String(cell.styles.fontStyle || '').includes('bold'),
+    availableWidth,
+    availableHeight,
+  )
+  const align = cell.styles.halign || 'left'
+  const imageX = align === 'right'
+    ? cell.x + cell.width - paddingRight - image.widthPt
+    : align === 'center'
+      ? cell.x + (cell.width - image.widthPt) / 2
+      : cell.x + paddingLeft
+  const imageY = cell.y + paddingTop + Math.max(0, (availableHeight - image.heightPt) / 2)
+  pdf.addImage(image.dataUrl, 'PNG', imageX, imageY, image.widthPt, image.heightPt)
+}
+
 async function loadStatementLogo(): Promise<string | null> {
   try {
     const response = await fetch(import.meta.env.BASE_URL + 'icon-512.png')
@@ -919,17 +1162,16 @@ function drawStatementHeader(
   pdf.setTextColor(...STATEMENT_COLORS.white)
   pdf.text('ACCOUNT STATEMENT', margin, 27)
 
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(9)
-  pdf.setTextColor(...STATEMENT_COLORS.white)
-  pdf.text(`${scopeLabel(scope)} - ${entity.title}`, margin, 43, {
+  drawStatementText(pdf, `${scopeLabel(scope)} - ${entity.title}`, margin, 43, {
+    fontSize: 9,
+    color: STATEMENT_COLORS.white,
+    bold: true,
     maxWidth: pageWidth - margin * 2 - 180,
   })
 
-  pdf.setFont('helvetica', 'normal')
-  pdf.setFontSize(7.5)
-  pdf.setTextColor(226, 232, 240)
-  pdf.text(entity.subtitle, margin, 55, {
+  drawStatementText(pdf, entity.subtitle, margin, 55, {
+    fontSize: 7.5,
+    color: [226, 232, 240],
     maxWidth: pageWidth - margin * 2 - 180,
   })
   pdf.text(
@@ -966,25 +1208,28 @@ function drawFirstPageBranding(
     }
   }
 
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(16)
-  pdf.setTextColor(...STATEMENT_COLORS.white)
-  pdf.text(activeStatementSettings.houseName || "T&N House's", brandTextX, 27)
+  drawStatementText(pdf, activeStatementSettings.houseName || "T&N House's", brandTextX, 27, {
+    fontSize: 16,
+    color: STATEMENT_COLORS.white,
+    bold: true,
+    maxWidth: pageWidth - margin * 2 - 225,
+  })
 
+  pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(8)
   pdf.setTextColor(243, 217, 143)
   pdf.text('ACCOUNT STATEMENT', brandTextX, 43)
 
-  pdf.setFontSize(8.5)
-  pdf.setTextColor(...STATEMENT_COLORS.white)
-  pdf.text(scopeLabel(scope) + ' - ' + entity.title, brandTextX, 55, {
+  drawStatementText(pdf, scopeLabel(scope) + ' - ' + entity.title, brandTextX, 55, {
+    fontSize: 8.5,
+    color: STATEMENT_COLORS.white,
+    bold: true,
     maxWidth: pageWidth - margin * 2 - 225,
   })
 
-  pdf.setFont('helvetica', 'normal')
-  pdf.setFontSize(7)
-  pdf.setTextColor(226, 232, 240)
-  pdf.text(entity.subtitle, brandTextX, 67, {
+  drawStatementText(pdf, entity.subtitle, brandTextX, 67, {
+    fontSize: 7,
+    color: [226, 232, 240],
     maxWidth: pageWidth - margin * 2 - 225,
   })
 
@@ -1089,6 +1334,7 @@ function addStatementHistoryTable(
     },
     alternateRowStyles: { fillColor: STATEMENT_COLORS.ivory },
     didDrawCell: (hookData) => {
+      drawStatementBengaliCell(pdf, hookData.cell)
       if (hookData.section === 'head' && hookData.row.index === 0) {
         const { x, y, width, height } = hookData.cell
         pdf.setDrawColor(...STATEMENT_COLORS.gold)
@@ -1120,6 +1366,20 @@ async function downloadLedgerStatementPdf(
 ): Promise<void> {
   const references = createTransactionReferenceRegistry(data)
   activeStatementSettings = (await loadWorkspaceSettings(ownerUid)).settings
+  const bengaliCandidates = [
+    activeStatementSettings.houseName,
+    activeStatementSettings.statementFooter,
+    entity.title,
+    entity.subtitle,
+    ...entries.flatMap((entry) => [entry.contextLabel, entry.description]),
+    ...data.tenants.map((tenant) => tenant.fullName),
+    ...data.properties.map((property) => property.name),
+    ...data.tenantAssignments.map((assignment) => assignment.tenantName),
+    ...data.electricityBills.map((bill) => bill.tenantName || ''),
+  ]
+  if (bengaliCandidates.some((value) => STATEMENT_BENGALI_PATTERN.test(value))) {
+    await ensureStatementBengaliFont()
+  }
   const logoDataUrl = await loadStatementLogo()
   const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
   const pageWidth = pdf.internal.pageSize.getWidth()
@@ -1230,6 +1490,7 @@ async function downloadLedgerStatementPdf(
       6: { cellWidth: 94, halign: 'right' },
     },
     didDrawCell: (hookData) => {
+      drawStatementBengaliCell(pdf, hookData.cell)
       if (hookData.section === 'head' && hookData.row.index === 0) {
         const { x, y, width, height } = hookData.cell
         pdf.setDrawColor(...STATEMENT_COLORS.gold)
@@ -1400,13 +1661,19 @@ async function downloadLedgerStatementPdf(
     pdf.text(`Page ${page} of ${totalPages}`, pageWidth - margin, pageHeight - 12, {
       align: 'right',
     })
-    pdf.text(
+    drawStatementText(
+      pdf,
       [
         'Amounts shown in BDT where applicable',
         activeStatementSettings.statementFooter.trim(),
       ].filter(Boolean).join(' · '),
       margin,
       pageHeight - 12,
+      {
+        fontSize: 7.5,
+        color: STATEMENT_COLORS.muted,
+        maxWidth: pageWidth - margin * 2 - 80,
+      },
     )
   }
 

@@ -37,6 +37,36 @@
 .electricity-info-note { margin: 0 0 15px; padding: 11px 12px; border-radius: 10px; background: var(--surface-secondary); color: var(--text-primary); font-size: 12px; line-height: 1.55; }
 .electricity-quick-form { display: grid; gap: 13px; }
 .electricity-reading-note { margin-bottom: 12px; padding: 9px 11px; font-size: 11px; }
+
+/* Month-wise reading coverage mirrors the rent-rate coverage card. */
+.electricity-reading-coverage { display: grid; gap: 11px; margin: 0 0 12px; padding: 13px; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: 11px; }
+.electricity-reading-coverage-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.electricity-reading-coverage-heading > div { display: grid; gap: 4px; min-width: 0; }
+.electricity-reading-coverage-heading > div > strong { color: var(--text); font-size: 12px; }
+.electricity-reading-coverage-heading > div > span { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.electricity-coverage-month { display: grid; gap: 4px; flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+.electricity-coverage-month input { min-width: 142px; border: 1px solid var(--border); border-radius: 8px; padding: 7px 8px; color: var(--text); background: var(--surface); font: inherit; font-size: 11px; }
+.electricity-reading-coverage-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.electricity-reading-coverage-top > div { display: grid; gap: 4px; min-width: 0; }
+.electricity-reading-coverage-top > div > strong { color: var(--text); font-size: 12px; }
+.electricity-reading-coverage-top > div > span { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.electricity-reading-coverage-count { flex: 0 0 auto; color: var(--color-success); font-size: 17px; font-variant-numeric: tabular-nums; }
+.electricity-reading-coverage-count.is-missing { color: var(--color-warning, #a66a13); }
+.electricity-reading-coverage-track { height: 7px; overflow: hidden; background: var(--border); border-radius: 999px; }
+.electricity-reading-coverage-track > span { display: block; height: 100%; background: var(--color-success); border-radius: inherit; transition: width 180ms ease; }
+.electricity-missing-reading-panel { margin: 0 0 12px; overflow: hidden; border: 1px solid #e9d8b7; border-radius: 11px; background: #fffdf8; }
+.electricity-missing-reading-panel > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 13px; cursor: pointer; list-style: none; }
+.electricity-missing-reading-panel > summary::-webkit-details-marker { display: none; }
+.electricity-missing-reading-panel > summary > span { display: grid; gap: 4px; min-width: 0; }
+.electricity-missing-reading-panel > summary strong { color: #344054; font-size: 11px; }
+.electricity-missing-reading-panel > summary small { color: #667085; font-size: 10px; line-height: 1.45; }
+.electricity-missing-reading-panel > summary > b { flex: 0 0 auto; padding: 5px 8px; border-radius: 99px; color: #8a5b0a; background: #fff0cf; font-size: 9px; }
+.electricity-missing-reading-list { display: grid; border-top: 1px solid #f0e4d0; }
+.electricity-missing-reading-item { display: block; padding: 10px 13px; border-bottom: 1px solid #f2eadc; }
+.electricity-missing-reading-item:last-child { border-bottom: 0; }
+.electricity-missing-reading-item > div { display: grid; gap: 3px; min-width: 0; }
+.electricity-missing-reading-item > div > strong { color: #344054; font-size: 11px; }
+.electricity-missing-reading-item > div > span, .electricity-missing-reading-item > div > small { color: #667085; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .electricity-reading-form { grid-template-columns: minmax(0, 1.35fr) minmax(150px, .8fr) minmax(170px, .9fr); align-items: end; gap: 12px; }
 .electricity-reading-assignment { grid-column: 1; }
 .electricity-reading-date { grid-column: 2; }
@@ -108,6 +138,9 @@
   .electricity-panel { padding: 14px; }
   .electricity-field-grid { grid-template-columns: minmax(0, 1fr); }
   .electricity-reading-form { grid-template-columns: minmax(0, 1fr); }
+  .electricity-reading-coverage-heading { display: grid; }
+  .electricity-coverage-month, .electricity-coverage-month input { width: 100%; }
+  .electricity-missing-reading-item { align-items: flex-start; }
   .electricity-reading-assignment, .electricity-reading-date, .electricity-reading-current, .electricity-reading-preview, .electricity-reading-notes, .electricity-reading-error, .electricity-reading-submit { grid-column: 1 / -1; }
   .electricity-reading-submit { width: 100%; }
   .electricity-bills-toolbar { grid-template-columns: minmax(0, 1fr); }
