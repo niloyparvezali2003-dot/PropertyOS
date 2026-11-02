@@ -1,4 +1,4 @@
-import { getCachedList } from './listCache'
+import { getCachedList, invalidateOwnerDataCache } from './listCache'
 
 import {
   collection,
@@ -9,6 +9,7 @@ import {
   runTransaction,
   serverTimestamp,
   Timestamp,
+  where,
 } from 'firebase/firestore'
 
 import { getCurrentActorUid, getFirebaseServices } from './client'
@@ -111,6 +112,34 @@ export class MeterAssignmentNotFoundError extends Error {
   constructor() {
     super('The current meter assignment was not found. Refresh and try again.')
     this.name = 'MeterAssignmentNotFoundError'
+  }
+}
+
+export class MeterAssignmentHasReadingsError extends Error {
+  constructor() {
+    super('This meter assignment already has a saved reading or bill. Room correction is locked to protect its financial history.')
+    this.name = 'MeterAssignmentHasReadingsError'
+  }
+}
+
+export class MeterCancellationHasHistoryError extends Error {
+  constructor() {
+    super('This meter assignment already has a saved reading, bill, or reading-state record. Cancellation is blocked to protect its history.')
+    this.name = 'MeterCancellationHasHistoryError'
+  }
+}
+
+export class MeterCancellationNotAllowedError extends Error {
+  constructor() {
+    super('This meter cannot be cancelled. Refresh the page and confirm that it is still assigned and has never been used.')
+    this.name = 'MeterCancellationNotAllowedError'
+  }
+}
+
+export class MeterCorrectionTargetUnavailableError extends Error {
+  constructor() {
+    super('The selected room is no longer available. Refresh the meter list and choose another room.')
+    this.name = 'MeterCorrectionTargetUnavailableError'
   }
 }
 
@@ -271,7 +300,7 @@ function validateMeterRecord(
     typeof data.notes !== 'string' ||
     typeof data.createdBy !== 'string' ||
     typeof data.updatedBy !== 'string' ||
-    !['available', 'assigned', 'retired'].includes(
+    !['available', 'assigned', 'retired', 'voided'].includes(
       String(data.status),
     )
   ) {
@@ -567,6 +596,308 @@ export async function assignMeter(
   return assignmentRef.id
 }
 
+/**
+ * Corrects a mistaken room link without replacing the physical meter.
+ * This action is intentionally limited to assignments with no readings or
+ * issued bills. The old assignment is ended and a new assignment is created
+ * with the same meter ID, original assignment date, and initial reading.
+ */
+export async function correctMeterRoomAssignment(
+  ownerUid: string,
+  meterId: string,
+  currentAssignment: MeterAssignmentRecord,
+  targetRoomId: string,
+  reason: string,
+): Promise<string> {
+  const correctionReason = reason.trim()
+  if (!ownerUid.trim() || !meterId.trim() || !targetRoomId.trim()) {
+    throw new MeterCorrectionTargetUnavailableError()
+  }
+  if (correctionReason.length < 10 || correctionReason.length > 700) {
+    throw new MeterCorrectionTargetUnavailableError()
+  }
+  if (currentAssignment.meterId !== meterId || currentAssignment.status !== 'current') {
+    throw new MeterAssignmentNotFoundError()
+  }
+  if (currentAssignment.roomId === targetRoomId) {
+    throw new MeterCorrectionTargetUnavailableError()
+  }
+
+  const { db } = getFirebaseServices()
+  const readingCollection = collection(db, 'users', ownerUid, 'electricityReadings')
+  const billCollection = collection(db, 'users', ownerUid, 'electricityBills')
+  const [readingMatches, billMatches] = await Promise.all([
+    getDocs(query(readingCollection, where('meterAssignmentId', '==', currentAssignment.id))),
+    getDocs(query(billCollection, where('meterAssignmentId', '==', currentAssignment.id))),
+  ])
+
+  if (!readingMatches.empty || !billMatches.empty) {
+    throw new MeterAssignmentHasReadingsError()
+  }
+
+  const meterRef = getMeterRef(ownerUid, meterId)
+  const oldAssignmentRef = getAssignmentRef(ownerUid, currentAssignment.id)
+  const oldRoomIndexRef = getCurrentMeterByRoomRef(ownerUid, currentAssignment.roomId)
+  const targetRoomRef = getRoomRef(ownerUid, targetRoomId)
+  const targetRoomIndexRef = getCurrentMeterByRoomRef(ownerUid, targetRoomId)
+  const meterIndexRef = getCurrentAssignmentByMeterRef(ownerUid, meterId)
+  const readingStateRef = doc(db, 'users', ownerUid, 'electricityReadingState', currentAssignment.id)
+  const newAssignmentRef = doc(collection(db, 'users', ownerUid, 'meterAssignments'))
+  const actorUid = getCurrentActorUid()
+
+  await runTransaction(db, async (transaction) => {
+    const [
+      meterSnapshot,
+      oldAssignmentSnapshot,
+      oldRoomIndexSnapshot,
+      targetRoomSnapshot,
+      targetRoomIndexSnapshot,
+      meterIndexSnapshot,
+      readingStateSnapshot,
+    ] = await Promise.all([
+      transaction.get(meterRef),
+      transaction.get(oldAssignmentRef),
+      transaction.get(oldRoomIndexRef),
+      transaction.get(targetRoomRef),
+      transaction.get(targetRoomIndexRef),
+      transaction.get(meterIndexRef),
+      transaction.get(readingStateRef),
+    ])
+
+    if (
+      !meterSnapshot.exists() ||
+      !oldAssignmentSnapshot.exists() ||
+      !oldRoomIndexSnapshot.exists() ||
+      !targetRoomSnapshot.exists() ||
+      !meterIndexSnapshot.exists()
+    ) {
+      throw new MeterAssignmentNotFoundError()
+    }
+
+    // The reading writer also reads/writes this state document in its
+    // transaction. This prevents a concurrent reading from racing a correction.
+    if (readingStateSnapshot.exists()) {
+      throw new MeterAssignmentHasReadingsError()
+    }
+
+    if (targetRoomIndexSnapshot.exists()) {
+      throw new RoomAlreadyHasMeterError()
+    }
+
+    const meterData = meterSnapshot.data()
+    const oldAssignmentData = oldAssignmentSnapshot.data()
+    const oldRoomIndex = readMeterIndex(oldRoomIndexSnapshot.data())
+    const meterIndex = readMeterIndex(meterIndexSnapshot.data())
+    const targetRoomData = targetRoomSnapshot.data()
+
+    if (
+      meterData.status !== 'assigned' ||
+      meterData.meterCode !== currentAssignment.meterCode ||
+      oldAssignmentData.status !== 'current' ||
+      oldAssignmentData.meterId !== meterId ||
+      oldAssignmentData.roomId !== currentAssignment.roomId ||
+      oldAssignmentData.meterCode !== currentAssignment.meterCode ||
+      oldAssignmentData.assignedOn !== currentAssignment.assignedOn ||
+      oldAssignmentData.initialReading !== currentAssignment.initialReading ||
+      oldRoomIndex.assignmentId !== currentAssignment.id ||
+      oldRoomIndex.meterId !== meterId ||
+      oldRoomIndex.roomId !== currentAssignment.roomId ||
+      meterIndex.assignmentId !== currentAssignment.id ||
+      meterIndex.meterId !== meterId ||
+      meterIndex.roomId !== currentAssignment.roomId
+    ) {
+      throw new MeterHistoryIntegrityError()
+    }
+
+    if (
+      targetRoomData.status === 'inactive' ||
+      typeof targetRoomData.roomCode !== 'string' ||
+      typeof targetRoomData.propertyId !== 'string' ||
+      typeof targetRoomData.propertyCode !== 'string'
+    ) {
+      throw new MeterCorrectionTargetUnavailableError()
+    }
+
+    const targetPropertySnapshot = await transaction.get(
+      getPropertyRef(ownerUid, targetRoomData.propertyId),
+    )
+    if (
+      !targetPropertySnapshot.exists() ||
+      targetPropertySnapshot.data().status !== 'active' ||
+      targetPropertySnapshot.data().propertyCode !== targetRoomData.propertyCode
+    ) {
+      throw new MeterCorrectionTargetUnavailableError()
+    }
+
+    const meterCode = ensureValidMeterCode(meterData.meterCode)
+    const endNotes = `Room assignment corrected before the first meter reading. Original room: ${currentAssignment.roomCode}; corrected room: ${targetRoomData.roomCode}. Reason: ${correctionReason}`
+
+    transaction.update(oldAssignmentRef, {
+      status: 'ended',
+      endedOn: currentAssignment.assignedOn,
+      finalReading: currentAssignment.initialReading,
+      endReason: 'other',
+      endNotes,
+      updatedAt: serverTimestamp(),
+      updatedBy: actorUid,
+    })
+
+    transaction.set(newAssignmentRef, {
+      meterId,
+      meterCode,
+      roomId: targetRoomId,
+      roomCode: targetRoomData.roomCode,
+      propertyId: targetRoomData.propertyId,
+      propertyCode: targetRoomData.propertyCode,
+      status: 'current',
+      assignedOn: currentAssignment.assignedOn,
+      initialReading: currentAssignment.initialReading,
+      endedOn: null,
+      finalReading: null,
+      endReason: null,
+      endNotes: '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: actorUid,
+      updatedBy: actorUid,
+    })
+
+    transaction.delete(oldRoomIndexRef)
+    transaction.set(targetRoomIndexRef, {
+      meterId,
+      meterCode,
+      roomId: targetRoomId,
+      assignmentId: newAssignmentRef.id,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    })
+    transaction.update(meterIndexRef, {
+      meterId,
+      meterCode,
+      roomId: targetRoomId,
+      assignmentId: newAssignmentRef.id,
+      updatedAt: serverTimestamp(),
+    })
+  })
+
+  invalidateOwnerDataCache(ownerUid)
+  return newAssignmentRef.id
+}
+
+/**
+ * Cancels a meter that was created and assigned by mistake but never physically
+ * existed. The permanent meter record is retained as `voided`; its current
+ * assignment is ended and both active indexes are removed. Readings and bills
+ * are checked before the transaction, and the reading-state document is
+ * checked inside the transaction to prevent a concurrent reading save.
+ */
+export async function cancelMistakenMeter(
+  ownerUid: string,
+  meterId: string,
+  currentAssignment: MeterAssignmentRecord,
+  reason: string,
+): Promise<void> {
+  const normalizedReason = reason.trim()
+  if (!ownerUid.trim() || !meterId.trim() || currentAssignment.meterId !== meterId || currentAssignment.status !== 'current') {
+    throw new MeterCancellationNotAllowedError()
+  }
+  if (normalizedReason.length < 10 || normalizedReason.length > 700) {
+    throw new MeterCancellationNotAllowedError()
+  }
+
+  const { db } = getFirebaseServices()
+  const readingCollection = collection(db, 'users', ownerUid, 'electricityReadings')
+  const billCollection = collection(db, 'users', ownerUid, 'electricityBills')
+  const [readingMatches, billMatches] = await Promise.all([
+    getDocs(query(readingCollection, where('meterAssignmentId', '==', currentAssignment.id))),
+    getDocs(query(billCollection, where('meterAssignmentId', '==', currentAssignment.id))),
+  ])
+  if (!readingMatches.empty || !billMatches.empty) {
+    throw new MeterCancellationHasHistoryError()
+  }
+
+  const meterRef = getMeterRef(ownerUid, meterId)
+  const assignmentRef = getAssignmentRef(ownerUid, currentAssignment.id)
+  const roomIndexRef = getCurrentMeterByRoomRef(ownerUid, currentAssignment.roomId)
+  const meterIndexRef = getCurrentAssignmentByMeterRef(ownerUid, meterId)
+  const readingStateRef = doc(db, 'users', ownerUid, 'electricityReadingState', currentAssignment.id)
+  const actorUid = getCurrentActorUid()
+  const today = new Date()
+  const cancellationDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+
+  await runTransaction(db, async (transaction) => {
+    const [
+      meterSnapshot,
+      assignmentSnapshot,
+      roomIndexSnapshot,
+      meterIndexSnapshot,
+      readingStateSnapshot,
+    ] = await Promise.all([
+      transaction.get(meterRef),
+      transaction.get(assignmentRef),
+      transaction.get(roomIndexRef),
+      transaction.get(meterIndexRef),
+      transaction.get(readingStateRef),
+    ])
+
+    if (readingStateSnapshot.exists()) {
+      throw new MeterCancellationHasHistoryError()
+    }
+    if (
+      !meterSnapshot.exists() ||
+      !assignmentSnapshot.exists() ||
+      !roomIndexSnapshot.exists() ||
+      !meterIndexSnapshot.exists()
+    ) {
+      throw new MeterCancellationNotAllowedError()
+    }
+
+    const meterData = meterSnapshot.data()
+    const assignmentData = assignmentSnapshot.data()
+    const roomIndex = readMeterIndex(roomIndexSnapshot.data())
+    const meterIndex = readMeterIndex(meterIndexSnapshot.data())
+
+    if (
+      meterData.status !== 'assigned' ||
+      meterData.meterCode !== currentAssignment.meterCode ||
+      assignmentData.status !== 'current' ||
+      assignmentData.meterId !== meterId ||
+      assignmentData.meterCode !== currentAssignment.meterCode ||
+      assignmentData.roomId !== currentAssignment.roomId ||
+      assignmentData.assignedOn !== currentAssignment.assignedOn ||
+      assignmentData.initialReading !== currentAssignment.initialReading ||
+      roomIndex.assignmentId !== currentAssignment.id ||
+      roomIndex.meterId !== meterId ||
+      roomIndex.roomId !== currentAssignment.roomId ||
+      meterIndex.assignmentId !== currentAssignment.id ||
+      meterIndex.meterId !== meterId ||
+      meterIndex.roomId !== currentAssignment.roomId
+    ) {
+      throw new MeterHistoryIntegrityError()
+    }
+
+    const endNotes = `Mistaken meter cancellation. Reason: ${normalizedReason}`
+    transaction.update(assignmentRef, {
+      status: 'ended',
+      endedOn: cancellationDate < currentAssignment.assignedOn ? currentAssignment.assignedOn : cancellationDate,
+      finalReading: currentAssignment.initialReading,
+      endReason: 'other',
+      endNotes,
+      updatedAt: serverTimestamp(),
+      updatedBy: actorUid,
+    })
+    transaction.update(meterRef, {
+      status: 'voided',
+      updatedAt: serverTimestamp(),
+      updatedBy: actorUid,
+    })
+    transaction.delete(roomIndexRef)
+    transaction.delete(meterIndexRef)
+  })
+
+  invalidateOwnerDataCache(ownerUid)
+}
+
 export async function replaceMeter(
   ownerUid: string,
   oldMeterId: string,
@@ -768,6 +1099,10 @@ export function getMeterErrorMessage(error: unknown): string {
     error instanceof RoomAlreadyHasMeterError ||
     error instanceof MeterAlreadyAssignedError ||
     error instanceof MeterAssignmentNotFoundError ||
+    error instanceof MeterAssignmentHasReadingsError ||
+    error instanceof MeterCancellationHasHistoryError ||
+    error instanceof MeterCancellationNotAllowedError ||
+    error instanceof MeterCorrectionTargetUnavailableError ||
     error instanceof MeterHistoryIntegrityError ||
     error instanceof InvalidMeterDateError ||
     error instanceof IdentifierLimitReachedError ||

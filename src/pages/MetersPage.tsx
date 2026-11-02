@@ -7,6 +7,8 @@ import {
 } from 'react'
 
 import {
+    ArrowLeftRight,
+    AlertTriangle,
     Gauge,
     LoaderCircle,
     Pencil,
@@ -22,6 +24,8 @@ import { recordAuditEvent } from '../services/firebase/audit'
 import {
     createMeter,
     assignMeter,
+    correctMeterRoomAssignment,
+    cancelMistakenMeter,
     listMeters,
     listMeterAssignments,
     replaceMeter,
@@ -39,6 +43,7 @@ import {
     type PropertyRecord,
 } from '../services/firebase/properties'
 import { compareTenantNames } from '../utils/tenantNameSort'
+import './meters-safety.css'
 import type {
     MeterFormValues,
     MeterAssignmentFormValues,
@@ -50,7 +55,7 @@ type MetersPageProps = {
     ownerUid: string
 }
 
-type DialogMode = 'create' | 'assign' | 'replace' | null
+type DialogMode = 'create' | 'assign' | 'correct' | 'cancel' | 'replace' | null
 
 function getToday(): string {
     const date = new Date()
@@ -89,6 +94,7 @@ const meterStatusLabels: Record<MeterStatus, string> = {
     available: 'Available',
     assigned: 'Assigned',
     retired: 'Retired',
+    voided: 'Cancelled',
 }
 
 const replacementReasonLabels = {
@@ -116,6 +122,13 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
     const [dialogMode, setDialogMode] = useState<DialogMode>(null)
     const [selectedMeter, setSelectedMeter] =
         useState<MeterRecord | null>(null)
+    const [selectedAssignment, setSelectedAssignment] =
+        useState<MeterAssignmentRecord | null>(null)
+    const [correctionRoomId, setCorrectionRoomId] = useState('')
+    const [processStep, setProcessStep] = useState<'details' | 'review'>('details')
+    const [processReason, setProcessReason] = useState('')
+    const [processAcknowledged, setProcessAcknowledged] = useState(false)
+    const [confirmationText, setConfirmationText] = useState('')
 
     const [meterForm, setMeterForm] =
         useState<MeterFormValues>(emptyMeterForm)
@@ -295,6 +308,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
     function openCreateDialog() {
         setSelectedMeter(null)
+        setSelectedAssignment(null)
         setMeterForm({ ...emptyMeterForm })
         setFormError('')
         setDialogMode('create')
@@ -302,6 +316,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
     function openAssignDialog(meter: MeterRecord) {
         setSelectedMeter(meter)
+        setSelectedAssignment(null)
         setAssignmentForm({
             ...emptyAssignmentForm(),
             roomId: assignableRooms[0]?.id ?? '',
@@ -312,9 +327,33 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
     function openReplaceDialog(meter: MeterRecord) {
         setSelectedMeter(meter)
+        setSelectedAssignment(null)
         setReplacementForm(emptyReplacementForm())
         setFormError('')
         setDialogMode('replace')
+    }
+
+    function openCorrectRoomDialog(meter: MeterRecord, assignment: MeterAssignmentRecord) {
+        setSelectedMeter(meter)
+        setSelectedAssignment(assignment)
+        setCorrectionRoomId(assignableRooms[0]?.id ?? '')
+        setProcessStep('details')
+        setProcessReason('')
+        setProcessAcknowledged(false)
+        setConfirmationText('')
+        setFormError('')
+        setDialogMode('correct')
+    }
+
+    function openCancelMeterDialog(meter: MeterRecord, assignment: MeterAssignmentRecord) {
+        setSelectedMeter(meter)
+        setSelectedAssignment(assignment)
+        setProcessStep('details')
+        setProcessReason('')
+        setProcessAcknowledged(false)
+        setConfirmationText('')
+        setFormError('')
+        setDialogMode('cancel')
     }
 
     function closeDialog() {
@@ -322,6 +361,12 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
         setDialogMode(null)
         setSelectedMeter(null)
+        setSelectedAssignment(null)
+        setCorrectionRoomId('')
+        setProcessStep('details')
+        setProcessReason('')
+        setProcessAcknowledged(false)
+        setConfirmationText('')
         setFormError('')
     }
 
@@ -362,6 +407,64 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                     entityLabel: `${selectedMeter.serialNumber.trim() || 'Meter'} → ${roomLabel}`,
                     summary: `Assigned meter ${selectedMeter.serialNumber.trim() || 'meter'} to ${roomLabel} from ${assignmentForm.assignedOn}.`,
                 })
+            } else if (dialogMode === 'correct' || dialogMode === 'cancel') {
+                if (!selectedMeter || !selectedAssignment) {
+                    throw new Error('The selected meter assignment is unavailable. Close this window and refresh the meter list.')
+                }
+                if (processStep === 'details') {
+                    if (processReason.trim().length < 10) {
+                        throw new Error('Enter a reason with at least 10 characters before reviewing this action.')
+                    }
+                    if (dialogMode === 'correct' && !correctionRoomId) {
+                        throw new Error('Select the correct room before reviewing this action.')
+                    }
+                    setProcessAcknowledged(false)
+                    setConfirmationText('')
+                    setProcessStep('review')
+                    return
+                }
+
+                const requiredPhrase = `${dialogMode === 'cancel' ? 'CANCEL' : 'CORRECT'} ${selectedMeter.meterCode}`
+                if (!processAcknowledged || confirmationText.trim().toUpperCase() !== requiredPhrase) {
+                    throw new Error(`Review the details, tick the confirmation box, and type ${requiredPhrase} exactly to continue.`)
+                }
+
+                if (dialogMode === 'correct') {
+                    const correctedAssignmentId = await correctMeterRoomAssignment(
+                        ownerUid,
+                        selectedMeter.id,
+                        selectedAssignment,
+                        correctionRoomId,
+                        processReason,
+                    )
+                    const targetRoom = rooms.find((room) => room.id === correctionRoomId)
+                    const oldRoom = rooms.find((room) => room.id === selectedAssignment.roomId)
+                    const targetLabel = targetRoom ? `Room ${targetRoom.roomNumber}` : 'the selected room'
+                    const oldLabel = oldRoom ? `Room ${oldRoom.roomNumber}` : selectedAssignment.roomCode
+                    await recordAuditEvent(ownerUid, {
+                        action: 'updated',
+                        entityType: 'meter_assignment',
+                        entityId: correctedAssignmentId,
+                        entityLabel: `${selectedMeter.meterCode} → ${targetLabel}`,
+                        summary: `Corrected meter ${selectedMeter.meterCode} from ${oldLabel} to ${targetLabel} before any readings or bills were saved. The same meter ID and initial reading were retained. Reason: ${processReason.trim()}`,
+                    })
+                } else {
+                    await cancelMistakenMeter(
+                        ownerUid,
+                        selectedMeter.id,
+                        selectedAssignment,
+                        processReason,
+                    )
+                    const oldRoom = rooms.find((room) => room.id === selectedAssignment.roomId)
+                    const oldLabel = oldRoom ? `Room ${oldRoom.roomNumber}` : selectedAssignment.roomCode
+                    await recordAuditEvent(ownerUid, {
+                        action: 'updated',
+                        entityType: 'meter',
+                        entityId: selectedMeter.id,
+                        entityLabel: `${selectedMeter.meterCode} cancelled`,
+                        summary: `Cancelled mistaken meter ${selectedMeter.meterCode}, previously assigned to ${oldLabel}. The meter ID and assignment history were retained, active room links were removed, and no readings or bills existed. Reason: ${processReason.trim()}`,
+                    })
+                }
             } else {
                 if (!selectedMeter) {
                     throw new Error('Select a meter before replacing it.')
@@ -383,6 +486,12 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
 
             setDialogMode(null)
             setSelectedMeter(null)
+            setSelectedAssignment(null)
+            setCorrectionRoomId('')
+            setProcessStep('details')
+            setProcessReason('')
+            setProcessAcknowledged(false)
+            setConfirmationText('')
 
             await loadData()
         } catch (error: unknown) {
@@ -463,6 +572,7 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                     <option value="available">Available</option>
                     <option value="assigned">Assigned</option>
                     <option value="retired">Retired</option>
+                    <option value="voided">Cancelled</option>
                 </select>
 
                 <span className="meters-count">
@@ -619,14 +729,32 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                                     )}
 
                                     {meter.status === 'assigned' && current && (
-                                        <button
-                                            className="button button-secondary meter-action"
-                                            type="button"
-                                            onClick={() => openReplaceDialog(meter)}
-                                        >
-                                            <RefreshCw size={15} aria-hidden="true" />
-                                            Replace meter
-                                        </button>
+                                        <>
+                                            <button
+                                                className="button button-secondary meter-action"
+                                                type="button"
+                                                onClick={() => openCorrectRoomDialog(meter, current)}
+                                            >
+                                                <ArrowLeftRight size={15} aria-hidden="true" />
+                                                
+                                            </button>
+                                            <button
+                                                className="button button-secondary meter-action text-danger"
+                                                type="button"
+                                                onClick={() => openCancelMeterDialog(meter, current)}
+                                            >
+                                                <AlertTriangle size={15} aria-hidden="true" />
+                                                
+                                            </button>
+                                            <button
+                                                className="button button-secondary meter-action"
+                                                type="button"
+                                                onClick={() => openReplaceDialog(meter)}
+                                            >
+                                                <RefreshCw size={15} aria-hidden="true" />
+                                                
+                                            </button>
+                                        </>
                                     )}
                                 </div>
                             </article>
@@ -651,7 +779,11 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                                         ? 'Register meter'
                                         : dialogMode === 'assign'
                                             ? `Assign ${selectedMeter?.serialNumber || 'meter'}`
-                                            : `Replace ${selectedMeter?.serialNumber || 'meter'}`}
+                                            : dialogMode === 'correct'
+                                                ? `Correct ${selectedMeter?.meterCode || 'meter'} room`
+                                                : dialogMode === 'cancel'
+                                                    ? `Cancel ${selectedMeter?.meterCode || 'meter'}`
+                                                    : `Replace ${selectedMeter?.serialNumber || 'meter'}`}
                                 </h2>
                             </div>
 
@@ -775,6 +907,152 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                                                         : Number(event.target.value),
                                                 )
                                             }
+                                            required
+                                            disabled={isSaving}
+                                        />
+                                    </div>
+                                </>
+                            )}
+
+                            {dialogMode === 'correct' && processStep === 'details' && (
+                                <>
+                                    <div className="property-id-note">
+                                        <strong>Step 1 of 2 · Prepare correction</strong>
+                                        <br />
+                                        Meter ID: {selectedMeter?.meterCode}
+                                        <br />
+                                        Currently assigned: Room {roomById.get(selectedAssignment?.roomId ?? '')?.roomNumber ?? selectedAssignment?.roomCode ?? 'Unknown'}
+                                        <br />
+                                        This does not replace the physical meter. The old room assignment will remain in history, and the same meter ID, assignment date, and initial reading will be retained.
+                                        <br />
+                                        This action is locked if any reading, bill, or reading-state record exists.
+                                    </div>
+
+                                    <div className="property-form-field">
+                                        <label htmlFor="meter-correct-room">
+                                            Correct room <span aria-hidden="true">*</span>
+                                        </label>
+                                        <select
+                                            id="meter-correct-room"
+                                            value={correctionRoomId}
+                                            onChange={(event) => setCorrectionRoomId(event.target.value)}
+                                            required
+                                            disabled={isSaving}
+                                        >
+                                            <option value="" disabled>Select the correct room</option>
+                                            {assignableRooms.map((room) => {
+                                                const property = propertyById.get(room.propertyId)
+                                                const tenantAssignment = currentTenantAssignmentByRoom.get(room.id)
+                                                const tenantName = tenantAssignment?.tenantName?.trim() || 'No current tenant'
+                                                return (
+                                                    <option key={room.id} value={room.id}>
+                                                        {tenantName} - Room {room.roomNumber} - {room.floorName} - {property?.name ?? room.propertyCode}
+                                                    </option>
+                                                )
+                                            })}
+                                        </select>
+                                        {assignableRooms.length === 0 && (
+                                            <small className="field-hint">
+                                                No other eligible room is available. A room can have only one current meter.
+                                            </small>
+                                        )}
+                                    </div>
+
+                                    <div className="property-form-field">
+                                        <label htmlFor="meter-correction-reason">Why is this assignment incorrect? *</label>
+                                        <textarea
+                                            id="meter-correction-reason"
+                                            value={processReason}
+                                            onChange={(event) => setProcessReason(event.target.value)}
+                                            minLength={10}
+                                            maxLength={700}
+                                            rows={3}
+                                            placeholder="Example: The meter was linked to Room 302 by mistake. It belongs to Room 303."
+                                            required
+                                            disabled={isSaving}
+                                        />
+                                    </div>
+                                </>
+                            )}
+
+                            {dialogMode === 'cancel' && processStep === 'details' && (
+                                <>
+                                    <div className="property-id-note">
+                                        <strong>Step 1 of 2 · Request cancellation</strong>
+                                        <br />
+                                        Meter ID: {selectedMeter?.meterCode}
+                                        <br />
+                                        Currently assigned: Room {roomById.get(selectedAssignment?.roomId ?? '')?.roomNumber ?? selectedAssignment?.roomCode ?? 'Unknown'}
+                                        <br />
+                                        Use this only when the meter was created by mistake and the physical meter never existed. The room will be freed, but the permanent meter ID and history will remain as Cancelled.
+                                        <br />
+                                        Cancellation is blocked when a reading, bill, or reading-state record exists.
+                                    </div>
+                                    <div className="property-form-field">
+                                        <label htmlFor="meter-cancellation-reason">Why was this meter created by mistake? *</label>
+                                        <textarea
+                                            id="meter-cancellation-reason"
+                                            value={processReason}
+                                            onChange={(event) => setProcessReason(event.target.value)}
+                                            minLength={10}
+                                            maxLength={700}
+                                            rows={3}
+                                            placeholder="Example: M0008 was created accidentally. No physical meter was installed or used."
+                                            required
+                                            disabled={isSaving}
+                                        />
+                                    </div>
+                                </>
+                            )}
+
+                            {(dialogMode === 'correct' || dialogMode === 'cancel') && processStep === 'review' && (
+                                <>
+                                    <div className="property-id-note">
+                                        <strong>Step 2 of 2 · Final review</strong>
+                                        <br />
+                                        Meter: {selectedMeter?.meterCode}
+                                        <br />
+                                        {dialogMode === 'correct' ? (
+                                            <>
+                                                From: Room {roomById.get(selectedAssignment?.roomId ?? '')?.roomNumber ?? selectedAssignment?.roomCode ?? 'Unknown'}
+                                                <br />
+                                                To: Room {rooms.find((room) => room.id === correctionRoomId)?.roomNumber ?? 'Selected room'}
+                                                <br />
+                                                The old assignment will be ended, and a new assignment will be created using the same meter ID and initial reading.
+                                            </>
+                                        ) : (
+                                            <>
+                                                Current room: Room {roomById.get(selectedAssignment?.roomId ?? '')?.roomNumber ?? selectedAssignment?.roomCode ?? 'Unknown'}
+                                                <br />
+                                                The assignment will be ended, the room will be freed, and the meter will be permanently marked Cancelled. The meter ID and history will not be deleted.
+                                            </>
+                                        )}
+                                        <br />
+                                        <strong>Reason:</strong> {processReason.trim()}
+                                    </div>
+
+                                    <label className="meter-process-check">
+                                        <input
+                                            type="checkbox"
+                                            checked={processAcknowledged}
+                                            onChange={(event) => setProcessAcknowledged(event.target.checked)}
+                                            disabled={isSaving}
+                                        />
+                                        <span>{dialogMode === 'correct'
+                                            ? 'I checked the old room and the new room. I understand this creates a permanent assignment-history entry.'
+                                            : 'I confirm this meter was created by mistake, never physically existed, and has no saved readings or bills.'}</span>
+                                    </label>
+
+                                    <div className="property-form-field">
+                                        <label htmlFor="meter-process-confirmation">
+                                            Type <strong>{dialogMode === 'cancel' ? 'CANCEL' : 'CORRECT'} {selectedMeter?.meterCode}</strong> to confirm.
+                                        </label>
+                                        <input
+                                            id="meter-process-confirmation"
+                                            value={confirmationText}
+                                            onChange={(event) => setConfirmationText(event.target.value)}
+                                            placeholder={`${dialogMode === 'cancel' ? 'CANCEL' : 'CORRECT'} ${selectedMeter?.meterCode ?? ''}`}
+                                            autoComplete="off"
                                             required
                                             disabled={isSaving}
                                         />
@@ -925,6 +1203,21 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                             )}
 
                             <div className="property-form-actions">
+                                {(dialogMode === 'correct' || dialogMode === 'cancel') && processStep === 'review' && (
+                                    <button
+                                        className="button button-secondary"
+                                        type="button"
+                                        onClick={() => {
+                                            setProcessStep('details')
+                                            setProcessAcknowledged(false)
+                                            setConfirmationText('')
+                                            setFormError('')
+                                        }}
+                                        disabled={isSaving}
+                                    >
+                                        Back to details
+                                    </button>
+                                )}
                                 <button
                                     className="button button-secondary"
                                     type="button"
@@ -940,7 +1233,11 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                                     disabled={
                                         isSaving ||
                                         (dialogMode === 'assign' &&
-                                            assignableRooms.length === 0)
+                                            assignableRooms.length === 0) ||
+                                        (dialogMode === 'correct' && processStep === 'details' &&
+                                            (!correctionRoomId || assignableRooms.length === 0)) ||
+                                        ((dialogMode === 'correct' || dialogMode === 'cancel') && processStep === 'review' &&
+                                            (!processAcknowledged || confirmationText.trim().toUpperCase() !== `${dialogMode === 'cancel' ? 'CANCEL' : 'CORRECT'} ${selectedMeter?.meterCode ?? ''}`))
                                     }
                                 >
                                     {isSaving ? (
@@ -951,6 +1248,10 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                                         />
                                     ) : dialogMode === 'replace' ? (
                                         <RefreshCw size={17} aria-hidden="true" />
+                                    ) : dialogMode === 'correct' ? (
+                                        <ArrowLeftRight size={17} aria-hidden="true" />
+                                    ) : dialogMode === 'cancel' ? (
+                                        <AlertTriangle size={17} aria-hidden="true" />
                                     ) : (
                                         <Plus size={17} aria-hidden="true" />
                                     )}
@@ -961,7 +1262,11 @@ export function MetersPage({ ownerUid }: MetersPageProps) {
                                             ? 'Register meter'
                                             : dialogMode === 'assign'
                                                 ? 'Assign meter'
-                                                : 'Confirm replacement'}
+                                                : dialogMode === 'correct'
+                                                    ? processStep === 'details' ? 'Review correction' : 'Confirm room correction'
+                                                    : dialogMode === 'cancel'
+                                                        ? processStep === 'details' ? 'Review cancellation' : 'Confirm meter cancellation'
+                                                        : 'Confirm replacement'}
                                 </button>
                             </div>
                         </form>

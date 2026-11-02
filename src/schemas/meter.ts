@@ -4,6 +4,7 @@ export const meterStatusSchema = z.enum([
   'available',
   'assigned',
   'retired',
+  'voided',
 ])
 
 export const meterAssignmentStatusSchema = z.enum([

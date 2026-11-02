@@ -400,7 +400,7 @@ service cloud.firestore {
         && data.serialNumber.size() <= 80
         && data.notes is string
         && data.notes.size() <= 1000
-        && data.status in ['available', 'assigned', 'retired']
+        && data.status in ['available', 'assigned', 'retired', 'voided']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
         && data.createdBy is string && data.createdBy.size() > 0
@@ -679,6 +679,34 @@ service cloud.firestore {
         );
     }
 
+    // A mistaken meter may be voided only when its current assignment is
+    // ended and both active indexes are removed in the same atomic operation.
+    function validMeterCancellationAfter(userId, meterId) {
+      let meterIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(meterId);
+      let oldRoomId = get(meterIndexPath).data.roomId;
+      let assignmentId = get(meterIndexPath).data.assignmentId;
+      let assignmentPath =
+        /databases/$(database)/documents/users/$(userId)/meterAssignments/$(assignmentId);
+      let roomIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(oldRoomId);
+      let readingStatePath =
+        /databases/$(database)/documents/users/$(userId)/electricityReadingState/$(assignmentId);
+
+      return exists(meterIndexPath)
+        && get(meterIndexPath).data.meterId == meterId
+        && exists(roomIndexPath)
+        && get(roomIndexPath).data.meterId == meterId
+        && get(roomIndexPath).data.assignmentId == assignmentId
+        && !existsAfter(meterIndexPath)
+        && existsAfter(assignmentPath)
+        && getAfter(assignmentPath).data.status == 'ended'
+        && getAfter(assignmentPath).data.meterId == meterId
+        && getAfter(assignmentPath).data.roomId == oldRoomId
+        && !exists(readingStatePath)
+        && !existsAfter(roomIndexPath);
+    }
+
     function validMeterUnassignmentAfter(userId, data) {
       let indexPath =
         /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(data.meterId);
@@ -700,6 +728,47 @@ service cloud.firestore {
             /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(data.roomId)
           ).data.meterId != data.meterId
         );
+    }
+
+    // A room correction keeps the same physical meter assigned, but moves its
+    // current pointer to a new room/assignment. The old assignment is retained
+    // as an ended history record and the previous room index is removed.
+    function validMeterRoomCorrectionAfter(userId, assignmentId, meterId, oldRoomId) {
+      let meterIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentAssignmentByMeter/$(meterId);
+      let oldAssignmentPath =
+        /databases/$(database)/documents/users/$(userId)/meterAssignments/$(assignmentId);
+      let oldRoomIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(oldRoomId);
+      let newAssignmentId = getAfter(meterIndexPath).data.assignmentId;
+      let newRoomId = getAfter(meterIndexPath).data.roomId;
+      let newAssignmentPath =
+        /databases/$(database)/documents/users/$(userId)/meterAssignments/$(newAssignmentId);
+      let newRoomIndexPath =
+        /databases/$(database)/documents/users/$(userId)/currentMeterByRoom/$(newRoomId);
+
+      return exists(meterIndexPath)
+        && get(meterIndexPath).data.assignmentId == assignmentId
+        && existsAfter(meterIndexPath)
+        && newAssignmentId is string
+        && newAssignmentId != assignmentId
+        && newRoomId is string
+        && newRoomId != oldRoomId
+        && existsAfter(oldAssignmentPath)
+        && getAfter(oldAssignmentPath).data.status == 'ended'
+        && getAfter(oldAssignmentPath).data.meterId == meterId
+        && getAfter(oldAssignmentPath).data.roomId == oldRoomId
+        && existsAfter(newAssignmentPath)
+        && getAfter(newAssignmentPath).data.status == 'current'
+        && getAfter(newAssignmentPath).data.meterId == meterId
+        && getAfter(newAssignmentPath).data.roomId == newRoomId
+        && getAfter(newAssignmentPath).data.assignedOn == get(oldAssignmentPath).data.assignedOn
+        && getAfter(newAssignmentPath).data.initialReading == get(oldAssignmentPath).data.initialReading
+        && !existsAfter(oldRoomIndexPath)
+        && existsAfter(newRoomIndexPath)
+        && getAfter(newRoomIndexPath).data.meterId == meterId
+        && getAfter(newRoomIndexPath).data.assignmentId == newAssignmentId
+        && getAfter(newRoomIndexPath).data.roomId == newRoomId;
     }
 
     // ==================================================
@@ -1343,6 +1412,11 @@ service cloud.firestore {
             && request.resource.data.status == 'retired'
             && validMeterRetirementAfter(userId, meterId)
           )
+          || (
+            resource.data.status == 'assigned'
+            && request.resource.data.status == 'voided'
+            && validMeterCancellationAfter(userId, meterId)
+          )
         );
 
       allow delete: if false;
@@ -1382,9 +1456,14 @@ service cloud.firestore {
         && request.resource.data.initialReading == resource.data.initialReading
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.createdBy == resource.data.createdBy
-        && validMeterUnassignmentAfter(
-          userId,
-          request.resource.data
+        && (
+          validMeterUnassignmentAfter(userId, request.resource.data)
+          || validMeterRoomCorrectionAfter(
+            userId,
+            assignmentId,
+            resource.data.meterId,
+            resource.data.roomId
+          )
         );
 
       allow delete: if false;
@@ -1421,8 +1500,19 @@ service cloud.firestore {
           request.resource.data.roomId
         );
 
-      // Keep the current assignment index consistent.
-      allow delete: if false;
+      // A room index may be removed only as part of a validated room
+      // correction or an unassignment/cancellation.
+      allow delete: if isOwner(userId)
+        && resource.data.roomId == roomId
+        && (
+          validMeterUnassignmentAfter(userId, resource.data)
+          || validMeterRoomCorrectionAfter(
+            userId,
+            resource.data.assignmentId,
+            resource.data.meterId,
+            roomId
+          )
+        );
     }
 
     // ==================================================
@@ -1987,9 +2077,8 @@ service cloud.firestore {
     // 26. ELECTRICITY METER READING HISTORY
     // ==================================================
 
-    // A reading may carry an immutable snapshot of the tenant assigned to
-    // the room when the bill was issued. Keep the six snapshot fields
-    // optional for legacy/unoccupied-room records, but require them together.
+    // Optional tenant-at-issue snapshot. Either all six fields are absent
+    // (legacy/unoccupied room) or all six are present and validated.
     function validElectricityTenantSnapshot(data) {
       let hasAssignmentId = 'tenantAssignmentId' in data;
       let hasTenantId = 'tenantId' in data;

@@ -2179,6 +2179,15 @@ input:focus-visible {
   padding-top: 18px;
 }
 
+.meter-card-footer .meter-history-label {
+  margin-right: auto;
+  white-space: nowrap;
+}
+
+.meter-card-footer .meter-action {
+  flex-shrink: 0;
+}
+
 .meter-history-label {
   min-width: 0;
   color: var(--text-tertiary);
