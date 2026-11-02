@@ -1,6 +1,8 @@
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
+type AutoTableOptions = Parameters<typeof autoTable>[1]
+
 export type MonthlyBillReportRow = {
   tenantName: string
   roomNumber: string
@@ -330,7 +332,7 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
   const tableHead = isElectricityReport
     ? [['#', 'Tenant name', 'Previous reading', 'Current reading', 'Units usage', amountHeading]]
     : [['#', 'Tenant name', 'Room number', 'Property', amountHeading]]
-  const columnStyles = isElectricityReport
+  const columnStyles: NonNullable<AutoTableOptions['columnStyles']> = isElectricityReport
     ? {
         0: { cellWidth: 25, halign: 'center' as const },
         1: { cellWidth: 142 },
