@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from 'react'
@@ -9,6 +10,7 @@ import {
   Activity,
   CheckCircle2,
   CircleDollarSign,
+  ChevronDown,
   Download,
   FileText,
   Gauge,
@@ -121,9 +123,11 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
   const [pageError, setPageError] = useState('')
   const [pageSuccess, setPageSuccess] = useState('')
   const [isRateFormOpen, setIsRateFormOpen] = useState(false)
+  const [isRateHistoryOpen, setIsRateHistoryOpen] = useState(false)
   const [isReadingFormOpen, setIsReadingFormOpen] = useState(false)
   const [rateForm, setRateForm] = useState<RateFormState>(emptyRateForm())
   const [readingForm, setReadingForm] = useState<ReadingFormState>(emptyReadingForm())
+  const readingFormRef = useRef<HTMLFormElement | null>(null)
   const [rateFormError, setRateFormError] = useState('')
   const [readingFormError, setReadingFormError] = useState('')
   const [isSavingRate, setIsSavingRate] = useState(false)
@@ -395,6 +399,27 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
     }
   }
 
+  function handleRecordMissingMeter(assignmentId: string) {
+    const selectedMonthEnd = getMonthEndDate(readingCoverageMonth)
+    const readingDate = selectedMonthEnd > todayIso() ? todayIso() : selectedMonthEnd
+
+    setReadingForm({
+      meterAssignmentId: assignmentId,
+      readingDate,
+      currentReading: '',
+      notes: '',
+    })
+    setReadingFormError('')
+    setPageError('')
+    setPageSuccess('')
+
+    // Bring the existing reading form into view with this exact meter selected.
+    window.setTimeout(() => {
+      readingFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      document.getElementById('electricity-current-reading')?.focus({ preventScroll: true })
+    }, 50)
+  }
+
   async function handleReadingSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setReadingFormError('')
@@ -545,10 +570,20 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
                 <div className="electricity-missing-reading-list">
                   {readingCoverage.missingAssignments.map(({ assignment, tenantLabel, roomLabel, propertyLabel }) => (
                     <article className="electricity-missing-reading-item" key={assignment.id}>
-                      <div>
+                      <div className="electricity-missing-reading-details">
                         <strong>{tenantLabel} | Room {roomLabel}</strong>
                         <span>{propertyLabel}</span>
+                        <small>{assignment.meterCode}</small>
                       </div>
+                      <button
+                        className="button button-primary electricity-missing-reading-action"
+                        type="button"
+                        onClick={() => handleRecordMissingMeter(assignment.id)}
+                        disabled={isSavingReading}
+                      >
+                        <Gauge size={14} aria-hidden="true" />
+                        Record reading
+                      </button>
                     </article>
                   ))}
                 </div>
@@ -556,7 +591,7 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
             )}
 
             <div className="electricity-info-note electricity-reading-note">Readings must be entered in date order and each new reading must be higher than the previous one. Every saved reading creates its own bill.</div>
-            {currentAssignments.length === 0 ? <div className="electricity-empty-inline"><Gauge size={24} /><strong>No current meter assignments</strong><p>Assign an available meter to a room in the Meters module before recording readings.</p></div> : <form className="electricity-quick-form electricity-reading-form" onSubmit={handleReadingSubmit}>
+            {currentAssignments.length === 0 ? <div className="electricity-empty-inline"><Gauge size={24} /><strong>No current meter assignments</strong><p>Assign an available meter to a room in the Meters module before recording readings.</p></div> : <form ref={readingFormRef} className="electricity-quick-form electricity-reading-form" onSubmit={handleReadingSubmit}>
               <div className="electricity-field electricity-reading-assignment"><label htmlFor="electricity-assignment">Current meter assignment <span>*</span></label><select id="electricity-assignment" value={readingForm.meterAssignmentId} onChange={(event) => setReadingForm((current) => ({ ...current, meterAssignmentId: event.target.value }))} required><option value="">Select tenant, room and property</option>{currentAssignments.map((assignment) => <option value={assignment.id} key={assignment.id}>{readAssignmentLabel(assignment)}</option>)}</select></div>
               <div className="electricity-field electricity-reading-date"><label htmlFor="electricity-reading-date">Reading date <span>*</span></label><input id="electricity-reading-date" type="date" value={readingForm.readingDate} onChange={(event) => setReadingForm((current) => ({ ...current, readingDate: event.target.value }))} required /></div>
               <div className="electricity-field electricity-reading-current"><label htmlFor="electricity-current-reading">Current meter reading <span>*</span></label><input id="electricity-current-reading" type="number" inputMode="decimal" min={selectedPreviousReading + 0.000001} max="1000000000" step="any" placeholder="e.g. 1250.5" value={readingForm.currentReading} onChange={(event) => setReadingForm((current) => ({ ...current, currentReading: event.target.value }))} required /></div>
@@ -567,25 +602,44 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
             </form>}
           </section>
 
-          <section className="electricity-panel electricity-rate-history-panel">
-            <div className="electricity-panel-heading"><div><h2>Electricity rate history</h2><p>Room-specific rates override the workspace default for that room. All other rooms use the workspace default rate.</p></div><span className="electricity-panel-icon"><CircleDollarSign size={20} /></span></div>
-            {visibleRates.length === 0 ? <div className="electricity-empty-inline"><Zap size={24} /><strong>No electricity rate history yet</strong><p>Set the workspace default rate in Settings, or add a custom rate for an individual room.</p><button className="button button-primary" type="button" onClick={() => setIsRateFormOpen(true)}><Plus size={16} /> Add room rate</button></div> : <div className="electricity-rate-list">{visibleRates.map((rate) => {
-              const room = rate.roomId ? roomById.get(rate.roomId) : undefined
-              const tenantAssignment = rate.roomId ? currentTenantByRoomId.get(rate.roomId) : undefined
-              const roomNumber = room?.roomNumber || tenantAssignment?.roomNumber || rate.roomCode || 'Unknown'
-              const tenantName = tenantAssignment?.tenantName?.trim() || 'No current tenant'
-              const roomCode = room?.roomCode || rate.roomCode
+          <section className="electricity-rate-history-panel">
+            <button
+              className="electricity-rate-history-toggle"
+              type="button"
+              aria-expanded={isRateHistoryOpen}
+              aria-controls="electricity-rate-history-content"
+              onClick={() => setIsRateHistoryOpen((open) => !open)}
+            >
+              <span className="electricity-rate-history-toggle-icon"><CircleDollarSign size={19} /></span>
+              <span className="electricity-rate-history-toggle-copy">
+                <strong>Electricity rate history</strong>
+                <small>View workspace and room-specific rate changes</small>
+              </span>
+              <span className="electricity-rate-history-toggle-count">{visibleRates.length} {visibleRates.length === 1 ? 'record' : 'records'}</span>
+              <ChevronDown className={isRateHistoryOpen ? 'electricity-rate-history-chevron is-open' : 'electricity-rate-history-chevron'} size={19} />
+            </button>
 
-              return <article className="electricity-rate-card" key={rate.id}>
-                <div>
-                  <strong>{rate.roomId ? `Room ${roomNumber}` : 'Workspace default rate'}</strong>
-                  <span>{rate.roomId ? tenantName : 'Applies to all rooms without a custom room-specific rate'}</span>
-                  <small>{rate.roomId && roomCode ? `${roomCode} · ` : ''}Effective {formatDate(rate.effectiveFrom)}</small>
-                  {rate.notes && <small className="electricity-rate-notes">{rate.notes}</small>}
-                </div>
-                <b>{formatTaka(rate.pricePerUnitMinor)} <small>/ unit</small></b>
-              </article>
-            })}</div>}
+            {isRateHistoryOpen && (
+              <div className="electricity-rate-history-content" id="electricity-rate-history-content">
+                {visibleRates.length === 0 ? <div className="electricity-empty-inline"><Zap size={24} /><strong>No electricity rate history yet</strong><p>Set the workspace default rate in Settings, or add a custom rate for an individual room.</p><button className="button button-primary" type="button" onClick={() => setIsRateFormOpen(true)}><Plus size={16} /> Add room rate</button></div> : <div className="electricity-rate-list">{visibleRates.map((rate) => {
+                  const room = rate.roomId ? roomById.get(rate.roomId) : undefined
+                  const tenantAssignment = rate.roomId ? currentTenantByRoomId.get(rate.roomId) : undefined
+                  const roomNumber = room?.roomNumber || tenantAssignment?.roomNumber || rate.roomCode || 'Unknown'
+                  const tenantName = tenantAssignment?.tenantName?.trim() || 'No current tenant'
+                  const roomCode = room?.roomCode || rate.roomCode
+
+                  return <article className="electricity-rate-card" key={rate.id}>
+                    <div>
+                      <strong>{rate.roomId ? `Room ${roomNumber}` : 'Workspace default rate'}</strong>
+                      <span>{rate.roomId ? tenantName : 'Applies to all rooms without a custom room-specific rate'}</span>
+                      <small>{rate.roomId && roomCode ? `${roomCode} · ` : ''}Effective {formatDate(rate.effectiveFrom)}</small>
+                      {rate.notes && <small className="electricity-rate-notes">{rate.notes}</small>}
+                    </div>
+                    <b>{formatTaka(rate.pricePerUnitMinor)} <small>/ unit</small></b>
+                  </article>
+                })}</div>}
+              </div>
+            )}
           </section>
         </div>
       )}

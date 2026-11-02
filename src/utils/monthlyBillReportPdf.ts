@@ -6,6 +6,10 @@ export type MonthlyBillReportRow = {
   roomNumber: string
   propertyName: string
   amountMinor: number
+  /** Immutable meter-assignment reading snapshots. Required for electricity reports. */
+  previousReading?: number
+  currentReading?: number
+  unitsConsumed?: number
 }
 
 export type MonthlyBillReportKind = 'rent' | 'electricity'
@@ -56,6 +60,12 @@ function formatMoney(amountMinor: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(amountMinor / 100)}`
+}
+
+function formatReading(value: number): string {
+  return new Intl.NumberFormat('en-BD', {
+    maximumFractionDigits: 3,
+  }).format(value)
 }
 
 function formatMonth(month: string): string {
@@ -242,6 +252,15 @@ function drawPageFooter(pdf: jsPDF, pageWidth: number, pageHeight: number): void
 
 export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOptions): Promise<void> {
   if (options.rows.length === 0) throw new Error(`No issued ${options.kind} bills exist for ${formatMonth(options.billingMonth)}.`)
+  if (options.kind === 'electricity' && options.rows.some((row) =>
+    !Number.isFinite(row.previousReading) ||
+    !Number.isFinite(row.currentReading) ||
+    !Number.isFinite(row.unitsConsumed) ||
+    (row.currentReading as number) < (row.previousReading as number) ||
+    Math.abs((row.unitsConsumed as number) - ((row.currentReading as number) - (row.previousReading as number))) >= 0.000001,
+  )) {
+    throw new Error('An issued electricity bill is missing valid meter-reading snapshots. The report was not generated to avoid showing incorrect usage.')
+  }
 
   const hasBengali = BENGALI_PATTERN.test(options.houseName) || options.rows.some((row) =>
     BENGALI_PATTERN.test(row.tenantName) || BENGALI_PATTERN.test(row.propertyName),
@@ -290,16 +309,46 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
   pdf.setTextColor(...COLORS.muted)
   pdf.text(`Generated: ${formatGeneratedAt()}`, pageWidth - margin, 105, { align: 'right' })
 
-  const tableRows = rows.map((row, index) => [
-    String(index + 1),
-    row.tenantName || 'Unassigned',
-    `Room ${row.roomNumber}`,
-    row.propertyName,
-    formatMoney(row.amountMinor),
-  ])
+  const isElectricityReport = options.kind === 'electricity'
+  const tableRows = rows.map((row, index) => isElectricityReport
+    ? [
+        String(index + 1),
+        row.tenantName || 'Unassigned',
+        formatReading(row.previousReading as number),
+        formatReading(row.currentReading as number),
+        formatReading(row.unitsConsumed as number),
+        formatMoney(row.amountMinor),
+      ]
+    : [
+        String(index + 1),
+        row.tenantName || 'Unassigned',
+        `Room ${row.roomNumber}`,
+        row.propertyName,
+        formatMoney(row.amountMinor),
+      ],
+  )
+  const tableHead = isElectricityReport
+    ? [['#', 'Tenant name', 'Previous reading', 'Current reading', 'Units usage', amountHeading]]
+    : [['#', 'Tenant name', 'Room number', 'Property', amountHeading]]
+  const columnStyles = isElectricityReport
+    ? {
+        0: { cellWidth: 25, halign: 'center' as const },
+        1: { cellWidth: 142 },
+        2: { cellWidth: 76, halign: 'right' as const },
+        3: { cellWidth: 76, halign: 'right' as const },
+        4: { cellWidth: 72, halign: 'right' as const },
+        5: { cellWidth: 'auto' as const, halign: 'right' as const, fontStyle: 'bold' as const },
+      }
+    : {
+        0: { cellWidth: 25, halign: 'center' as const },
+        1: { cellWidth: 165 },
+        2: { cellWidth: 95 },
+        3: { cellWidth: 115 },
+        4: { cellWidth: 'auto' as const, halign: 'right' as const, fontStyle: 'bold' as const },
+      }
 
   autoTable(pdf, {
-    head: [['#', 'Tenant name', 'Room number', 'Property', amountHeading]],
+    head: tableHead,
     body: tableRows,
     startY: 119,
     margin: { top: 32, bottom: 48, left: margin, right: margin },
@@ -321,13 +370,7 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
       minCellHeight: 29,
     },
     alternateRowStyles: { fillColor: COLORS.ivory },
-    columnStyles: {
-      0: { cellWidth: 25, halign: 'center' },
-      1: { cellWidth: 165 },
-      2: { cellWidth: 95 },
-      3: { cellWidth: 115 },
-      4: { cellWidth: 'auto', halign: 'right', fontStyle: 'bold' },
-    },
+    columnStyles,
     didDrawCell: (hookData) => {
       drawBengaliCell(pdf, hookData.cell as unknown as BengaliCell)
     },
