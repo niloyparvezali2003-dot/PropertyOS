@@ -1,17 +1,14 @@
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
-type AutoTableOptions = Parameters<typeof autoTable>[1]
-
 export type MonthlyBillReportRow = {
   tenantName: string
   roomNumber: string
   propertyName: string
   amountMinor: number
-  /** Immutable meter-assignment reading snapshots. Required for electricity reports. */
-  previousReading?: number
-  currentReading?: number
-  unitsConsumed?: number
+  /** Immutable meter-reading snapshots saved on the issued electricity bill. */
+  previousReading: number
+  currentReading: number
 }
 
 export type MonthlyBillReportKind = 'rent' | 'electricity'
@@ -65,9 +62,7 @@ function formatMoney(amountMinor: number): string {
 }
 
 function formatReading(value: number): string {
-  return new Intl.NumberFormat('en-BD', {
-    maximumFractionDigits: 3,
-  }).format(value)
+  return new Intl.NumberFormat('en-BD', { maximumFractionDigits: 3 }).format(value)
 }
 
 function formatMonth(month: string): string {
@@ -123,6 +118,73 @@ function normalizeColor(value: unknown, fallback: PdfRgb): PdfRgb {
   return fallback
 }
 
+function splitBengaliWordToFit(
+  context: CanvasRenderingContext2D,
+  word: string,
+  maxWidthPx: number,
+): string[] {
+  // Intl.Segmenter keeps Bengali grapheme clusters (including কার, ফলা and যুক্তাক্ষর)
+  // together when a single unbroken word must wrap across table lines.
+  const segmenter = new Intl.Segmenter('bn', { granularity: 'grapheme' })
+  const graphemes = Array.from(segmenter.segment(word), (item) => item.segment)
+  const chunks: string[] = []
+  let chunk = ''
+
+  for (const grapheme of graphemes) {
+    const candidate = chunk + grapheme
+    if (chunk && context.measureText(candidate).width > maxWidthPx) {
+      chunks.push(chunk)
+      chunk = grapheme
+    } else {
+      chunk = candidate
+    }
+  }
+
+  if (chunk) chunks.push(chunk)
+  return chunks.length > 0 ? chunks : [word]
+}
+
+function wrapCanvasText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidthPx: number,
+): string[] {
+  const lines: string[] = []
+  const paragraphs = text.replace(/\r/g, '').split('\n')
+
+  for (const paragraph of paragraphs) {
+    const words = paragraph.trim().split(/\s+/).filter(Boolean)
+    let line = ''
+
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word
+      if (context.measureText(candidate).width <= maxWidthPx) {
+        line = candidate
+        continue
+      }
+
+      if (line) {
+        lines.push(line)
+        line = ''
+      }
+
+      if (context.measureText(word).width <= maxWidthPx) {
+        line = word
+        continue
+      }
+
+      const chunks = splitBengaliWordToFit(context, word, maxWidthPx)
+      lines.push(...chunks.slice(0, -1))
+      line = chunks[chunks.length - 1] ?? ''
+    }
+
+    if (line) lines.push(line)
+    else if (words.length === 0) lines.push('')
+  }
+
+  return lines.length > 0 ? lines : ['']
+}
+
 function renderBengaliText(
   text: string,
   fontSizePt: number,
@@ -132,9 +194,24 @@ function renderBengaliText(
   maxHeightPt: number,
 ): { dataUrl: string; widthPt: number; heightPt: number } {
   const pixelsPerPoint = (96 / 72) * IMAGE_SCALE
-  let fontSizePx = fontSizePt * pixelsPerPoint
+  const safeMaxWidthPx = Math.max(2, maxWidthPt * pixelsPerPoint)
+  const safeMaxHeightPx = Math.max(2, maxHeightPt * pixelsPerPoint)
+  let fontSizePx = Math.max(2, fontSizePt * pixelsPerPoint)
+  let rendered: {
+    canvas: HTMLCanvasElement
+    widthPx: number
+    heightPx: number
+    fontSizePx: number
+    lines: string[]
+    paddingX: number
+    paddingY: number
+    ascent: number
+    lineHeight: number
+  } | null = null
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  // Table rows are expanded in didParseCell. Shrinking is only a safety net
+  // for extreme names and header text; it must never abort the whole report.
+  for (let attempt = 0; attempt < 24; attempt += 1) {
     const canvas = document.createElement('canvas')
     const context = canvas.getContext('2d')
     if (!context) throw new Error('Could not prepare Bengali text for the PDF.')
@@ -143,51 +220,58 @@ function renderBengaliText(
     context.textBaseline = 'alphabetic'
     const paddingX = fontSizePx * 0.12
     const paddingY = fontSizePx * 0.12
-    const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
-    const maxWidthPx = maxWidthPt * pixelsPerPoint
-    const lines: string[] = []
-    let line = ''
-
-    for (const word of words) {
-      const candidate = line ? `${line} ${word}` : word
-      if (line && context.measureText(candidate).width > maxWidthPx - paddingX * 2) {
-        lines.push(line)
-        line = word
-      } else {
-        line = candidate
-      }
-    }
-    if (line) lines.push(line)
-
+    const maxTextWidthPx = Math.max(1, safeMaxWidthPx - paddingX * 2)
+    const lines = wrapCanvasText(context, text, maxTextWidthPx)
     const metrics = context.measureText(lines[0] || text)
     const ascent = metrics.actualBoundingBoxAscent || fontSizePx * 0.82
     const descent = metrics.actualBoundingBoxDescent || fontSizePx * 0.25
     const lineHeight = fontSizePx * 1.28
-    const widthPx = Math.max(1, ...lines.map((item) => context.measureText(item).width)) + paddingX * 2
+    const widthPx = Math.max(1, ...lines.map((line) => context.measureText(line).width)) + paddingX * 2
     const heightPx = paddingY * 2 + ascent + descent + Math.max(0, lines.length - 1) * lineHeight
 
-    if (widthPx > maxWidthPx || heightPx > maxHeightPt * pixelsPerPoint) {
-      fontSizePx *= 0.88
-      continue
-    }
+    rendered = { canvas, widthPx, heightPx, fontSizePx, lines, paddingX, paddingY, ascent, lineHeight }
+    if (widthPx <= safeMaxWidthPx && heightPx <= safeMaxHeightPx) break
 
-    canvas.width = Math.ceil(widthPx)
-    canvas.height = Math.ceil(heightPx)
-    const draw = canvas.getContext('2d')
-    if (!draw) throw new Error('Could not render Bengali text for the PDF.')
-    draw.font = `${bold ? '700' : '400'} ${fontSizePx}px "${BENGALI_FONT}"`
-    draw.textBaseline = 'alphabetic'
-    draw.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`
-    lines.forEach((item, index) => draw.fillText(item, paddingX, paddingY + ascent + index * lineHeight))
-
-    return {
-      dataUrl: canvas.toDataURL('image/png'),
-      widthPt: canvas.width / pixelsPerPoint,
-      heightPt: canvas.height / pixelsPerPoint,
-    }
+    const widthScale = safeMaxWidthPx / Math.max(1, widthPx)
+    const heightScale = safeMaxHeightPx / Math.max(1, heightPx)
+    const shrink = Math.min(0.9, widthScale, heightScale)
+    const nextFontSize = fontSizePx * Math.max(0.25, shrink)
+    if (nextFontSize >= fontSizePx || nextFontSize < 2) break
+    fontSizePx = nextFontSize
   }
 
-  throw new Error('A Bengali tenant or property name is too long to fit in the PDF table.')
+  if (!rendered) throw new Error('Could not render Bengali text for the PDF.')
+
+  const { canvas, widthPx, heightPx, fontSizePx: finalFontSize, lines, paddingX, paddingY, ascent, lineHeight } = rendered
+  canvas.width = Math.max(1, Math.ceil(widthPx))
+  canvas.height = Math.max(1, Math.ceil(heightPx))
+  const draw = canvas.getContext('2d')
+  if (!draw) throw new Error('Could not render Bengali text for the PDF.')
+  draw.font = `${bold ? '700' : '400'} ${finalFontSize}px "${BENGALI_FONT}"`
+  draw.textBaseline = 'alphabetic'
+  draw.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`
+  lines.forEach((line, index) => draw.fillText(line, paddingX, paddingY + ascent + index * lineHeight))
+
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    widthPt: canvas.width / pixelsPerPoint,
+    heightPt: canvas.height / pixelsPerPoint,
+  }
+}
+
+function wrapBengaliTableCell(text: string, cellWidthPt: number, fontSizePt: number): string {
+  if (!BENGALI_PATTERN.test(text)) return text
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) return text
+
+  const pixelsPerPoint = (96 / 72) * IMAGE_SCALE
+  const fontSizePx = fontSizePt * pixelsPerPoint
+  const paddingX = fontSizePx * 0.12
+  // autoTable uses 7pt left/right padding and a small border inset.
+  const availableWidthPx = Math.max(1, (cellWidthPt - 14.8) * pixelsPerPoint - paddingX * 2)
+  context.font = `400 ${fontSizePx}px "${BENGALI_FONT}"`
+  return wrapCanvasText(context, text, availableWidthPx).join('\n')
 }
 
 function getCellText(cell: BengaliCell): string {
@@ -228,13 +312,18 @@ function drawBengaliCell(pdf: jsPDF, cell: BengaliCell): void {
     availableWidth,
     availableHeight,
   )
+  // Scale only as a final safety net: a long tenant/property name must not
+  // abort the complete monthly report download.
+  const fitScale = Math.min(1, availableWidth / image.widthPt, availableHeight / image.heightPt)
+  const drawWidth = image.widthPt * fitScale
+  const drawHeight = image.heightPt * fitScale
   const drawX = cell.styles.halign === 'right'
-    ? cell.x + cell.width - paddingRight - image.widthPt
+    ? cell.x + cell.width - paddingRight - drawWidth
     : cell.styles.halign === 'center'
-      ? cell.x + (cell.width - image.widthPt) / 2
+      ? cell.x + (cell.width - drawWidth) / 2
       : cell.x + paddingLeft
-  const drawY = cell.y + paddingTop + Math.max(0, (availableHeight - image.heightPt) / 2)
-  pdf.addImage(image.dataUrl, 'PNG', drawX, drawY, image.widthPt, image.heightPt)
+  const drawY = cell.y + paddingTop + Math.max(0, (availableHeight - drawHeight) / 2)
+  pdf.addImage(image.dataUrl, 'PNG', drawX, drawY, drawWidth, drawHeight)
 }
 
 function drawPageFooter(pdf: jsPDF, pageWidth: number, pageHeight: number): void {
@@ -254,15 +343,6 @@ function drawPageFooter(pdf: jsPDF, pageWidth: number, pageHeight: number): void
 
 export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOptions): Promise<void> {
   if (options.rows.length === 0) throw new Error(`No issued ${options.kind} bills exist for ${formatMonth(options.billingMonth)}.`)
-  if (options.kind === 'electricity' && options.rows.some((row) =>
-    !Number.isFinite(row.previousReading) ||
-    !Number.isFinite(row.currentReading) ||
-    !Number.isFinite(row.unitsConsumed) ||
-    (row.currentReading as number) < (row.previousReading as number) ||
-    Math.abs((row.unitsConsumed as number) - ((row.currentReading as number) - (row.previousReading as number))) >= 0.000001,
-  )) {
-    throw new Error('An issued electricity bill is missing valid meter-reading snapshots. The report was not generated to avoid showing incorrect usage.')
-  }
 
   const hasBengali = BENGALI_PATTERN.test(options.houseName) || options.rows.some((row) =>
     BENGALI_PATTERN.test(row.tenantName) || BENGALI_PATTERN.test(row.propertyName),
@@ -280,7 +360,8 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
   const pageHeight = pdf.internal.pageSize.getHeight()
   const margin = 34
   const reportTitle = options.kind === 'rent' ? 'Monthly Rent Bill Report' : 'Monthly Electricity Bill Report'
-  const amountHeading = options.kind === 'rent' ? 'Rent amount' : 'Electricity amount'
+  const amountHeading = options.kind === 'rent' ? 'Rent amount' : 'E-Bill amount'
+  const isElectricityReport = options.kind === 'electricity'
 
   pdf.setFillColor(...COLORS.navy)
   pdf.rect(0, 0, pageWidth, 82, 'F')
@@ -311,47 +392,54 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
   pdf.setTextColor(...COLORS.muted)
   pdf.text(`Generated: ${formatGeneratedAt()}`, pageWidth - margin, 105, { align: 'right' })
 
-  const isElectricityReport = options.kind === 'electricity'
   const tableRows = rows.map((row, index) => isElectricityReport
     ? [
         String(index + 1),
-        row.tenantName || 'Unassigned',
-        formatReading(row.previousReading as number),
-        formatReading(row.currentReading as number),
-        formatReading(row.unitsConsumed as number),
+        wrapBengaliTableCell(row.tenantName || 'Unassigned', 205, 8),
+        formatReading(row.previousReading),
+        formatReading(row.currentReading),
         formatMoney(row.amountMinor),
       ]
     : [
         String(index + 1),
-        row.tenantName || 'Unassigned',
+        wrapBengaliTableCell(row.tenantName || 'Unassigned', 165, 8),
         `Room ${row.roomNumber}`,
-        row.propertyName,
+        wrapBengaliTableCell(row.propertyName, 115, 8),
         formatMoney(row.amountMinor),
-      ],
-  )
-  const tableHead = isElectricityReport
-    ? [['#', 'Tenant name', 'Previous reading', 'Current reading', 'Units usage', amountHeading]]
-    : [['#', 'Tenant name', 'Room number', 'Property', amountHeading]]
-  const columnStyles: NonNullable<AutoTableOptions['columnStyles']> = isElectricityReport
-    ? {
-        0: { cellWidth: 25, halign: 'center' as const },
-        1: { cellWidth: 142 },
-        2: { cellWidth: 76, halign: 'right' as const },
-        3: { cellWidth: 76, halign: 'right' as const },
-        4: { cellWidth: 72, halign: 'right' as const },
-        5: { cellWidth: 'auto' as const, halign: 'right' as const, fontStyle: 'bold' as const },
-      }
-    : {
-        0: { cellWidth: 25, halign: 'center' as const },
-        1: { cellWidth: 165 },
-        2: { cellWidth: 95 },
-        3: { cellWidth: 115 },
-        4: { cellWidth: 'auto' as const, halign: 'right' as const, fontStyle: 'bold' as const },
-      }
+      ])
+
+  if (isElectricityReport) {
+    const totalAmountMinor = rows.reduce((total, row) => total + row.amountMinor, 0)
+    tableRows.push([
+      {
+        content: 'TOTAL E-BILL AMOUNT',
+        colSpan: 4,
+        styles: {
+          fillColor: COLORS.ivory,
+          textColor: COLORS.navy,
+          fontStyle: 'bold',
+          halign: 'right',
+          minCellHeight: 34,
+        },
+      } as never,
+      {
+        content: formatMoney(totalAmountMinor),
+        styles: {
+          fillColor: COLORS.ivory,
+          textColor: COLORS.navy,
+          fontStyle: 'bold',
+          halign: 'right',
+          minCellHeight: 34,
+        },
+      } as never,
+    ])
+  }
 
   autoTable(pdf, {
-    head: tableHead,
-    body: tableRows,
+    head: [isElectricityReport
+      ? ['#', 'Tenant name', 'Previous Reading', 'Current Reading', 'E-Bill amount']
+      : ['#', 'Tenant name', 'Room number', 'Property', amountHeading]],
+    body: tableRows as never,
     startY: 119,
     margin: { top: 32, bottom: 48, left: margin, right: margin },
     styles: {
@@ -372,7 +460,34 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
       minCellHeight: 29,
     },
     alternateRowStyles: { fillColor: COLORS.ivory },
-    columnStyles,
+    columnStyles: isElectricityReport
+      ? {
+          0: { cellWidth: 25, halign: 'center' },
+          1: { cellWidth: 205 },
+          2: { cellWidth: 88, halign: 'right' },
+          3: { cellWidth: 88, halign: 'right' },
+          4: { cellWidth: 'auto', halign: 'right', fontStyle: 'bold' },
+        }
+      : {
+          0: { cellWidth: 25, halign: 'center' },
+          1: { cellWidth: 165 },
+          2: { cellWidth: 95 },
+          3: { cellWidth: 115 },
+          4: { cellWidth: 'auto', halign: 'right', fontStyle: 'bold' },
+        },
+    didParseCell: (hookData) => {
+      const tenantColumnIndex = 1
+      const isTenantCell = hookData.column.index === tenantColumnIndex
+      if (hookData.section !== 'body' || !isTenantCell) return
+      const cellText = String(hookData.cell.raw ?? '')
+      if (!BENGALI_PATTERN.test(cellText)) return
+
+      // AutoTable otherwise leaves some long Bengali names in a standard-height
+      // row even though the canvas-rendered glyphs need more vertical leading.
+      const lineCount = Math.max(1, cellText.split('\n').length)
+      const requiredHeight = 14 + lineCount * 11.5
+      hookData.cell.styles.minCellHeight = Math.max(hookData.cell.styles.minCellHeight, requiredHeight)
+    },
     didDrawCell: (hookData) => {
       drawBengaliCell(pdf, hookData.cell as unknown as BengaliCell)
     },

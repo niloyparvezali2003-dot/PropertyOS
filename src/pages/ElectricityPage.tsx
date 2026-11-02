@@ -280,10 +280,32 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
       ...readings.map((reading) => reading.billingMonth),
     ])].sort().reverse()
   }, [bills, readings])
-  const monthBills = useMemo(
-    () => monthFilter === 'all' ? bills : bills.filter((bill) => bill.billingMonth === monthFilter),
-    [bills, monthFilter],
-  )
+  const monthBills = useMemo(() => {
+    const matchingBills = monthFilter === 'all'
+      ? bills
+      : bills.filter((bill) => bill.billingMonth === monthFilter)
+
+    // Show the bill most recently issued at the top. Use the immutable
+    // createdAt timestamp rather than readingDate so a newly issued bill
+    // with a backdated reading still appears first in this list.
+    return [...matchingBills].sort((left, right) => {
+      const leftCreatedAt = left.createdAt
+      const rightCreatedAt = right.createdAt
+
+      if (leftCreatedAt && rightCreatedAt) {
+        const secondsDifference = rightCreatedAt.seconds - leftCreatedAt.seconds
+        if (secondsDifference !== 0) return secondsDifference
+
+        const nanosecondsDifference = rightCreatedAt.nanoseconds - leftCreatedAt.nanoseconds
+        if (nanosecondsDifference !== 0) return nanosecondsDifference
+      } else if (leftCreatedAt || rightCreatedAt) {
+        return rightCreatedAt ? 1 : -1
+      }
+
+      // Stable fallback for legacy data without a creation timestamp.
+      return right.readingDate.localeCompare(left.readingDate) || right.id.localeCompare(left.id)
+    })
+  }, [bills, monthFilter])
   const monthReadings = useMemo(
     () => monthFilter === 'all' ? readings : readings.filter((reading) => reading.billingMonth === monthFilter),
     [readings, monthFilter],
