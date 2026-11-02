@@ -32,7 +32,7 @@ import {
 } from './services/firebase/workspace'
 import type { AppPage } from './types/navigation'
 
-function lazyWithRetry<Props extends object>(loadModule: () => Promise<{ default: ComponentType<Props> }>) {
+function lazyWithRetry<Component extends ComponentType<any>>(loadModule: () => Promise<{ default: Component }>) {
   return lazy(async () => {
     let lastError: unknown
 
