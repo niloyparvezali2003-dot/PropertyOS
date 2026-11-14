@@ -17,6 +17,8 @@ const descriptions: Record<ModulePage, string> = {
     'Maintain tenant profiles, move-in and move-out dates, and tenancy history.',
   'Rent & Bills':
     'Generate monthly rent bills, track bill status, and preserve historical amounts.',
+  'Rent Collection':
+    'Track payments allocated to each selected month’s rent invoices without including previous outstanding dues.',
   Electricity:
     'Manage meters, readings, electricity rates, and electricity bills.',
   Meters:
