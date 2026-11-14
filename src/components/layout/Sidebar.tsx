@@ -21,6 +21,7 @@ const mobileLabels: Partial<Record<AppPage, string>> = {
   Meters: 'Meter',
   Tenants: 'Tenant',
   Payments: 'Pay',
+  'Rent Collection': 'Collect',
   Settings: 'Setting',
   Note: 'Note',
   'Users & Access': 'Users',

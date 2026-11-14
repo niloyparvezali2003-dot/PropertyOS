@@ -60,6 +60,7 @@ const RoomsPage = lazyWithRetry(() => import('./pages/RoomsPage').then((m) => ({
 const TenantsPage = lazyWithRetry(() => import('./pages/TenantsPage').then((m) => ({ default: m.TenantsPage })))
 const MetersPage = lazyWithRetry(() => import('./pages/MetersPage').then((m) => ({ default: m.MetersPage })))
 const RentBillsPage = lazyWithRetry(() => import('./pages/RentBillsPage').then((m) => ({ default: m.RentBillsPage })))
+const CurrentMonthCollectionPage = lazyWithRetry(() => import('./pages/CurrentMonthCollectionPage').then((m) => ({ default: m.CurrentMonthCollectionPage })))
 const ElectricityPage = lazyWithRetry(() => import('./pages/ElectricityPage').then((m) => ({ default: m.ElectricityPage })))
 const PaymentsPage = lazyWithRetry(() => import('./pages/PaymentsPage').then((m) => ({ default: m.PaymentsPage })))
 const LedgersPage = lazyWithRetry(() => import('./pages/LedgersPage').then((m) => ({ default: m.LedgersPage })))
@@ -416,6 +417,8 @@ function App() {
               <MetersPage ownerUid={ownerUid} />
             ) : activePage === 'Rent & Bills' ? (
               <RentBillsPage ownerUid={ownerUid} />
+            ) : activePage === 'Rent Collection' ? (
+              <CurrentMonthCollectionPage ownerUid={ownerUid} onNavigate={setActivePage} />
             ) : activePage === 'Electricity' ? (
               <ElectricityPage ownerUid={ownerUid} />
             ) : activePage === 'Payments' ? (

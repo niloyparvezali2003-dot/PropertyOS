@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  ClipboardList,
   Building2,
   DoorOpen,
   Download,
@@ -24,6 +25,7 @@ export type AppPage =
   | 'Tenants'
   | 'Meters'
   | 'Rent & Bills'
+  | 'Rent Collection'
   | 'Electricity'
   | 'Payments'
   | 'Ledgers'
@@ -58,6 +60,7 @@ export const navigationGroups: {
       title: 'Finance',
       items: [
         { label: 'Rent & Bills', icon: ReceiptText },
+        { label: 'Rent Collection', icon: ClipboardList },
         { label: 'Electricity', icon: Zap },
         { label: 'Payments', icon: Wallet },
         { label: 'Ledgers', icon: BookOpen },
