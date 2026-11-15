@@ -9,10 +9,15 @@ import {
   CheckCircle2,
   CircleAlert,
   Clock3,
+  Download,
+  LoaderCircle,
   RefreshCw,
   ReceiptText,
   Wallet,
 } from 'lucide-react'
+
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 import { SearchInput } from '../components/ui/SearchInput'
 import {
@@ -23,6 +28,20 @@ import {
   type PaymentBillBalanceRecord,
   listPaymentBillBalances,
 } from '../services/firebase/payments'
+import {
+  type ElectricityBillRecord,
+  listElectricityBills,
+  resolveElectricityBillTenantAssignment,
+} from '../services/firebase/electricity'
+import {
+  type TenantAssignmentRecord,
+  listTenantAssignments,
+} from '../services/firebase/tenantAssignments'
+import {
+  type OpeningBalanceRecord,
+  listOpeningBalances,
+} from '../services/firebase/openingBalances'
+import { loadWorkspaceSettings } from '../services/firebase/workspaceSettings'
 import { invalidateOwnerDataCache } from '../services/firebase/listCache'
 import type { AppPage } from '../types/navigation'
 import './current-month-collection.css'
@@ -41,6 +60,59 @@ type CollectionRow = {
   outstandingMinor: number
   status: CollectionStatus
 }
+
+type CollectionPdfTenantRow = {
+  tenantId: string
+  tenantName: string
+  rooms: Set<string>
+  previousDueMinor: number
+  rentBillMinor: number
+  paidAgainstBillMinor: number
+  remainingMinor: number
+  totalOutstandingMinor: number
+  status: CollectionStatus
+}
+
+type CollectionPdfColor = [number, number, number]
+
+type CollectionPdfCell = {
+  raw?: unknown
+  text?: string[]
+  x: number
+  y: number
+  width: number
+  height: number
+  styles: {
+    fontSize?: number
+    fontStyle?: string
+    textColor?: unknown
+    fillColor?: unknown
+    halign?: string
+    lineWidth?: unknown
+  }
+  padding: (side: 'left' | 'right' | 'top' | 'bottom') => number
+}
+
+type CollectionPdfRenderedText = {
+  dataUrl: string
+  widthPt: number
+  heightPt: number
+  baselineOffsetPt: number
+}
+
+const COLLECTION_PDF_COLORS = {
+  navy: [16, 44, 80] as CollectionPdfColor,
+  gold: [213, 165, 46] as CollectionPdfColor,
+  ivory: [246, 243, 235] as CollectionPdfColor,
+  ink: [38, 54, 74] as CollectionPdfColor,
+  muted: [100, 116, 139] as CollectionPdfColor,
+  border: [232, 225, 213] as CollectionPdfColor,
+  white: [255, 255, 255] as CollectionPdfColor,
+}
+
+const COLLECTION_BENGALI_PATTERN = /[\u0980-\u09FF]/
+const COLLECTION_BENGALI_FONT = 'Noto Serif Bengali'
+const COLLECTION_PDF_IMAGE_SCALE = 3
 
 function getCurrentBillingMonth(): string {
   const now = new Date()
@@ -80,17 +152,253 @@ function getCollectionErrorMessage(error: unknown): string {
     : 'Unable to load the current month collection. Please try again.'
 }
 
+function formatCollectionPdfMoney(amountMinor: number): string {
+  return `BDT ${new Intl.NumberFormat('en-BD', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amountMinor / 100)}`
+}
+
+function formatCollectionPdfGeneratedAt(): string {
+  return new Intl.DateTimeFormat('en-BD', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date())
+}
+
+async function ensureCollectionPdfBengaliFont(): Promise<void> {
+  if (typeof document === 'undefined' || !('fonts' in document)) {
+    throw new Error('Bengali PDF text rendering is unavailable in this browser.')
+  }
+
+  const sample = 'বাংলা পরীক্ষা যুক্তাক্ষর'
+  const [regularFaces, boldFaces] = await Promise.all([
+    document.fonts.load(`400 12px "${COLLECTION_BENGALI_FONT}"`, sample),
+    document.fonts.load(`700 12px "${COLLECTION_BENGALI_FONT}"`, sample),
+  ])
+  await document.fonts.ready
+
+  if (regularFaces.length === 0 || boldFaces.length === 0) {
+    throw new Error('The Bengali font could not be loaded. Check your internet connection and try the PDF download again.')
+  }
+}
+
+function renderCollectionPdfBengaliText(
+  text: string,
+  fontSizePt: number,
+  color: CollectionPdfColor,
+  bold: boolean,
+  maxWidthPt: number,
+  maxHeightPt: number,
+): CollectionPdfRenderedText {
+  const pixelsPerPoint = (96 / 72) * COLLECTION_PDF_IMAGE_SCALE
+  let fontSizePx = Math.max(4, fontSizePt * pixelsPerPoint)
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const measureCanvas = document.createElement('canvas')
+    const measure = measureCanvas.getContext('2d')
+    if (!measure) throw new Error('Could not prepare Bengali text for the PDF.')
+
+    measure.font = `${bold ? '700' : '400'} ${fontSizePx}px "${COLLECTION_BENGALI_FONT}", "Nirmala UI", serif`
+    measure.textBaseline = 'alphabetic'
+
+    const paddingX = fontSizePx * 0.14
+    const paddingY = fontSizePx * 0.12
+    const maxWidthPx = Math.max(1, maxWidthPt * pixelsPerPoint)
+    const availableLineWidth = Math.max(1, maxWidthPx - paddingX * 2)
+    const lines: string[] = []
+
+    for (const paragraph of text.replace(/\r/g, '').split('\n')) {
+      const words = paragraph.trim().split(/\s+/).filter(Boolean)
+      if (words.length === 0) {
+        lines.push('')
+        continue
+      }
+      let line = ''
+      for (const word of words) {
+        const candidate = line ? `${line} ${word}` : word
+        if (line && measure.measureText(candidate).width > availableLineWidth) {
+          lines.push(line)
+          line = word
+        } else {
+          line = candidate
+        }
+      }
+      if (line) lines.push(line)
+    }
+
+    const metricText = lines.find(Boolean) || text || 'বাংলা'
+    const metrics = measure.measureText(metricText)
+    const ascent = metrics.actualBoundingBoxAscent || fontSizePx * 0.86
+    const descent = metrics.actualBoundingBoxDescent || fontSizePx * 0.28
+    const lineHeight = fontSizePx * 1.3
+    const contentWidth = Math.max(1, ...lines.map((line) => measure.measureText(line).width))
+    const widthPx = contentWidth + paddingX * 2
+    const heightPx = paddingY * 2 + ascent + descent + Math.max(0, lines.length - 1) * lineHeight
+
+    if (widthPx > maxWidthPx || heightPx > maxHeightPt * pixelsPerPoint) {
+      fontSizePx *= 0.88
+      continue
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.ceil(widthPx))
+    canvas.height = Math.max(1, Math.ceil(heightPx))
+    const draw = canvas.getContext('2d')
+    if (!draw) throw new Error('Could not render Bengali text for the PDF.')
+    draw.font = `${bold ? '700' : '400'} ${fontSizePx}px "${COLLECTION_BENGALI_FONT}", "Nirmala UI", serif`
+    draw.textBaseline = 'alphabetic'
+    draw.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`
+    lines.forEach((line, index) => {
+      if (line) draw.fillText(line, paddingX, paddingY + ascent + index * lineHeight)
+    })
+
+    return {
+      dataUrl: canvas.toDataURL('image/png'),
+      widthPt: canvas.width / pixelsPerPoint,
+      heightPt: canvas.height / pixelsPerPoint,
+      baselineOffsetPt: (paddingY + ascent) / pixelsPerPoint,
+    }
+  }
+
+  throw new Error('A Bengali tenant name is too long to fit in the PDF.')
+}
+
+function wrapCollectionPdfText(text: string, maxWidthPt: number, fontSizePt: number): string {
+  if (!COLLECTION_BENGALI_PATTERN.test(text)) return text
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) return text
+
+  const fontSizePx = fontSizePt * (96 / 72)
+  context.font = `400 ${fontSizePx}px "${COLLECTION_BENGALI_FONT}", "Nirmala UI", serif`
+  const maxWidthPx = Math.max(1, (maxWidthPt - 10) * (96 / 72))
+  const lines: string[] = []
+
+  for (const paragraph of text.replace(/\r/g, '').split('\n')) {
+    const words = paragraph.trim().split(/\s+/).filter(Boolean)
+    let line = ''
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word
+      if (line && context.measureText(candidate).width > maxWidthPx) {
+        lines.push(line)
+        line = word
+      } else {
+        line = candidate
+      }
+    }
+    if (line) lines.push(line)
+  }
+
+  return lines.join('\n')
+}
+
+function collectionPdfColor(value: unknown, fallback: CollectionPdfColor): CollectionPdfColor {
+  if (Array.isArray(value) && value.length >= 3) {
+    return [Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0]
+  }
+  if (typeof value === 'number') return [value, value, value]
+  if (typeof value === 'string') {
+    const hex = value.trim().replace(/^#/, '')
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+      return [
+        Number.parseInt(hex.slice(0, 2), 16),
+        Number.parseInt(hex.slice(2, 4), 16),
+        Number.parseInt(hex.slice(4, 6), 16),
+      ]
+    }
+  }
+  return fallback
+}
+
+function collectionPdfCellText(cell: CollectionPdfCell): string {
+  if (typeof cell.raw === 'string' || typeof cell.raw === 'number') return String(cell.raw)
+  if (Array.isArray(cell.raw)) return cell.raw.map((value) => String(value ?? '')).join('\n')
+  return (cell.text ?? []).join('\n')
+}
+
+function drawCollectionPdfBengaliCell(pdf: jsPDF, cell: CollectionPdfCell): void {
+  const text = collectionPdfCellText(cell)
+  if (!COLLECTION_BENGALI_PATTERN.test(text)) return
+
+  const paddingLeft = cell.padding('left')
+  const paddingRight = cell.padding('right')
+  const paddingTop = cell.padding('top')
+  const paddingBottom = cell.padding('bottom')
+  const availableWidth = Math.max(1, cell.width - paddingLeft - paddingRight)
+  const availableHeight = Math.max(1, cell.height - paddingTop - paddingBottom)
+  const borderInset = Math.max(0.45, Number(cell.styles.lineWidth) || 0.35)
+  const fill = collectionPdfColor(cell.styles.fillColor, COLLECTION_PDF_COLORS.white)
+  const textColor = collectionPdfColor(cell.styles.textColor, COLLECTION_PDF_COLORS.ink)
+
+  pdf.setFillColor(...fill)
+  pdf.rect(
+    cell.x + borderInset,
+    cell.y + borderInset,
+    Math.max(0, cell.width - borderInset * 2),
+    Math.max(0, cell.height - borderInset * 2),
+    'F',
+  )
+
+  const image = renderCollectionPdfBengaliText(
+    text,
+    Number(cell.styles.fontSize) || 7.2,
+    textColor,
+    String(cell.styles.fontStyle || '').includes('bold'),
+    availableWidth,
+    availableHeight,
+  )
+  const align = cell.styles.halign || 'left'
+  const imageX = align === 'right'
+    ? cell.x + cell.width - paddingRight - image.widthPt
+    : align === 'center'
+      ? cell.x + (cell.width - image.widthPt) / 2
+      : cell.x + paddingLeft
+  const imageY = cell.y + paddingTop + Math.max(0, (availableHeight - image.heightPt) / 2)
+  pdf.addImage(image.dataUrl, 'PNG', imageX, imageY, image.widthPt, image.heightPt)
+}
+
+function drawCollectionPdfText(
+  pdf: jsPDF,
+  text: string,
+  x: number,
+  y: number,
+  fontSize: number,
+  color: CollectionPdfColor,
+  maxWidth: number,
+  bold = false,
+): void {
+  if (COLLECTION_BENGALI_PATTERN.test(text)) {
+    const image = renderCollectionPdfBengaliText(text, fontSize, color, bold, maxWidth, fontSize * 2.2)
+    pdf.addImage(image.dataUrl, 'PNG', x, y - image.baselineOffsetPt, image.widthPt, image.heightPt)
+    return
+  }
+
+  pdf.setFont('helvetica', bold ? 'bold' : 'normal')
+  pdf.setFontSize(fontSize)
+  pdf.setTextColor(...color)
+  pdf.text(text, x, y, { maxWidth })
+}
+
 export function CurrentMonthCollectionPage({
   ownerUid,
   onNavigate,
 }: CurrentMonthCollectionPageProps) {
   const [bills, setBills] = useState<RentBillRecord[]>([])
   const [balances, setBalances] = useState<PaymentBillBalanceRecord[]>([])
+  const [electricityBills, setElectricityBills] = useState<ElectricityBillRecord[]>([])
+  const [tenantAssignments, setTenantAssignments] = useState<TenantAssignmentRecord[]>([])
+  const [openingBalances, setOpeningBalances] = useState<OpeningBalanceRecord[]>([])
   const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchValue, setSearchValue] = useState('')
   const [isLoading, setIsLoading] = useState(true)
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false)
   const [pageError, setPageError] = useState('')
+  const [pdfError, setPdfError] = useState('')
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -101,13 +409,19 @@ export function CurrentMonthCollectionPage({
       // recently cached balance from before a payment was recorded.
       invalidateOwnerDataCache(ownerUid)
 
-      const [nextBills, nextBalances] = await Promise.all([
+      const [nextBills, nextBalances, nextElectricityBills, nextAssignments, nextOpeningBalances] = await Promise.all([
         listRentBills(ownerUid),
         listPaymentBillBalances(ownerUid),
+        listElectricityBills(ownerUid),
+        listTenantAssignments(ownerUid),
+        listOpeningBalances(ownerUid),
       ])
 
       setBills(nextBills)
       setBalances(nextBalances)
+      setElectricityBills(nextElectricityBills)
+      setTenantAssignments(nextAssignments)
+      setOpeningBalances(nextOpeningBalances)
     } catch (error: unknown) {
       setPageError(getCollectionErrorMessage(error))
     } finally {
@@ -200,6 +514,326 @@ export function CurrentMonthCollectionPage({
     })
   }, [rows, searchValue, statusFilter])
 
+  const handleDownloadPdf = useCallback(async () => {
+    if (rows.length === 0 || isDownloadingPdf) return
+
+    setIsDownloadingPdf(true)
+    setPdfError('')
+
+    try {
+      const { settings } = await loadWorkspaceSettings(ownerUid)
+      const selectedMonthStart = `${billingMonth}-01`
+      const balanceByKey = new Map(
+        balances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
+      )
+      const previousDueByTenantId = new Map<string, number>()
+      const addPreviousDue = (tenantId: string, amountMinor: number) => {
+        if (!tenantId || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) return
+        previousDueByTenantId.set(
+          tenantId,
+          (previousDueByTenantId.get(tenantId) ?? 0) + amountMinor,
+        )
+      }
+
+      // Previous due includes outstanding issued bills from earlier months.
+      // It is kept separate from the selected month's rent invoice calculation.
+      for (const bill of bills) {
+        if (bill.billingMonth >= billingMonth) continue
+        const balance = balanceByKey.get(`rent__${bill.id}`)
+        addPreviousDue(bill.tenantId, balance?.outstandingMinor ?? bill.totalMinor)
+      }
+
+      for (const bill of electricityBills) {
+        if (bill.billingMonth >= billingMonth) continue
+        const balance = balanceByKey.get(`electricity__${bill.id}`)
+        const assignment = resolveElectricityBillTenantAssignment(bill, tenantAssignments)
+        const tenantId = balance?.tenantId ?? assignment?.tenantId
+        if (tenantId) addPreviousDue(tenantId, balance?.outstandingMinor ?? bill.amountMinor)
+      }
+
+      // The legacy opening balance is also a previous due, but it must not
+      // change the paid/partial/unpaid status of the selected month's rent bill.
+      for (const openingBalance of openingBalances) {
+        if (openingBalance.effectiveDate <= selectedMonthStart) {
+          addPreviousDue(openingBalance.tenantId, openingBalance.outstandingMinor)
+        }
+      }
+
+      // Group current-month invoices by tenant. This avoids duplicating a
+      // tenant's previous due when that tenant occupies more than one room.
+      const tenantRowsById = new Map<string, CollectionPdfTenantRow>()
+      for (const row of rows) {
+        const tenantId = row.bill.tenantId
+        const existing = tenantRowsById.get(tenantId)
+        const roomLabel = `${row.bill.propertyCode} · ${row.bill.roomNumber}`
+        if (existing) {
+          existing.rooms.add(roomLabel)
+          existing.rentBillMinor += row.bill.totalMinor
+          existing.paidAgainstBillMinor += row.paidAmountMinor
+          existing.remainingMinor += row.outstandingMinor
+        } else {
+          tenantRowsById.set(tenantId, {
+            tenantId,
+            tenantName: row.bill.tenantName,
+            rooms: new Set([roomLabel]),
+            previousDueMinor: previousDueByTenantId.get(tenantId) ?? 0,
+            rentBillMinor: row.bill.totalMinor,
+            paidAgainstBillMinor: row.paidAmountMinor,
+            remainingMinor: row.outstandingMinor,
+            totalOutstandingMinor: 0,
+            status: row.status,
+          })
+        }
+      }
+
+      const tenantRows = [...tenantRowsById.values()]
+      for (const tenantRow of tenantRows) {
+        tenantRow.totalOutstandingMinor = tenantRow.previousDueMinor + tenantRow.remainingMinor
+        tenantRow.status = tenantRow.remainingMinor <= 0
+          ? 'paid'
+          : tenantRow.paidAgainstBillMinor > 0
+            ? 'partial'
+            : 'unpaid'
+      }
+      tenantRows.sort((left, right) => {
+        const leftIsBengali = COLLECTION_BENGALI_PATTERN.test(left.tenantName)
+        const rightIsBengali = COLLECTION_BENGALI_PATTERN.test(right.tenantName)
+        if (leftIsBengali !== rightIsBengali) return leftIsBengali ? 1 : -1
+        return left.tenantName.localeCompare(right.tenantName, leftIsBengali ? 'bn' : 'en', {
+          sensitivity: 'base',
+          numeric: true,
+        })
+      })
+
+      const pdfTotals = tenantRows.reduce((total, row) => ({
+        previousDueMinor: total.previousDueMinor + row.previousDueMinor,
+        rentBillMinor: total.rentBillMinor + row.rentBillMinor,
+        paidAgainstBillMinor: total.paidAgainstBillMinor + row.paidAgainstBillMinor,
+        remainingMinor: total.remainingMinor + row.remainingMinor,
+        totalOutstandingMinor: total.totalOutstandingMinor + row.totalOutstandingMinor,
+        paidCount: total.paidCount + (row.status === 'paid' ? 1 : 0),
+        partialCount: total.partialCount + (row.status === 'partial' ? 1 : 0),
+        unpaidCount: total.unpaidCount + (row.status === 'unpaid' ? 1 : 0),
+      }), {
+        previousDueMinor: 0,
+        rentBillMinor: 0,
+        paidAgainstBillMinor: 0,
+        remainingMinor: 0,
+        totalOutstandingMinor: 0,
+        paidCount: 0,
+        partialCount: 0,
+        unpaidCount: 0,
+      })
+
+      const houseName = settings.houseName || "T&N House's"
+      const hasBengali = COLLECTION_BENGALI_PATTERN.test(houseName) ||
+        tenantRows.some((row) => COLLECTION_BENGALI_PATTERN.test(row.tenantName))
+      if (hasBengali) await ensureCollectionPdfBengaliFont()
+
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const pageHeight = pdf.internal.pageSize.getHeight()
+      const margin = 30
+      const colors = COLLECTION_PDF_COLORS
+
+      pdf.setFillColor(...colors.navy)
+      pdf.rect(0, 0, pageWidth, 72, 'F')
+      pdf.setFillColor(...colors.gold)
+      pdf.rect(0, 70, pageWidth, 2, 'F')
+      drawCollectionPdfText(pdf, houseName, margin, 27, 15, colors.white, pageWidth - margin * 2, true)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(10)
+      pdf.setTextColor(...colors.white)
+      pdf.text('MONTHLY RENT COLLECTION REPORT', margin, 48)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(7)
+      pdf.setTextColor(225, 232, 240)
+      pdf.text(`Generated: ${formatCollectionPdfGeneratedAt()}`, pageWidth - margin, 27, { align: 'right' })
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(8)
+      pdf.setTextColor(225, 232, 240)
+      pdf.text(`Billing month: ${formatBillingMonth(billingMonth)}`, margin, 62)
+
+      const cardY = 84
+      const cardHeight = 43
+      const cardGap = 10
+      const cardWidth = (pageWidth - margin * 2 - cardGap * 3) / 4
+      const summaryCards = [
+        { label: 'PREVIOUS DUE', value: formatCollectionPdfMoney(pdfTotals.previousDueMinor) },
+        { label: 'RENT BILL', value: formatCollectionPdfMoney(pdfTotals.rentBillMinor) },
+        { label: 'PAID AGAINST BILL', value: formatCollectionPdfMoney(pdfTotals.paidAgainstBillMinor) },
+        { label: 'TOTAL OUTSTANDING', value: formatCollectionPdfMoney(pdfTotals.totalOutstandingMinor) },
+      ]
+      summaryCards.forEach((card, index) => {
+        const x = margin + index * (cardWidth + cardGap)
+        pdf.setFillColor(...colors.ivory)
+        pdf.setDrawColor(...colors.border)
+        pdf.roundedRect(x, cardY, cardWidth, cardHeight, 4, 4, 'FD')
+        pdf.setFillColor(...colors.gold)
+        pdf.rect(x + 1, cardY + 6, 2.5, cardHeight - 12, 'F')
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(7)
+        pdf.setTextColor(...colors.muted)
+        pdf.text(card.label, x + 10, cardY + 14)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(10)
+        pdf.setTextColor(...colors.navy)
+        pdf.text(card.value, x + 10, cardY + 31, { maxWidth: cardWidth - 18 })
+      })
+
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(8)
+      pdf.setTextColor(...colors.ink)
+      pdf.text(
+        `${tenantRows.length} tenant${tenantRows.length === 1 ? '' : 's'} · ${pdfTotals.paidCount} paid · ${pdfTotals.partialCount} partially paid · ${pdfTotals.unpaidCount} unpaid`,
+        margin,
+        144,
+      )
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(7)
+      pdf.setTextColor(...colors.muted)
+      pdf.text('Current-month status is based only on payments allocated to the selected month rent invoices.', pageWidth - margin, 144, { align: 'right' })
+
+      const body = tenantRows.map((row) => [
+        wrapCollectionPdfText(row.tenantName, 130, 7.2),
+        [...row.rooms].join('\n'),
+        formatCollectionPdfMoney(row.previousDueMinor),
+        formatCollectionPdfMoney(row.rentBillMinor),
+        formatCollectionPdfMoney(row.paidAgainstBillMinor),
+        formatCollectionPdfMoney(row.remainingMinor),
+        formatCollectionPdfMoney(row.totalOutstandingMinor),
+        getStatusLabel(row.status),
+      ])
+
+      autoTable(pdf, {
+        head: [[
+          'Tenant',
+          'Room(s)',
+          'Previous Due',
+          'Rent Bill',
+          'Paid Against Bill',
+          'Remaining',
+          'Total Outstanding',
+          'Status',
+        ]],
+        body,
+        foot: [[
+          'TOTAL',
+          '',
+          formatCollectionPdfMoney(pdfTotals.previousDueMinor),
+          formatCollectionPdfMoney(pdfTotals.rentBillMinor),
+          formatCollectionPdfMoney(pdfTotals.paidAgainstBillMinor),
+          formatCollectionPdfMoney(pdfTotals.remainingMinor),
+          formatCollectionPdfMoney(pdfTotals.totalOutstandingMinor),
+          '',
+        ]],
+        startY: 154,
+        margin: { top: 64, bottom: 36, left: margin, right: margin },
+        showHead: 'everyPage',
+        showFoot: 'lastPage',
+        styles: {
+          font: 'helvetica',
+          fontSize: 7.2,
+          cellPadding: 4.2,
+          overflow: 'linebreak',
+          valign: 'middle',
+          textColor: colors.ink,
+          lineColor: colors.border,
+          lineWidth: 0.35,
+        },
+        headStyles: {
+          fillColor: colors.navy,
+          textColor: colors.white,
+          fontStyle: 'bold',
+          fontSize: 7,
+        },
+        footStyles: {
+          fillColor: colors.ivory,
+          textColor: colors.navy,
+          fontStyle: 'bold',
+          lineWidth: 0.5,
+        },
+        alternateRowStyles: { fillColor: [250, 249, 246] },
+        columnStyles: {
+          0: { cellWidth: 130 },
+          1: { cellWidth: 82 },
+          2: { cellWidth: 82, halign: 'right' },
+          3: { cellWidth: 78, halign: 'right' },
+          4: { cellWidth: 91, halign: 'right' },
+          5: { cellWidth: 78, halign: 'right' },
+          6: { cellWidth: 105, halign: 'right' },
+          7: { cellWidth: 75, halign: 'center' },
+        },
+        didParseCell: (hookData) => {
+          if (hookData.section !== 'body' || hookData.column.index !== 7) return
+          const status = String(hookData.cell.raw ?? '')
+          if (status === 'Paid') {
+            hookData.cell.styles.textColor = [22, 101, 52]
+            hookData.cell.styles.fillColor = [236, 253, 245]
+            hookData.cell.styles.fontStyle = 'bold'
+          } else if (status === 'Partially paid') {
+            hookData.cell.styles.textColor = [180, 83, 9]
+            hookData.cell.styles.fillColor = [255, 247, 237]
+            hookData.cell.styles.fontStyle = 'bold'
+          } else if (status === 'Unpaid') {
+            hookData.cell.styles.textColor = [185, 28, 28]
+            hookData.cell.styles.fillColor = [254, 242, 242]
+            hookData.cell.styles.fontStyle = 'bold'
+          }
+        },
+        didDrawCell: (hookData) => {
+          drawCollectionPdfBengaliCell(pdf, hookData.cell as unknown as CollectionPdfCell)
+        },
+        didDrawPage: (hookData) => {
+          if (hookData.pageNumber > 1) {
+            pdf.setFillColor(...colors.navy)
+            pdf.rect(0, 0, pageWidth, 48, 'F')
+            drawCollectionPdfText(pdf, houseName, margin, 22, 12, colors.white, pageWidth - margin * 2, true)
+            pdf.setFont('helvetica', 'normal')
+            pdf.setFontSize(8)
+            pdf.setTextColor(225, 232, 240)
+            pdf.text(`Monthly rent collection · ${formatBillingMonth(billingMonth)}`, margin, 37)
+          }
+        },
+      })
+
+      // Add a consistent footer after all pages have been created.
+      const pageCount = pdf.getNumberOfPages()
+      for (let page = 1; page <= pageCount; page += 1) {
+        pdf.setPage(page)
+        pdf.setDrawColor(...colors.border)
+        pdf.setLineWidth(0.5)
+        pdf.line(margin, pageHeight - 29, pageWidth - margin, pageHeight - 29)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(6.5)
+        pdf.setTextColor(...colors.muted)
+        pdf.text(
+          'Previous Due includes currently outstanding earlier-month rent/electricity bills and the tenant opening balance. Current-month status excludes previous dues.',
+          margin,
+          pageHeight - 16,
+          { maxWidth: pageWidth - margin * 2 - 65 },
+        )
+        pdf.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 16, { align: 'right' })
+      }
+
+      pdf.save(`rent-collection-${billingMonth}.pdf`)
+    } catch (error: unknown) {
+      setPdfError(error instanceof Error ? error.message : 'Could not generate the rent collection PDF.')
+    } finally {
+      setIsDownloadingPdf(false)
+    }
+  }, [
+    balances,
+    billingMonth,
+    bills,
+    electricityBills,
+    isDownloadingPdf,
+    openingBalances,
+    ownerUid,
+    rows,
+    tenantAssignments,
+  ])
+
   const isCurrentMonth = billingMonth === getCurrentBillingMonth()
 
   return (
@@ -224,6 +858,18 @@ export function CurrentMonthCollectionPage({
               aria-label="Select billing month"
             />
           </label>
+          <button
+            className="button button-primary collection-refresh-button"
+            type="button"
+            onClick={() => void handleDownloadPdf()}
+            disabled={isLoading || isDownloadingPdf || rows.length === 0}
+            title={rows.length === 0 ? 'Generate rent bills before downloading a report' : 'Download the selected month rent collection report'}
+          >
+            {isDownloadingPdf
+              ? <LoaderCircle size={16} className="collection-spin" aria-hidden="true" />
+              : <Download size={16} aria-hidden="true" />}
+            {isDownloadingPdf ? 'Preparing PDF…' : 'Download PDF'}
+          </button>
           <button
             className="button button-secondary collection-refresh-button"
             type="button"
@@ -250,6 +896,14 @@ export function CurrentMonthCollectionPage({
           <CircleAlert size={17} aria-hidden="true" />
           <span>{pageError}</span>
           <button type="button" onClick={() => void loadData()}>Try again</button>
+        </div>
+      )}
+
+      {pdfError && (
+        <div className="collection-error" role="alert">
+          <CircleAlert size={17} aria-hidden="true" />
+          <span>{pdfError}</span>
+          <button type="button" onClick={() => setPdfError('')}>Dismiss</button>
         </div>
       )}
 
