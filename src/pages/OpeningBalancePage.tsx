@@ -15,7 +15,6 @@ import {
 
 import { recordAuditEvent } from '../services/firebase/audit'
 import { listTenants, type TenantRecord } from '../services/firebase/tenants'
-import { compareTenantNames } from '../utils/tenantNameSort'
 import {
   adjustOpeningBalance,
   createOpeningBalance,
@@ -51,6 +50,23 @@ function formatDate(value: string): string {
   const parsed = new Date(`${value}T00:00:00`)
   if (Number.isNaN(parsed.getTime())) return value
   return new Intl.DateTimeFormat('en-BD', { day: '2-digit', month: 'short', year: 'numeric' }).format(parsed)
+}
+
+// Sort every tenant name using Bangladesh's native bilingual collation:
+// Bengali names follow বাংলা বর্ণক্রম, followed by English names in A–Z order.
+const bilingualTenantNameCollator = new Intl.Collator('bn-BD', {
+  usage: 'sort',
+  sensitivity: 'base',
+  numeric: true,
+})
+
+function compareTenantNames(left: string | null | undefined, right: string | null | undefined): number {
+  const leftName = left?.trim() ?? ''
+  const rightName = right?.trim() ?? ''
+  if (!leftName && !rightName) return 0
+  if (!leftName) return 1
+  if (!rightName) return -1
+  return bilingualTenantNameCollator.compare(leftName, rightName)
 }
 
 const emptyCreateForm = (): CreateForm => ({ tenantId: '', effectiveDate: todayIso(), amount: '', note: '' })
@@ -112,7 +128,11 @@ export function OpeningBalancePage({ ownerUid }: OpeningBalancePageProps) {
     const displayName = (balance: OpeningBalanceRecord) => tenantById.get(balance.tenantId)?.fullName ?? balance.tenantName
     return balances
       .filter((balance) => !term || `${displayName(balance)} ${balance.tenantName} ${balance.tenantCode} ${balance.note}`.toLowerCase().includes(term))
-      .sort((left, right) => displayName(left).localeCompare(displayName(right)))
+      .sort((left, right) => {
+        const byTenantName = compareTenantNames(displayName(left), displayName(right))
+        if (byTenantName !== 0) return byTenantName
+        return compareTenantNames(left.tenantCode, right.tenantCode)
+      })
   }, [balances, search, tenantById])
   const totalOutstanding = balances.reduce((sum, balance) => sum + balance.outstandingMinor, 0)
   const totalPaid = balances.reduce((sum, balance) => sum + balance.paidAmountMinor, 0)
