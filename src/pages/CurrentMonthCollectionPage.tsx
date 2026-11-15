@@ -26,9 +26,7 @@ import {
 } from '../services/firebase/rentBills'
 import {
   type PaymentBillBalanceRecord,
-  type TenantCreditRecord,
   listPaymentBillBalances,
-  listTenantCredits,
 } from '../services/firebase/payments'
 import {
   type ElectricityBillRecord,
@@ -67,14 +65,8 @@ type CollectionPdfTenantRow = {
   tenantId: string
   tenantName: string
   rooms: Set<string>
-  previousBillsDueMinor: number
-  openingBalanceMinor: number
+  balanceMinor: number
   rentBillMinor: number
-  paidAgainstBillMinor: number
-  remainingMinor: number
-  totalDueMinor: number
-  availableAdvanceCreditMinor: number
-  status: CollectionStatus
 }
 
 type CollectionPdfColor = [number, number, number]
@@ -424,7 +416,6 @@ export function CurrentMonthCollectionPage({
   const [electricityBills, setElectricityBills] = useState<ElectricityBillRecord[]>([])
   const [tenantAssignments, setTenantAssignments] = useState<TenantAssignmentRecord[]>([])
   const [openingBalances, setOpeningBalances] = useState<OpeningBalanceRecord[]>([])
-  const [tenantCredits, setTenantCredits] = useState<TenantCreditRecord[]>([])
   const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchValue, setSearchValue] = useState('')
@@ -442,13 +433,12 @@ export function CurrentMonthCollectionPage({
       // recently cached balance from before a payment was recorded.
       invalidateOwnerDataCache(ownerUid)
 
-      const [nextBills, nextBalances, nextElectricityBills, nextAssignments, nextOpeningBalances, nextTenantCredits] = await Promise.all([
+      const [nextBills, nextBalances, nextElectricityBills, nextAssignments, nextOpeningBalances] = await Promise.all([
         listRentBills(ownerUid),
         listPaymentBillBalances(ownerUid),
         listElectricityBills(ownerUid),
         listTenantAssignments(ownerUid),
         listOpeningBalances(ownerUid),
-        listTenantCredits(ownerUid),
       ])
 
       setBills(nextBills)
@@ -456,7 +446,6 @@ export function CurrentMonthCollectionPage({
       setElectricityBills(nextElectricityBills)
       setTenantAssignments(nextAssignments)
       setOpeningBalances(nextOpeningBalances)
-      setTenantCredits(nextTenantCredits)
     } catch (error: unknown) {
       setPageError(getCollectionErrorMessage(error))
     } finally {
@@ -563,9 +552,6 @@ export function CurrentMonthCollectionPage({
       )
       const previousBillsDueByTenantId = new Map<string, number>()
       const openingBalanceByTenantId = new Map<string, number>()
-      const advanceCreditByTenantId = new Map(
-        tenantCredits.map((credit) => [credit.tenantId, credit.creditMinor] as const),
-      )
       const addAmount = (target: Map<string, number>, tenantId: string, amountMinor: number) => {
         if (!tenantId || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) return
         target.set(tenantId, (target.get(tenantId) ?? 0) + amountMinor)
@@ -595,8 +581,9 @@ export function CurrentMonthCollectionPage({
         }
       }
 
-      // Group current-month invoices by tenant. This avoids duplicating a
-      // tenant's previous due when that tenant occupies more than one room.
+      // Group current-month invoices by tenant. Balance is the amount brought
+      // forward from earlier unpaid bills plus the opening balance. The current
+      // month's rent remains a separate figure in the report.
       const tenantRowsById = new Map<string, CollectionPdfTenantRow>()
       for (const row of rows) {
         const tenantId = row.bill.tenantId
@@ -605,38 +592,19 @@ export function CurrentMonthCollectionPage({
         if (existing) {
           existing.rooms.add(roomLabel)
           existing.rentBillMinor += row.bill.totalMinor
-          existing.paidAgainstBillMinor += row.paidAmountMinor
-          existing.remainingMinor += row.outstandingMinor
         } else {
           tenantRowsById.set(tenantId, {
             tenantId,
             tenantName: row.bill.tenantName,
             rooms: new Set([roomLabel]),
-            previousBillsDueMinor: previousBillsDueByTenantId.get(tenantId) ?? 0,
-            openingBalanceMinor: openingBalanceByTenantId.get(tenantId) ?? 0,
+            balanceMinor: (previousBillsDueByTenantId.get(tenantId) ?? 0) +
+              (openingBalanceByTenantId.get(tenantId) ?? 0),
             rentBillMinor: row.bill.totalMinor,
-            paidAgainstBillMinor: row.paidAmountMinor,
-            remainingMinor: row.outstandingMinor,
-            totalDueMinor: 0,
-            availableAdvanceCreditMinor: advanceCreditByTenantId.get(tenantId) ?? 0,
-            status: row.status,
           })
         }
       }
 
       const tenantRows = [...tenantRowsById.values()]
-      for (const tenantRow of tenantRows) {
-        // Total Due is the amount still owed to the property: earlier unpaid
-        // bills + opening balance + this month's remaining rent. Advance credit
-        // is shown separately and is not subtracted from this figure.
-        tenantRow.totalDueMinor = tenantRow.previousBillsDueMinor +
-          tenantRow.openingBalanceMinor + tenantRow.remainingMinor
-        tenantRow.status = tenantRow.remainingMinor <= 0
-          ? 'paid'
-          : tenantRow.paidAgainstBillMinor > 0
-            ? 'partial'
-            : 'unpaid'
-      }
       tenantRows.sort((left, right) => {
         const leftRooms = sortCollectionRoomNumbers(left.rooms)
         const rightRooms = sortCollectionRoomNumbers(right.rooms)
@@ -651,27 +619,11 @@ export function CurrentMonthCollectionPage({
       })
 
       const pdfTotals = tenantRows.reduce((total, row) => ({
-        previousBillsDueMinor: total.previousBillsDueMinor + row.previousBillsDueMinor,
-        openingBalanceMinor: total.openingBalanceMinor + row.openingBalanceMinor,
+        balanceMinor: total.balanceMinor + row.balanceMinor,
         rentBillMinor: total.rentBillMinor + row.rentBillMinor,
-        paidAgainstBillMinor: total.paidAgainstBillMinor + row.paidAgainstBillMinor,
-        remainingMinor: total.remainingMinor + row.remainingMinor,
-        totalDueMinor: total.totalDueMinor + row.totalDueMinor,
-        availableAdvanceCreditMinor: total.availableAdvanceCreditMinor + row.availableAdvanceCreditMinor,
-        paidCount: total.paidCount + (row.status === 'paid' ? 1 : 0),
-        partialCount: total.partialCount + (row.status === 'partial' ? 1 : 0),
-        unpaidCount: total.unpaidCount + (row.status === 'unpaid' ? 1 : 0),
       }), {
-        previousBillsDueMinor: 0,
-        openingBalanceMinor: 0,
+        balanceMinor: 0,
         rentBillMinor: 0,
-        paidAgainstBillMinor: 0,
-        remainingMinor: 0,
-        totalDueMinor: 0,
-        availableAdvanceCreditMinor: 0,
-        paidCount: 0,
-        partialCount: 0,
-        unpaidCount: 0,
       })
 
       const houseName = settings.houseName || "T&N House's"
@@ -705,14 +657,10 @@ export function CurrentMonthCollectionPage({
 
       const cardY = 84
       const cardHeight = 43
-      const cardGap = 10
+      const cardGap = 12
       const summaryCards = [
-        { label: 'PREVIOUS BILLS DUE', value: formatCollectionPdfMoney(pdfTotals.previousBillsDueMinor), valueColor: colors.due },
-        { label: 'OPENING BALANCE', value: formatCollectionPdfMoney(pdfTotals.openingBalanceMinor), valueColor: colors.due },
-        { label: 'RENT BILL', value: formatCollectionPdfMoney(pdfTotals.rentBillMinor), valueColor: colors.black },
-        { label: 'PAID AGAINST BILL', value: formatCollectionPdfMoney(pdfTotals.paidAgainstBillMinor), valueColor: colors.black },
-        { label: 'TOTAL DUE', value: formatCollectionPdfMoney(pdfTotals.totalDueMinor), valueColor: colors.due },
-        { label: 'AVAILABLE ADVANCE CREDIT', value: formatCollectionPdfMoney(pdfTotals.availableAdvanceCreditMinor), valueColor: colors.advance },
+        { label: 'BALANCE BROUGHT FORWARD', value: formatCollectionPdfMoney(pdfTotals.balanceMinor), valueColor: colors.due },
+        { label: 'CURRENT MONTH RENT BILL', value: formatCollectionPdfMoney(pdfTotals.rentBillMinor), valueColor: colors.black },
       ]
       const cardWidth = (pageWidth - margin * 2 - cardGap * (summaryCards.length - 1)) / summaryCards.length
       summaryCards.forEach((card, index) => {
@@ -732,57 +680,35 @@ export function CurrentMonthCollectionPage({
         pdf.text(card.value, x + 10, cardY + 31, { maxWidth: cardWidth - 18 })
       })
 
-      pdf.setFont('helvetica', 'bold')
+      pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(8)
-      pdf.setTextColor(...colors.ink)
+      pdf.setTextColor(...colors.muted)
       pdf.text(
-        `${tenantRows.length} tenant${tenantRows.length === 1 ? '' : 's'} · ${pdfTotals.paidCount} paid · ${pdfTotals.partialCount} partially paid · ${pdfTotals.unpaidCount} unpaid`,
+        `${tenantRows.length} tenant${tenantRows.length === 1 ? '' : 's'} · amounts in BDT`,
         margin,
         144,
       )
-      pdf.setFont('helvetica', 'normal')
-      pdf.setFontSize(7)
-      pdf.setTextColor(...colors.muted)
-      pdf.text('Status reflects only payments or advance credit allocated to this month’s rent invoices.', pageWidth - margin, 144, { align: 'right' })
 
       const body = tenantRows.map((row) => [
-        wrapCollectionPdfText(row.tenantName, 112, 7.2),
+        wrapCollectionPdfText(row.tenantName, 150, 8.5),
         sortCollectionRoomNumbers(row.rooms).join('\n'),
-        formatCollectionPdfMoney(row.previousBillsDueMinor),
-        formatCollectionPdfMoney(row.openingBalanceMinor),
+        formatCollectionPdfMoney(row.balanceMinor),
         formatCollectionPdfMoney(row.rentBillMinor),
-        formatCollectionPdfMoney(row.paidAgainstBillMinor),
-        formatCollectionPdfMoney(row.remainingMinor),
-        formatCollectionPdfMoney(row.totalDueMinor),
-        formatCollectionPdfMoney(row.availableAdvanceCreditMinor),
-        getStatusLabel(row.status),
       ])
 
       autoTable(pdf, {
         head: [[
           'Tenant',
           'Room(s)',
-          'Previous Bills Due',
-          'Opening Balance',
+          'Balance',
           'Rent Bill',
-          'Paid Against Bill',
-          'Remaining',
-          'Total Due',
-          'Available Advance Credit',
-          'Status',
         ]],
         body,
         foot: [[
           'TOTAL',
           '',
-          formatCollectionPdfMoney(pdfTotals.previousBillsDueMinor),
-          formatCollectionPdfMoney(pdfTotals.openingBalanceMinor),
+          formatCollectionPdfMoney(pdfTotals.balanceMinor),
           formatCollectionPdfMoney(pdfTotals.rentBillMinor),
-          formatCollectionPdfMoney(pdfTotals.paidAgainstBillMinor),
-          formatCollectionPdfMoney(pdfTotals.remainingMinor),
-          formatCollectionPdfMoney(pdfTotals.totalDueMinor),
-          formatCollectionPdfMoney(pdfTotals.availableAdvanceCreditMinor),
-          '',
         ]],
         startY: 154,
         margin: { top: 64, bottom: 36, left: margin, right: margin },
@@ -790,8 +716,8 @@ export function CurrentMonthCollectionPage({
         showFoot: 'lastPage',
         styles: {
           font: 'helvetica',
-          fontSize: 7.2,
-          cellPadding: 4.2,
+          fontSize: 8.5,
+          cellPadding: 7,
           overflow: 'linebreak',
           valign: 'middle',
           textColor: colors.ink,
@@ -802,7 +728,7 @@ export function CurrentMonthCollectionPage({
           fillColor: colors.navy,
           textColor: colors.white,
           fontStyle: 'bold',
-          fontSize: 7,
+          fontSize: 8,
         },
         footStyles: {
           fillColor: colors.ivory,
@@ -812,46 +738,19 @@ export function CurrentMonthCollectionPage({
         },
         alternateRowStyles: { fillColor: [250, 249, 246] },
         columnStyles: {
-          0: { cellWidth: 120 },
-          1: { cellWidth: 55 },
-          2: { cellWidth: 74, halign: 'right' },
-          3: { cellWidth: 70, halign: 'right' },
-          4: { cellWidth: 66, halign: 'right' },
-          5: { cellWidth: 80, halign: 'right' },
-          6: { cellWidth: 64, halign: 'right' },
-          7: { cellWidth: 76, halign: 'right' },
-          8: { cellWidth: 107, halign: 'right' },
-          9: { cellWidth: 70, halign: 'center' },
+          0: { cellWidth: 205 },
+          1: { cellWidth: 150 },
+          2: { cellWidth: 180, halign: 'right' },
+          3: { cellWidth: 180, halign: 'right' },
         },
         didParseCell: (hookData) => {
-          if (hookData.section === 'body' || hookData.section === 'foot') {
-            const amountColumn = hookData.column.index
-            if ([2, 3, 6, 7].includes(amountColumn)) {
-              // Previous bills due, opening balance, remaining rent and total due.
-              hookData.cell.styles.textColor = colors.due
-            } else if (amountColumn === 8) {
-              // Available advance credit is a positive credit for the tenant.
-              hookData.cell.styles.textColor = colors.advance
-            } else if ([4, 5].includes(amountColumn)) {
-              // Rent billed and payment collected are shown in neutral black.
-              hookData.cell.styles.textColor = colors.black
-            }
-          }
-
-          if (hookData.section !== 'body' || hookData.column.index !== 9) return
-          const status = String(hookData.cell.raw ?? '')
-          if (status === 'Paid') {
-            hookData.cell.styles.textColor = [22, 101, 52]
-            hookData.cell.styles.fillColor = [236, 253, 245]
-            hookData.cell.styles.fontStyle = 'bold'
-          } else if (status === 'Partially paid') {
-            hookData.cell.styles.textColor = [180, 83, 9]
-            hookData.cell.styles.fillColor = [255, 247, 237]
-            hookData.cell.styles.fontStyle = 'bold'
-          } else if (status === 'Unpaid') {
-            hookData.cell.styles.textColor = [185, 28, 28]
-            hookData.cell.styles.fillColor = [254, 242, 242]
-            hookData.cell.styles.fontStyle = 'bold'
+          if (hookData.section !== 'body' && hookData.section !== 'foot') return
+          if (hookData.column.index === 2) {
+            // Balance brought forward is money owed to the property.
+            hookData.cell.styles.textColor = colors.due
+          } else if (hookData.column.index === 3) {
+            // Current month's rent bill is shown in neutral black.
+            hookData.cell.styles.textColor = colors.black
           }
         },
         didDrawCell: (hookData) => {
@@ -881,7 +780,7 @@ export function CurrentMonthCollectionPage({
         pdf.setFontSize(6.5)
         pdf.setTextColor(...colors.muted)
         pdf.text(
-          'Total Due includes previous unpaid rent/electricity bills, the opening balance, and the current-month rent remaining. Available Advance Credit is shown separately and is not deducted automatically. Current-month status changes only when payment or credit is allocated to this month’s rent bills.',
+          'Balance means outstanding earlier-month rent/electricity bills plus the tenant opening balance. Current-month rent is shown separately.',
           margin,
           pageHeight - 16,
           { maxWidth: pageWidth - margin * 2 - 65 },
@@ -905,7 +804,6 @@ export function CurrentMonthCollectionPage({
     ownerUid,
     rows,
     tenantAssignments,
-    tenantCredits,
   ])
 
   const isCurrentMonth = billingMonth === getCurrentBillingMonth()
