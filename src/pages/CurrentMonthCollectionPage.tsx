@@ -30,18 +30,9 @@ import {
 } from '../services/firebase/payments'
 import {
   type ElectricityBillRecord,
-  listElectricityBills,
-  resolveElectricityBillTenantAssignment,
 } from '../services/firebase/electricity'
-import {
-  type TenantAssignmentRecord,
-  listTenantAssignments,
-} from '../services/firebase/tenantAssignments'
-import {
-  type OpeningBalanceRecord,
-  listOpeningBalances,
-} from '../services/firebase/openingBalances'
 import { loadWorkspaceSettings } from '../services/firebase/workspaceSettings'
+import { loadLedgerSourceData, type LedgerSourceData } from '../services/firebase/ledgers'
 import { invalidateOwnerDataCache } from '../services/firebase/listCache'
 import type { AppPage } from '../types/navigation'
 import './current-month-collection.css'
@@ -407,15 +398,112 @@ function drawCollectionPdfText(
   pdf.text(text, x, y, { maxWidth })
 }
 
+function safeCollectionMinor(value: number): number {
+  return Number.isSafeInteger(value) && value > 0 ? value : 0
+}
+
+/**
+ * Resolve electricity bills with the same historical meter-assignment logic
+ * used by the tenant ledger. This prevents old bills from being attributed to
+ * a tenant who occupies the room today instead of the tenant on the reading date.
+ */
+function resolveLedgerElectricityTenantId(
+  bill: ElectricityBillRecord,
+  data: LedgerSourceData,
+): string | null {
+  const meterAssignment = data.meterAssignments.find(
+    (assignment) =>
+      assignment.id === bill.meterAssignmentId &&
+      assignment.meterId === bill.meterId,
+  )
+  const roomId = meterAssignment?.roomId ?? bill.roomId
+  const candidates = data.tenantAssignments.filter(
+    (assignment) =>
+      assignment.roomId === roomId &&
+      assignment.moveInDate <= bill.readingDate &&
+      (assignment.moveOutDate === null || assignment.moveOutDate >= bill.readingDate),
+  )
+
+  if (candidates.length === 1) return candidates[0]?.tenantId ?? null
+  if (candidates.length === 0) return null
+
+  const currentCandidates = candidates.filter(
+    (assignment) => assignment.status === 'current' && assignment.moveOutDate === null,
+  )
+  if (currentCandidates.length === 1) return currentCandidates[0]?.tenantId ?? null
+  if (currentCandidates.length > 1) return null
+
+  const latestMoveInDate = candidates.reduce(
+    (latest, assignment) => assignment.moveInDate > latest ? assignment.moveInDate : latest,
+    candidates[0].moveInDate,
+  )
+  const latestCandidates = candidates.filter(
+    (assignment) => assignment.moveInDate === latestMoveInDate,
+  )
+  return latestCandidates.length === 1 ? latestCandidates[0]?.tenantId ?? null : null
+}
+
+/**
+ * Mirrors the tenant ledger's current-balance calculation:
+ * opening balance + issued rent/electricity bills + adjustments - posted receipts.
+ * Positive balances are due; negative balances are available advance/credit.
+ */
+function calculateTenantLedgerBalances(data: LedgerSourceData): Map<string, number> {
+  const balances = new Map<string, number>()
+  const add = (tenantId: string, amountMinor: number) => {
+    const amount = safeCollectionMinor(Math.abs(amountMinor))
+    if (!tenantId || amount === 0) return
+    const signedAmount = amountMinor < 0 ? -amount : amount
+    balances.set(tenantId, (balances.get(tenantId) ?? 0) + signedAmount)
+  }
+
+  // The tenant ledger displays the original opening balance, then its audited
+  // increases/decreases and every posted receipt as separate transactions.
+  for (const openingBalance of data.openingBalances) {
+    add(openingBalance.tenantId, openingBalance.originalAmountMinor)
+  }
+
+  for (const adjustment of data.openingBalanceAdjustments) {
+    add(
+      adjustment.tenantId,
+      adjustment.direction === 'increase' ? adjustment.amountMinor : -adjustment.amountMinor,
+    )
+  }
+
+  for (const bill of data.rentBills) {
+    if (bill.status !== 'issued') continue
+    add(bill.tenantId, bill.totalMinor)
+  }
+
+  for (const bill of data.electricityBills) {
+    if (bill.status !== 'issued') continue
+    const tenantId = resolveLedgerElectricityTenantId(bill, data)
+    if (tenantId) add(tenantId, bill.amountMinor)
+  }
+
+  // A tenant ledger credits the full posted receipt exactly once. This includes
+  // any portion retained as an advance, so an unused advance creates a negative
+  // (credit) balance just as it does on the individual tenant statement PDF.
+  for (const payment of data.payments) {
+    if (payment.status !== 'posted') continue
+    add(payment.tenantId, -payment.amountMinor)
+  }
+
+  return balances
+}
+
+function formatCollectionPdfTenantBalance(balanceMinor: number): string {
+  if (balanceMinor > 0) return `DUE: ${formatCollectionPdfMoney(balanceMinor)}`
+  if (balanceMinor < 0) return `ADVANCE: ${formatCollectionPdfMoney(Math.abs(balanceMinor))}`
+  return formatCollectionPdfMoney(0)
+}
+
 export function CurrentMonthCollectionPage({
   ownerUid,
   onNavigate,
 }: CurrentMonthCollectionPageProps) {
   const [bills, setBills] = useState<RentBillRecord[]>([])
   const [balances, setBalances] = useState<PaymentBillBalanceRecord[]>([])
-  const [electricityBills, setElectricityBills] = useState<ElectricityBillRecord[]>([])
-  const [tenantAssignments, setTenantAssignments] = useState<TenantAssignmentRecord[]>([])
-  const [openingBalances, setOpeningBalances] = useState<OpeningBalanceRecord[]>([])
   const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchValue, setSearchValue] = useState('')
@@ -433,19 +521,13 @@ export function CurrentMonthCollectionPage({
       // recently cached balance from before a payment was recorded.
       invalidateOwnerDataCache(ownerUid)
 
-      const [nextBills, nextBalances, nextElectricityBills, nextAssignments, nextOpeningBalances] = await Promise.all([
+      const [nextBills, nextBalances] = await Promise.all([
         listRentBills(ownerUid),
         listPaymentBillBalances(ownerUid),
-        listElectricityBills(ownerUid),
-        listTenantAssignments(ownerUid),
-        listOpeningBalances(ownerUid),
       ])
 
       setBills(nextBills)
       setBalances(nextBalances)
-      setElectricityBills(nextElectricityBills)
-      setTenantAssignments(nextAssignments)
-      setOpeningBalances(nextOpeningBalances)
     } catch (error: unknown) {
       setPageError(getCollectionErrorMessage(error))
     } finally {
@@ -545,45 +627,19 @@ export function CurrentMonthCollectionPage({
     setPdfError('')
 
     try {
-      const { settings } = await loadWorkspaceSettings(ownerUid)
-      const selectedMonthStart = `${billingMonth}-01`
-      const balanceByKey = new Map(
-        balances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
-      )
-      const previousBillsDueByTenantId = new Map<string, number>()
-      const openingBalanceByTenantId = new Map<string, number>()
-      const addAmount = (target: Map<string, number>, tenantId: string, amountMinor: number) => {
-        if (!tenantId || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) return
-        target.set(tenantId, (target.get(tenantId) ?? 0) + amountMinor)
-      }
+      // Use the exact same source records and accounting model as the individual
+      // tenant statement PDF. The old report summed billBalance documents only,
+      // which could miss legacy/history balances and all unallocated advances.
+      invalidateOwnerDataCache(ownerUid)
+      const [ledgerData, { settings }] = await Promise.all([
+        loadLedgerSourceData(ownerUid),
+        loadWorkspaceSettings(ownerUid),
+      ])
+      const tenantLedgerBalanceById = calculateTenantLedgerBalances(ledgerData)
 
-      // Earlier rent and electricity invoices are shown as previous-bill dues.
-      // They remain separate from the tenant's opening balance and current rent.
-      for (const bill of bills) {
-        if (bill.billingMonth >= billingMonth) continue
-        const balance = balanceByKey.get(`rent__${bill.id}`)
-        addAmount(previousBillsDueByTenantId, bill.tenantId, balance?.outstandingMinor ?? bill.totalMinor)
-      }
-
-      for (const bill of electricityBills) {
-        if (bill.billingMonth >= billingMonth) continue
-        const balance = balanceByKey.get(`electricity__${bill.id}`)
-        const assignment = resolveElectricityBillTenantAssignment(bill, tenantAssignments)
-        const tenantId = balance?.tenantId ?? assignment?.tenantId
-        if (tenantId) addAmount(previousBillsDueByTenantId, tenantId, balance?.outstandingMinor ?? bill.amountMinor)
-      }
-
-      // Opening balance is its own component of the tenant's total due.
-      // It does not change the selected month's rent payment status.
-      for (const openingBalance of openingBalances) {
-        if (openingBalance.effectiveDate <= selectedMonthStart) {
-          addAmount(openingBalanceByTenantId, openingBalance.tenantId, openingBalance.outstandingMinor)
-        }
-      }
-
-      // Group current-month invoices by tenant. Balance is the amount brought
-      // forward from earlier unpaid bills plus the opening balance. The current
-      // month's rent remains a separate figure in the report.
+      // Group current-month rent invoices by tenant. The Balance value is the
+      // tenant's full current ledger balance (same as the individual statement);
+      // Rent Bill remains a separate reference column for the selected month.
       const tenantRowsById = new Map<string, CollectionPdfTenantRow>()
       for (const row of rows) {
         const tenantId = row.bill.tenantId
@@ -597,8 +653,7 @@ export function CurrentMonthCollectionPage({
             tenantId,
             tenantName: row.bill.tenantName,
             rooms: new Set([roomLabel]),
-            balanceMinor: (previousBillsDueByTenantId.get(tenantId) ?? 0) +
-              (openingBalanceByTenantId.get(tenantId) ?? 0),
+            balanceMinor: tenantLedgerBalanceById.get(tenantId) ?? 0,
             rentBillMinor: row.bill.totalMinor,
           })
         }
@@ -619,10 +674,12 @@ export function CurrentMonthCollectionPage({
       })
 
       const pdfTotals = tenantRows.reduce((total, row) => ({
-        balanceMinor: total.balanceMinor + row.balanceMinor,
+        dueMinor: total.dueMinor + Math.max(0, row.balanceMinor),
+        advanceMinor: total.advanceMinor + Math.max(0, -row.balanceMinor),
         rentBillMinor: total.rentBillMinor + row.rentBillMinor,
       }), {
-        balanceMinor: 0,
+        dueMinor: 0,
+        advanceMinor: 0,
         rentBillMinor: 0,
       })
 
@@ -659,7 +716,8 @@ export function CurrentMonthCollectionPage({
       const cardHeight = 43
       const cardGap = 12
       const summaryCards = [
-        { label: 'BALANCE BROUGHT FORWARD', value: formatCollectionPdfMoney(pdfTotals.balanceMinor), valueColor: colors.due },
+        { label: 'TOTAL TENANT DUE', value: formatCollectionPdfMoney(pdfTotals.dueMinor), valueColor: colors.due },
+        { label: 'TOTAL ADVANCE CREDIT', value: formatCollectionPdfMoney(pdfTotals.advanceMinor), valueColor: colors.advance },
         { label: 'CURRENT MONTH RENT BILL', value: formatCollectionPdfMoney(pdfTotals.rentBillMinor), valueColor: colors.black },
       ]
       const cardWidth = (pageWidth - margin * 2 - cardGap * (summaryCards.length - 1)) / summaryCards.length
@@ -692,7 +750,7 @@ export function CurrentMonthCollectionPage({
       const body = tenantRows.map((row) => [
         wrapCollectionPdfText(row.tenantName, 150, 8.5),
         sortCollectionRoomNumbers(row.rooms).join('\n'),
-        formatCollectionPdfMoney(row.balanceMinor),
+        formatCollectionPdfTenantBalance(row.balanceMinor),
         formatCollectionPdfMoney(row.rentBillMinor),
       ])
 
@@ -707,7 +765,7 @@ export function CurrentMonthCollectionPage({
         foot: [[
           'TOTAL',
           '',
-          formatCollectionPdfMoney(pdfTotals.balanceMinor),
+          `Due: ${formatCollectionPdfMoney(pdfTotals.dueMinor)}\nAdvance: ${formatCollectionPdfMoney(pdfTotals.advanceMinor)}`,
           formatCollectionPdfMoney(pdfTotals.rentBillMinor),
         ]],
         startY: 154,
@@ -746,8 +804,20 @@ export function CurrentMonthCollectionPage({
         didParseCell: (hookData) => {
           if (hookData.section !== 'body' && hookData.section !== 'foot') return
           if (hookData.column.index === 2) {
-            // Balance brought forward is money owed to the property.
-            hookData.cell.styles.textColor = colors.due
+            if (hookData.section === 'body') {
+              const tenantRow = tenantRows[hookData.row.index]
+              hookData.cell.styles.textColor = tenantRow
+                ? tenantRow.balanceMinor > 0
+                  ? colors.due
+                  : tenantRow.balanceMinor < 0
+                    ? colors.advance
+                    : colors.black
+                : colors.black
+            } else {
+              // Footer totals show due and advance on separate lines; the
+              // summary cards above color each aggregate independently.
+              hookData.cell.styles.textColor = colors.ink
+            }
           } else if (hookData.column.index === 3) {
             // Current month's rent bill is shown in neutral black.
             hookData.cell.styles.textColor = colors.black
@@ -780,7 +850,7 @@ export function CurrentMonthCollectionPage({
         pdf.setFontSize(6.5)
         pdf.setTextColor(...colors.muted)
         pdf.text(
-          'Balance means outstanding earlier-month rent/electricity bills plus the tenant opening balance. Current-month rent is shown separately.',
+          'Balance matches the tenant statement: issued rent/electricity bills + opening balance adjustments - posted receipts. Positive = due; negative = advance. Current-month rent bill is shown separately for reference.',
           margin,
           pageHeight - 16,
           { maxWidth: pageWidth - margin * 2 - 65 },
@@ -798,12 +868,9 @@ export function CurrentMonthCollectionPage({
     balances,
     billingMonth,
     bills,
-    electricityBills,
     isDownloadingPdf,
-    openingBalances,
     ownerUid,
     rows,
-    tenantAssignments,
   ])
 
   const isCurrentMonth = billingMonth === getCurrentBillingMonth()
