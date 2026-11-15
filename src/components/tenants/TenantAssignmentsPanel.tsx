@@ -64,6 +64,7 @@ export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChang
   const [formError, setFormError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
   const [showAllHistory, setShowAllHistory] = useState(false)
+  const [currentPropertyFilter, setCurrentPropertyFilter] = useState('all')
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -100,6 +101,28 @@ export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChang
     () => assignments.filter((assignment) => assignment.status === 'current'),
     [assignments],
   )
+
+  const currentAssignmentProperties = useMemo(() => {
+    const propertyIds = new Set(currentAssignments.map((assignment) => assignment.propertyId))
+    return properties
+      .filter((property) => propertyIds.has(property.id))
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }))
+  }, [currentAssignments, properties])
+
+  const visibleCurrentAssignments = useMemo(
+    () => currentPropertyFilter === 'all'
+      ? currentAssignments
+      : currentAssignments.filter((assignment) => assignment.propertyId === currentPropertyFilter),
+    [currentAssignments, currentPropertyFilter],
+  )
+
+  const currentAssignmentCountByProperty = useMemo(() => {
+    const counts = new Map<string, number>()
+    currentAssignments.forEach((assignment) => {
+      counts.set(assignment.propertyId, (counts.get(assignment.propertyId) ?? 0) + 1)
+    })
+    return counts
+  }, [currentAssignments])
 
   const endedAssignments = useMemo(
     () => assignments
@@ -430,8 +453,28 @@ export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChang
               <span>Choose a tenant and a vacant room to record a room assignment.</span>
             </div>
           ) : (
-            <div className="tenant-assignment-list">
-              {currentAssignments.map((assignment) => {
+            <>
+              <label className="tenant-assignment-field" style={{ maxWidth: 360, marginBottom: 14 }}>
+                <span>Filter by property</span>
+                <select
+                  value={currentPropertyFilter}
+                  onChange={(event) => setCurrentPropertyFilter(event.target.value)}
+                  aria-label="Filter current assignments by property"
+                >
+                  <option value="all">All properties ({currentAssignments.length})</option>
+                  {currentAssignmentProperties.map((property) => (
+                    <option key={property.id} value={property.id}>
+                      {property.name} ({currentAssignmentCountByProperty.get(property.id) ?? 0})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {visibleCurrentAssignments.length === 0 ? (
+                <div className="tenant-assignment-empty">No current assignments found for this property.</div>
+              ) : (
+                <div className="tenant-assignment-list">
+                  {visibleCurrentAssignments.map((assignment) => {
                 const propertyName = propertyById.get(assignment.propertyId)?.name ?? assignment.propertyCode
                 const isMovingOut = moveOutAssignmentId === assignment.id
 
@@ -504,8 +547,10 @@ export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChang
                     )}
                   </article>
                 )
-              })}
-            </div>
+                  })}
+                </div>
+              )}
+            </>
           )}
         </div>
 
