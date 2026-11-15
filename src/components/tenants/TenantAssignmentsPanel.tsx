@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { ArrowRightLeft, CalendarDays, CheckCircle2, Clock3, DoorOpen, LogOut, RefreshCw, UserRound, Users } from 'lucide-react'
+import { ArrowRightLeft, CalendarDays, CheckCircle2, ChevronDown, ChevronUp, Clock3, DoorOpen, History, LogOut, RefreshCw, UserRound, Users } from 'lucide-react'
 
 import { listRooms, type RoomRecord } from '../../services/firebase/rooms'
 import { recordAuditEvent } from '../../services/firebase/audit'
@@ -18,8 +18,12 @@ import type { TenantAssignmentFormValues, TenantMoveOutFormValues } from '../../
 
 import './tenant-assignments.css'
 
+export type TenantAssignmentsSection = 'history' | 'current' | 'tenants'
+
 type TenantAssignmentsPanelProps = {
   ownerUid: string
+  activeSection: TenantAssignmentsSection
+  onSectionChange: (section: TenantAssignmentsSection) => void
 }
 
 function getLocalToday(): string {
@@ -46,7 +50,7 @@ function roomDisplayName(room: RoomRecord, propertyName: string): string {
   return `${room.roomCode} · ${propertyName} · ${room.floorName} · Room ${room.roomNumber}`
 }
 
-export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps) {
+export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChange }: TenantAssignmentsPanelProps) {
   const [tenants, setTenants] = useState<TenantRecord[]>([])
   const [rooms, setRooms] = useState<RoomRecord[]>([])
   const [properties, setProperties] = useState<PropertyRecord[]>([])
@@ -59,6 +63,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
   const [pageError, setPageError] = useState('')
   const [formError, setFormError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [showAllHistory, setShowAllHistory] = useState(false)
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -97,9 +102,19 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
   )
 
   const endedAssignments = useMemo(
-    () => assignments.filter((assignment) => assignment.status === 'ended'),
+    () => assignments
+      .filter((assignment) => assignment.status === 'ended')
+      .sort((left, right) => {
+        const dateOrder = (right.moveOutDate ?? '').localeCompare(left.moveOutDate ?? '')
+        if (dateOrder !== 0) return dateOrder
+        return (right.updatedAt?.toMillis() ?? 0) - (left.updatedAt?.toMillis() ?? 0)
+      }),
     [assignments],
   )
+
+  const visibleHistory = showAllHistory
+    ? endedAssignments
+    : endedAssignments.slice(0, 5)
 
   const assignedRoomIds = useMemo(
     () => new Set(currentAssignments.map((assignment) => assignment.roomId)),
@@ -248,7 +263,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
         </div>
       </div>
 
-      <div className="tenant-assignment-layout">
+      <div className="tenant-assignment-form-layout">
         <form className="tenant-assignment-card tenant-assignment-form" onSubmit={handleAssign}>
           <div className="tenant-assignment-card-heading">
             <span className="tenant-assignment-heading-icon"><ArrowRightLeft size={18} aria-hidden="true" /></span>
@@ -359,6 +374,42 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
           <p className="tenant-assignment-footnote">Each room gets its own permanent assignment history and separate rent / meter billing. All rooms stay linked to one tenant profile.</p>
         </form>
 
+        </div>
+
+      <div className="tenant-assignment-tabs" role="group" aria-label="Tenant management sections">
+        <button
+          type="button"
+          className={`tenant-assignment-tab${activeSection === 'history' ? ' is-active' : ''}`}
+          aria-pressed={activeSection === 'history'}
+          onClick={() => onSectionChange('history')}
+        >
+          <History size={17} aria-hidden="true" />
+          <span>Assignment History</span>
+          <small>{endedAssignments.length}</small>
+        </button>
+        <button
+          type="button"
+          className={`tenant-assignment-tab${activeSection === 'current' ? ' is-active' : ''}`}
+          aria-pressed={activeSection === 'current'}
+          onClick={() => onSectionChange('current')}
+        >
+          <CheckCircle2 size={17} aria-hidden="true" />
+          <span>Current Assignments</span>
+          <small>{currentAssignments.length}</small>
+        </button>
+        <button
+          type="button"
+          className={`tenant-assignment-tab${activeSection === 'tenants' ? ' is-active' : ''}`}
+          aria-pressed={activeSection === 'tenants'}
+          onClick={() => onSectionChange('tenants')}
+        >
+          <Users size={17} aria-hidden="true" />
+          <span>Tenants List</span>
+          <small>{tenants.length}</small>
+        </button>
+      </div>
+
+      {activeSection === 'current' && (
         <div className="tenant-assignment-card tenant-assignment-current-card">
           <div className="tenant-assignment-card-heading">
             <span className="tenant-assignment-heading-icon"><CheckCircle2 size={18} aria-hidden="true" /></span>
@@ -457,9 +508,11 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
             </div>
           )}
         </div>
-      </div>
 
-      <div className="tenant-assignment-card tenant-assignment-history-card">
+      )}
+
+      {activeSection === 'history' && (
+        <div className="tenant-assignment-card tenant-assignment-history-card">
         <div className="tenant-assignment-card-heading">
           <span className="tenant-assignment-heading-icon"><Clock3 size={18} aria-hidden="true" /></span>
           <div>
@@ -474,7 +527,7 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
           <div className="tenant-assignment-history-empty">No completed assignments yet.</div>
         ) : (
           <div className="tenant-assignment-history-list">
-            {endedAssignments.map((assignment) => (
+            {visibleHistory.map((assignment) => (
               <article className="tenant-assignment-history-item" key={assignment.id}>
                 <div className="tenant-assignment-history-main">
                   <strong>{assignment.tenantName}</strong>
@@ -491,7 +544,21 @@ export function TenantAssignmentsPanel({ ownerUid }: TenantAssignmentsPanelProps
             ))}
           </div>
         )}
+
+        {endedAssignments.length > 5 && (
+          <div className="tenant-assignment-history-toggle-row">
+            <button
+              type="button"
+              className="tenant-assignment-secondary-button tenant-assignment-history-toggle"
+              onClick={() => setShowAllHistory((current) => !current)}
+            >
+              {showAllHistory ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
+              {showAllHistory ? 'Show recent 5' : `Show all ${endedAssignments.length} history records`}
+            </button>
+          </div>
+        )}
       </div>
+      )}
     </section>
   )
 }

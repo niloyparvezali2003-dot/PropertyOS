@@ -18,7 +18,10 @@ import {
 
 import { SearchInput } from '../components/ui/SearchInput'
 import { recordAuditEvent } from '../services/firebase/audit'
-import { TenantAssignmentsPanel } from '../components/tenants/TenantAssignmentsPanel'
+import {
+    TenantAssignmentsPanel,
+    type TenantAssignmentsSection,
+} from '../components/tenants/TenantAssignmentsPanel'
 
 import {
     createTenant,
@@ -93,6 +96,7 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
     const [statusFilter, setStatusFilter] = useState<
         'all' | TenantStatus
     >('all')
+    const [activeSection, setActiveSection] = useState<TenantAssignmentsSection>('current')
 
     const [isLoading, setIsLoading] = useState(true)
     const [pageError, setPageError] = useState('')
@@ -244,6 +248,7 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
             setIsDialogOpen(false)
             setEditingTenant(null)
             setForm({ ...emptyForm })
+            if (!editingTenant) setActiveSection('tenants')
 
             await loadTenants()
         } catch (error: unknown) {
@@ -274,8 +279,14 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
                 </button>
             </header>
 
-            <TenantAssignmentsPanel ownerUid={ownerUid} />
+            <TenantAssignmentsPanel
+                ownerUid={ownerUid}
+                activeSection={activeSection}
+                onSectionChange={setActiveSection}
+            />
 
+            {activeSection === 'tenants' && (
+                <>
             <section className="tenants-toolbar">
                 <SearchInput
                     value={search}
@@ -421,6 +432,8 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
                         </article>
                     ))}
                 </section>
+            )}
+                </>
             )}
 
             {isDialogOpen && (

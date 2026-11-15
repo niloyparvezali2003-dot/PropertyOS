@@ -26,7 +26,9 @@ import {
 } from '../services/firebase/rentBills'
 import {
   type PaymentBillBalanceRecord,
+  type TenantCreditRecord,
   listPaymentBillBalances,
+  listTenantCredits,
 } from '../services/firebase/payments'
 import {
   type ElectricityBillRecord,
@@ -65,11 +67,13 @@ type CollectionPdfTenantRow = {
   tenantId: string
   tenantName: string
   rooms: Set<string>
-  previousDueMinor: number
+  previousBillsDueMinor: number
+  openingBalanceMinor: number
   rentBillMinor: number
   paidAgainstBillMinor: number
   remainingMinor: number
-  totalOutstandingMinor: number
+  totalDueMinor: number
+  availableAdvanceCreditMinor: number
   status: CollectionStatus
 }
 
@@ -105,6 +109,9 @@ const COLLECTION_PDF_COLORS = {
   gold: [213, 165, 46] as CollectionPdfColor,
   ivory: [246, 243, 235] as CollectionPdfColor,
   ink: [38, 54, 74] as CollectionPdfColor,
+  black: [0, 0, 0] as CollectionPdfColor,
+  due: [185, 28, 28] as CollectionPdfColor,
+  advance: [22, 101, 52] as CollectionPdfColor,
   muted: [100, 116, 139] as CollectionPdfColor,
   border: [232, 225, 213] as CollectionPdfColor,
   white: [255, 255, 255] as CollectionPdfColor,
@@ -144,6 +151,31 @@ function getStatusLabel(status: CollectionStatus): string {
 
 function getStatusClass(status: CollectionStatus): string {
   return `collection-status collection-status-${status}`
+}
+
+const COLLECTION_ROOM_COLLATOR = new Intl.Collator('en', {
+  sensitivity: 'base',
+  numeric: true,
+})
+
+function compareCollectionRoomNumbers(left: string, right: string): number {
+  const leftRoom = left.trim().toLocaleUpperCase('en-US')
+  const rightRoom = right.trim().toLocaleUpperCase('en-US')
+  const leftIsNumericRoom = /^\d/.test(leftRoom)
+  const rightIsNumericRoom = /^\d/.test(rightRoom)
+
+  // Put numbered apartment rooms first (101, 102, 103...), followed by
+  // prefixed rooms in natural order (HB-01, S-01, TS-01, UT-01...).
+  if (leftIsNumericRoom !== rightIsNumericRoom) {
+    return leftIsNumericRoom ? -1 : 1
+  }
+
+  return COLLECTION_ROOM_COLLATOR.compare(leftRoom, rightRoom)
+}
+
+function sortCollectionRoomNumbers(rooms: Iterable<string>): string[] {
+  return [...new Set([...rooms].map((room) => room.trim()).filter(Boolean))]
+    .sort(compareCollectionRoomNumbers)
 }
 
 function getCollectionErrorMessage(error: unknown): string {
@@ -392,6 +424,7 @@ export function CurrentMonthCollectionPage({
   const [electricityBills, setElectricityBills] = useState<ElectricityBillRecord[]>([])
   const [tenantAssignments, setTenantAssignments] = useState<TenantAssignmentRecord[]>([])
   const [openingBalances, setOpeningBalances] = useState<OpeningBalanceRecord[]>([])
+  const [tenantCredits, setTenantCredits] = useState<TenantCreditRecord[]>([])
   const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchValue, setSearchValue] = useState('')
@@ -409,12 +442,13 @@ export function CurrentMonthCollectionPage({
       // recently cached balance from before a payment was recorded.
       invalidateOwnerDataCache(ownerUid)
 
-      const [nextBills, nextBalances, nextElectricityBills, nextAssignments, nextOpeningBalances] = await Promise.all([
+      const [nextBills, nextBalances, nextElectricityBills, nextAssignments, nextOpeningBalances, nextTenantCredits] = await Promise.all([
         listRentBills(ownerUid),
         listPaymentBillBalances(ownerUid),
         listElectricityBills(ownerUid),
         listTenantAssignments(ownerUid),
         listOpeningBalances(ownerUid),
+        listTenantCredits(ownerUid),
       ])
 
       setBills(nextBills)
@@ -422,6 +456,7 @@ export function CurrentMonthCollectionPage({
       setElectricityBills(nextElectricityBills)
       setTenantAssignments(nextAssignments)
       setOpeningBalances(nextOpeningBalances)
+      setTenantCredits(nextTenantCredits)
     } catch (error: unknown) {
       setPageError(getCollectionErrorMessage(error))
     } finally {
@@ -468,8 +503,8 @@ export function CurrentMonthCollectionPage({
         }
       })
       .sort((a, b) =>
+        compareCollectionRoomNumbers(a.bill.roomNumber, b.bill.roomNumber) ||
         collator.compare(a.bill.propertyCode, b.bill.propertyCode) ||
-        collator.compare(a.bill.roomNumber, b.bill.roomNumber) ||
         collator.compare(a.bill.tenantName, b.bill.tenantName),
       )
   }, [bills, balances, billingMonth])
@@ -526,21 +561,22 @@ export function CurrentMonthCollectionPage({
       const balanceByKey = new Map(
         balances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
       )
-      const previousDueByTenantId = new Map<string, number>()
-      const addPreviousDue = (tenantId: string, amountMinor: number) => {
+      const previousBillsDueByTenantId = new Map<string, number>()
+      const openingBalanceByTenantId = new Map<string, number>()
+      const advanceCreditByTenantId = new Map(
+        tenantCredits.map((credit) => [credit.tenantId, credit.creditMinor] as const),
+      )
+      const addAmount = (target: Map<string, number>, tenantId: string, amountMinor: number) => {
         if (!tenantId || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) return
-        previousDueByTenantId.set(
-          tenantId,
-          (previousDueByTenantId.get(tenantId) ?? 0) + amountMinor,
-        )
+        target.set(tenantId, (target.get(tenantId) ?? 0) + amountMinor)
       }
 
-      // Previous due includes outstanding issued bills from earlier months.
-      // It is kept separate from the selected month's rent invoice calculation.
+      // Earlier rent and electricity invoices are shown as previous-bill dues.
+      // They remain separate from the tenant's opening balance and current rent.
       for (const bill of bills) {
         if (bill.billingMonth >= billingMonth) continue
         const balance = balanceByKey.get(`rent__${bill.id}`)
-        addPreviousDue(bill.tenantId, balance?.outstandingMinor ?? bill.totalMinor)
+        addAmount(previousBillsDueByTenantId, bill.tenantId, balance?.outstandingMinor ?? bill.totalMinor)
       }
 
       for (const bill of electricityBills) {
@@ -548,14 +584,14 @@ export function CurrentMonthCollectionPage({
         const balance = balanceByKey.get(`electricity__${bill.id}`)
         const assignment = resolveElectricityBillTenantAssignment(bill, tenantAssignments)
         const tenantId = balance?.tenantId ?? assignment?.tenantId
-        if (tenantId) addPreviousDue(tenantId, balance?.outstandingMinor ?? bill.amountMinor)
+        if (tenantId) addAmount(previousBillsDueByTenantId, tenantId, balance?.outstandingMinor ?? bill.amountMinor)
       }
 
-      // The legacy opening balance is also a previous due, but it must not
-      // change the paid/partial/unpaid status of the selected month's rent bill.
+      // Opening balance is its own component of the tenant's total due.
+      // It does not change the selected month's rent payment status.
       for (const openingBalance of openingBalances) {
         if (openingBalance.effectiveDate <= selectedMonthStart) {
-          addPreviousDue(openingBalance.tenantId, openingBalance.outstandingMinor)
+          addAmount(openingBalanceByTenantId, openingBalance.tenantId, openingBalance.outstandingMinor)
         }
       }
 
@@ -565,7 +601,7 @@ export function CurrentMonthCollectionPage({
       for (const row of rows) {
         const tenantId = row.bill.tenantId
         const existing = tenantRowsById.get(tenantId)
-        const roomLabel = `${row.bill.propertyCode} · ${row.bill.roomNumber}`
+        const roomLabel = row.bill.roomNumber.trim() || row.bill.roomCode.trim()
         if (existing) {
           existing.rooms.add(roomLabel)
           existing.rentBillMinor += row.bill.totalMinor
@@ -576,11 +612,13 @@ export function CurrentMonthCollectionPage({
             tenantId,
             tenantName: row.bill.tenantName,
             rooms: new Set([roomLabel]),
-            previousDueMinor: previousDueByTenantId.get(tenantId) ?? 0,
+            previousBillsDueMinor: previousBillsDueByTenantId.get(tenantId) ?? 0,
+            openingBalanceMinor: openingBalanceByTenantId.get(tenantId) ?? 0,
             rentBillMinor: row.bill.totalMinor,
             paidAgainstBillMinor: row.paidAmountMinor,
             remainingMinor: row.outstandingMinor,
-            totalOutstandingMinor: 0,
+            totalDueMinor: 0,
+            availableAdvanceCreditMinor: advanceCreditByTenantId.get(tenantId) ?? 0,
             status: row.status,
           })
         }
@@ -588,7 +626,11 @@ export function CurrentMonthCollectionPage({
 
       const tenantRows = [...tenantRowsById.values()]
       for (const tenantRow of tenantRows) {
-        tenantRow.totalOutstandingMinor = tenantRow.previousDueMinor + tenantRow.remainingMinor
+        // Total Due is the amount still owed to the property: earlier unpaid
+        // bills + opening balance + this month's remaining rent. Advance credit
+        // is shown separately and is not subtracted from this figure.
+        tenantRow.totalDueMinor = tenantRow.previousBillsDueMinor +
+          tenantRow.openingBalanceMinor + tenantRow.remainingMinor
         tenantRow.status = tenantRow.remainingMinor <= 0
           ? 'paid'
           : tenantRow.paidAgainstBillMinor > 0
@@ -596,30 +638,37 @@ export function CurrentMonthCollectionPage({
             : 'unpaid'
       }
       tenantRows.sort((left, right) => {
-        const leftIsBengali = COLLECTION_BENGALI_PATTERN.test(left.tenantName)
-        const rightIsBengali = COLLECTION_BENGALI_PATTERN.test(right.tenantName)
-        if (leftIsBengali !== rightIsBengali) return leftIsBengali ? 1 : -1
-        return left.tenantName.localeCompare(right.tenantName, leftIsBengali ? 'bn' : 'en', {
+        const leftRooms = sortCollectionRoomNumbers(left.rooms)
+        const rightRooms = sortCollectionRoomNumbers(right.rooms)
+        const roomOrder = compareCollectionRoomNumbers(leftRooms[0] ?? '', rightRooms[0] ?? '')
+        if (roomOrder !== 0) return roomOrder
+
+        // Keep ties deterministic if two tenants happen to use the same room label.
+        return left.tenantName.localeCompare(right.tenantName, 'en', {
           sensitivity: 'base',
           numeric: true,
         })
       })
 
       const pdfTotals = tenantRows.reduce((total, row) => ({
-        previousDueMinor: total.previousDueMinor + row.previousDueMinor,
+        previousBillsDueMinor: total.previousBillsDueMinor + row.previousBillsDueMinor,
+        openingBalanceMinor: total.openingBalanceMinor + row.openingBalanceMinor,
         rentBillMinor: total.rentBillMinor + row.rentBillMinor,
         paidAgainstBillMinor: total.paidAgainstBillMinor + row.paidAgainstBillMinor,
         remainingMinor: total.remainingMinor + row.remainingMinor,
-        totalOutstandingMinor: total.totalOutstandingMinor + row.totalOutstandingMinor,
+        totalDueMinor: total.totalDueMinor + row.totalDueMinor,
+        availableAdvanceCreditMinor: total.availableAdvanceCreditMinor + row.availableAdvanceCreditMinor,
         paidCount: total.paidCount + (row.status === 'paid' ? 1 : 0),
         partialCount: total.partialCount + (row.status === 'partial' ? 1 : 0),
         unpaidCount: total.unpaidCount + (row.status === 'unpaid' ? 1 : 0),
       }), {
-        previousDueMinor: 0,
+        previousBillsDueMinor: 0,
+        openingBalanceMinor: 0,
         rentBillMinor: 0,
         paidAgainstBillMinor: 0,
         remainingMinor: 0,
-        totalOutstandingMinor: 0,
+        totalDueMinor: 0,
+        availableAdvanceCreditMinor: 0,
         paidCount: 0,
         partialCount: 0,
         unpaidCount: 0,
@@ -657,13 +706,15 @@ export function CurrentMonthCollectionPage({
       const cardY = 84
       const cardHeight = 43
       const cardGap = 10
-      const cardWidth = (pageWidth - margin * 2 - cardGap * 3) / 4
       const summaryCards = [
-        { label: 'PREVIOUS DUE', value: formatCollectionPdfMoney(pdfTotals.previousDueMinor) },
-        { label: 'RENT BILL', value: formatCollectionPdfMoney(pdfTotals.rentBillMinor) },
-        { label: 'PAID AGAINST BILL', value: formatCollectionPdfMoney(pdfTotals.paidAgainstBillMinor) },
-        { label: 'TOTAL OUTSTANDING', value: formatCollectionPdfMoney(pdfTotals.totalOutstandingMinor) },
+        { label: 'PREVIOUS BILLS DUE', value: formatCollectionPdfMoney(pdfTotals.previousBillsDueMinor), valueColor: colors.due },
+        { label: 'OPENING BALANCE', value: formatCollectionPdfMoney(pdfTotals.openingBalanceMinor), valueColor: colors.due },
+        { label: 'RENT BILL', value: formatCollectionPdfMoney(pdfTotals.rentBillMinor), valueColor: colors.black },
+        { label: 'PAID AGAINST BILL', value: formatCollectionPdfMoney(pdfTotals.paidAgainstBillMinor), valueColor: colors.black },
+        { label: 'TOTAL DUE', value: formatCollectionPdfMoney(pdfTotals.totalDueMinor), valueColor: colors.due },
+        { label: 'AVAILABLE ADVANCE CREDIT', value: formatCollectionPdfMoney(pdfTotals.availableAdvanceCreditMinor), valueColor: colors.advance },
       ]
+      const cardWidth = (pageWidth - margin * 2 - cardGap * (summaryCards.length - 1)) / summaryCards.length
       summaryCards.forEach((card, index) => {
         const x = margin + index * (cardWidth + cardGap)
         pdf.setFillColor(...colors.ivory)
@@ -677,7 +728,7 @@ export function CurrentMonthCollectionPage({
         pdf.text(card.label, x + 10, cardY + 14)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10)
-        pdf.setTextColor(...colors.navy)
+        pdf.setTextColor(...card.valueColor)
         pdf.text(card.value, x + 10, cardY + 31, { maxWidth: cardWidth - 18 })
       })
 
@@ -692,16 +743,18 @@ export function CurrentMonthCollectionPage({
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(7)
       pdf.setTextColor(...colors.muted)
-      pdf.text('Current-month status is based only on payments allocated to the selected month rent invoices.', pageWidth - margin, 144, { align: 'right' })
+      pdf.text('Status reflects only payments or advance credit allocated to this month’s rent invoices.', pageWidth - margin, 144, { align: 'right' })
 
       const body = tenantRows.map((row) => [
-        wrapCollectionPdfText(row.tenantName, 130, 7.2),
-        [...row.rooms].join('\n'),
-        formatCollectionPdfMoney(row.previousDueMinor),
+        wrapCollectionPdfText(row.tenantName, 112, 7.2),
+        sortCollectionRoomNumbers(row.rooms).join('\n'),
+        formatCollectionPdfMoney(row.previousBillsDueMinor),
+        formatCollectionPdfMoney(row.openingBalanceMinor),
         formatCollectionPdfMoney(row.rentBillMinor),
         formatCollectionPdfMoney(row.paidAgainstBillMinor),
         formatCollectionPdfMoney(row.remainingMinor),
-        formatCollectionPdfMoney(row.totalOutstandingMinor),
+        formatCollectionPdfMoney(row.totalDueMinor),
+        formatCollectionPdfMoney(row.availableAdvanceCreditMinor),
         getStatusLabel(row.status),
       ])
 
@@ -709,22 +762,26 @@ export function CurrentMonthCollectionPage({
         head: [[
           'Tenant',
           'Room(s)',
-          'Previous Due',
+          'Previous Bills Due',
+          'Opening Balance',
           'Rent Bill',
           'Paid Against Bill',
           'Remaining',
-          'Total Outstanding',
+          'Total Due',
+          'Available Advance Credit',
           'Status',
         ]],
         body,
         foot: [[
           'TOTAL',
           '',
-          formatCollectionPdfMoney(pdfTotals.previousDueMinor),
+          formatCollectionPdfMoney(pdfTotals.previousBillsDueMinor),
+          formatCollectionPdfMoney(pdfTotals.openingBalanceMinor),
           formatCollectionPdfMoney(pdfTotals.rentBillMinor),
           formatCollectionPdfMoney(pdfTotals.paidAgainstBillMinor),
           formatCollectionPdfMoney(pdfTotals.remainingMinor),
-          formatCollectionPdfMoney(pdfTotals.totalOutstandingMinor),
+          formatCollectionPdfMoney(pdfTotals.totalDueMinor),
+          formatCollectionPdfMoney(pdfTotals.availableAdvanceCreditMinor),
           '',
         ]],
         startY: 154,
@@ -755,17 +812,33 @@ export function CurrentMonthCollectionPage({
         },
         alternateRowStyles: { fillColor: [250, 249, 246] },
         columnStyles: {
-          0: { cellWidth: 130 },
-          1: { cellWidth: 82 },
-          2: { cellWidth: 82, halign: 'right' },
-          3: { cellWidth: 78, halign: 'right' },
-          4: { cellWidth: 91, halign: 'right' },
-          5: { cellWidth: 78, halign: 'right' },
-          6: { cellWidth: 105, halign: 'right' },
-          7: { cellWidth: 75, halign: 'center' },
+          0: { cellWidth: 120 },
+          1: { cellWidth: 55 },
+          2: { cellWidth: 74, halign: 'right' },
+          3: { cellWidth: 70, halign: 'right' },
+          4: { cellWidth: 66, halign: 'right' },
+          5: { cellWidth: 80, halign: 'right' },
+          6: { cellWidth: 64, halign: 'right' },
+          7: { cellWidth: 76, halign: 'right' },
+          8: { cellWidth: 107, halign: 'right' },
+          9: { cellWidth: 70, halign: 'center' },
         },
         didParseCell: (hookData) => {
-          if (hookData.section !== 'body' || hookData.column.index !== 7) return
+          if (hookData.section === 'body' || hookData.section === 'foot') {
+            const amountColumn = hookData.column.index
+            if ([2, 3, 6, 7].includes(amountColumn)) {
+              // Previous bills due, opening balance, remaining rent and total due.
+              hookData.cell.styles.textColor = colors.due
+            } else if (amountColumn === 8) {
+              // Available advance credit is a positive credit for the tenant.
+              hookData.cell.styles.textColor = colors.advance
+            } else if ([4, 5].includes(amountColumn)) {
+              // Rent billed and payment collected are shown in neutral black.
+              hookData.cell.styles.textColor = colors.black
+            }
+          }
+
+          if (hookData.section !== 'body' || hookData.column.index !== 9) return
           const status = String(hookData.cell.raw ?? '')
           if (status === 'Paid') {
             hookData.cell.styles.textColor = [22, 101, 52]
@@ -808,7 +881,7 @@ export function CurrentMonthCollectionPage({
         pdf.setFontSize(6.5)
         pdf.setTextColor(...colors.muted)
         pdf.text(
-          'Previous Due includes currently outstanding earlier-month rent/electricity bills and the tenant opening balance. Current-month status excludes previous dues.',
+          'Total Due includes previous unpaid rent/electricity bills, the opening balance, and the current-month rent remaining. Available Advance Credit is shown separately and is not deducted automatically. Current-month status changes only when payment or credit is allocated to this month’s rent bills.',
           margin,
           pageHeight - 16,
           { maxWidth: pageWidth - margin * 2 - 65 },
@@ -832,6 +905,7 @@ export function CurrentMonthCollectionPage({
     ownerUid,
     rows,
     tenantAssignments,
+    tenantCredits,
   ])
 
   const isCurrentMonth = billingMonth === getCurrentBillingMonth()
