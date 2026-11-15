@@ -143,6 +143,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
 
   const [billSearch, setBillSearch] = useState('')
   const [billMonthFilter, setBillMonthFilter] = useState(getCurrentBillingMonth)
+  const [activeReviewSection, setActiveReviewSection] = useState<'rates' | 'bills'>('rates')
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -641,6 +642,29 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
           </article>
         </section>
 
+        <div className="rent-review-switcher" role="group" aria-label="Rent information sections">
+          <button
+            type="button"
+            className={activeReviewSection === 'rates' ? 'rent-review-tab is-active' : 'rent-review-tab'}
+            onClick={() => setActiveReviewSection('rates')}
+            aria-pressed={activeReviewSection === 'rates'}
+          >
+            <CircleDollarSign size={17} aria-hidden="true" />
+            <span>Rent Rate History</span>
+            <small>{rates.length}</small>
+          </button>
+          <button
+            type="button"
+            className={activeReviewSection === 'bills' ? 'rent-review-tab is-active' : 'rent-review-tab'}
+            onClick={() => setActiveReviewSection('bills')}
+            aria-pressed={activeReviewSection === 'bills'}
+          >
+            <ReceiptText size={17} aria-hidden="true" />
+            <span>Issued Rent Bills</span>
+            <small>{filteredBills.length}</small>
+          </button>
+        </div>
+
         <div className="rent-workspace-grid">
           <section className="panel rent-generator-panel">
             <div className="panel-heading">
@@ -717,6 +741,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
             )}
           </section>
 
+          {activeReviewSection === 'rates' && (
           <section className="panel rent-rates-panel">
             <div className="panel-heading">
               <div>
@@ -875,8 +900,9 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
               </div>
             )}
           </section>
-        </div>
+          )}
 
+          {activeReviewSection === 'bills' && (
         <section className="panel rent-bills-panel">
           <div className="panel-heading rent-bills-heading">
             <div>
@@ -965,6 +991,8 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
             </div>
           )}
         </section>
+          )}
+        </div>
       </div>
 
       {isRateDialogOpen && (

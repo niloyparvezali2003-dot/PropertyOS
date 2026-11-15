@@ -855,3 +855,96 @@
     transition: none;
   }
 }
+
+/* Compact switcher for the two long rent review sections. */
+.rent-review-switcher {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.rent-review-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 11px 14px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 12px);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+
+.rent-review-tab > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rent-review-tab > small {
+  display: inline-grid;
+  flex: 0 0 auto;
+  min-width: 23px;
+  height: 22px;
+  place-items: center;
+  padding: 0 6px;
+  color: var(--muted);
+  background: var(--surface-secondary);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.rent-review-tab:hover {
+  color: var(--text);
+  border-color: var(--color-action);
+}
+
+.rent-review-tab.is-active {
+  color: var(--color-action);
+  background: var(--color-action-soft);
+  border-color: var(--color-action);
+}
+
+.rent-review-tab.is-active > small {
+  color: var(--color-action);
+  background: var(--surface);
+}
+
+.rent-review-tab:focus-visible {
+  outline: 3px solid var(--color-action-soft);
+  outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .rent-review-switcher {
+    gap: 7px;
+  }
+
+  .rent-review-tab {
+    gap: 6px;
+    min-height: 46px;
+    padding: 9px 7px;
+    font-size: 10px;
+  }
+
+  .rent-review-tab > small {
+    min-width: 20px;
+    height: 20px;
+    padding-inline: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rent-review-tab {
+    transition: none;
+  }
+}
