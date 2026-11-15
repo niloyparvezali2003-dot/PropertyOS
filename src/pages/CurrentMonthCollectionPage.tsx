@@ -52,6 +52,19 @@ type CollectionRow = {
   status: CollectionStatus
 }
 
+type CollectionTenantTableRow = {
+  tenantId: string
+  tenantName: string
+  tenantCode: string
+  propertyCodes: string[]
+  rooms: string[]
+  floorNames: string[]
+  rentBillMinor: number
+  paidAmountMinor: number
+  outstandingMinor: number
+  status: CollectionStatus
+}
+
 type CollectionPdfTenantRow = {
   tenantId: string
   tenantName: string
@@ -580,6 +593,65 @@ export function CurrentMonthCollectionPage({
       )
   }, [bills, balances, billingMonth])
 
+  // The on-screen collection table is tenant-wise: a tenant with multiple
+  // room/shop invoices appears once, with room labels and amounts combined.
+  // This is intentionally separate from the PDF generation path below.
+  const tenantTableRows = useMemo<CollectionTenantTableRow[]>(() => {
+    const grouped = new Map<string, CollectionRow[]>()
+
+    for (const row of rows) {
+      const groupKey = row.bill.tenantId || `bill:${row.bill.id}`
+      const tenantRows = grouped.get(groupKey) ?? []
+      tenantRows.push(row)
+      grouped.set(groupKey, tenantRows)
+    }
+
+    return [...grouped.entries()].map(([tenantId, tenantRows]) => {
+      const first = tenantRows[0]!
+      const rentBillMinor = tenantRows.reduce((total, row) => total + row.bill.totalMinor, 0)
+      const paidAmountMinor = tenantRows.reduce((total, row) => total + row.paidAmountMinor, 0)
+      const outstandingMinor = tenantRows.reduce((total, row) => total + row.outstandingMinor, 0)
+      const status: CollectionStatus = outstandingMinor <= 0
+        ? 'paid'
+        : paidAmountMinor > 0
+          ? 'partial'
+          : 'unpaid'
+
+      return {
+        tenantId,
+        tenantName: first.bill.tenantName,
+        tenantCode: first.bill.tenantCode,
+        propertyCodes: [...new Set(tenantRows.map((row) => row.bill.propertyCode).filter(Boolean))]
+          .sort((a, b) => COLLECTION_ROOM_COLLATOR.compare(a, b)),
+        rooms: sortCollectionRoomNumbers(tenantRows.map((row) => row.bill.roomNumber || row.bill.roomCode)),
+        floorNames: [...new Set(tenantRows.map((row) => row.bill.floorName).filter(Boolean))]
+          .sort((a, b) => COLLECTION_ROOM_COLLATOR.compare(a, b)),
+        rentBillMinor,
+        paidAmountMinor,
+        outstandingMinor,
+        status,
+      }
+    }).sort((a, b) =>
+      compareCollectionRoomNumbers(a.rooms[0] ?? '', b.rooms[0] ?? '') ||
+      COLLECTION_ROOM_COLLATOR.compare(a.tenantName, b.tenantName),
+    )
+  }, [rows])
+
+  const tenantCounts = useMemo(() => tenantTableRows.reduce((counts, tenant) => {
+    counts.total += 1
+    if (tenant.status === 'paid') counts.paid += 1
+    if (tenant.status === 'partial') counts.partial += 1
+    if (tenant.status === 'unpaid') counts.unpaid += 1
+    if (tenant.outstandingMinor > 0) counts.outstanding += 1
+    return counts
+  }, {
+    total: 0,
+    paid: 0,
+    partial: 0,
+    unpaid: 0,
+    outstanding: 0,
+  }), [tenantTableRows])
+
   const summary = useMemo(() => {
     return rows.reduce((result, row) => {
       result.billedMinor += row.bill.totalMinor
@@ -601,24 +673,23 @@ export function CurrentMonthCollectionPage({
     })
   }, [rows])
 
-  const filteredRows = useMemo(() => {
+  const filteredTenantRows = useMemo(() => {
     const search = searchValue.trim().toLocaleLowerCase()
 
-    return rows.filter((row) => {
-      if (statusFilter === 'outstanding' && row.outstandingMinor <= 0) return false
-      if (statusFilter !== 'all' && statusFilter !== 'outstanding' && row.status !== statusFilter) return false
+    return tenantTableRows.filter((tenant) => {
+      if (statusFilter === 'outstanding' && tenant.outstandingMinor <= 0) return false
+      if (statusFilter !== 'all' && statusFilter !== 'outstanding' && tenant.status !== statusFilter) return false
       if (!search) return true
 
       return [
-        row.bill.tenantName,
-        row.bill.tenantCode,
-        row.bill.roomNumber,
-        row.bill.roomCode,
-        row.bill.floorName,
-        row.bill.propertyCode,
+        tenant.tenantName,
+        tenant.tenantCode,
+        ...tenant.rooms,
+        ...tenant.floorNames,
+        ...tenant.propertyCodes,
       ].join(' ').toLocaleLowerCase().includes(search)
     })
-  }, [rows, searchValue, statusFilter])
+  }, [tenantTableRows, searchValue, statusFilter])
 
   const handleDownloadPdf = useCallback(async () => {
     if (rows.length === 0 || isDownloadingPdf) return
@@ -1016,9 +1087,9 @@ export function CurrentMonthCollectionPage({
                 <div>
                   <p className="eyebrow">{isCurrentMonth ? 'Running month' : 'Selected month'}</p>
                   <h2>{formatBillingMonth(billingMonth)} rent status</h2>
-                  <p>{summary.paidCount} paid · {summary.partialCount} partially paid · {summary.unpaidCount} unpaid</p>
+                  <p>{tenantCounts.paid} paid · {tenantCounts.partial} partially paid · {tenantCounts.unpaid} unpaid tenants</p>
                 </div>
-                <span className="collection-bill-count">{rows.length} bills</span>
+                <span className="collection-bill-count">{tenantCounts.total} tenants</span>
               </div>
 
               <div className="collection-toolbar">
@@ -1029,7 +1100,7 @@ export function CurrentMonthCollectionPage({
                     onClick={() => setStatusFilter('all')}
                     aria-pressed={statusFilter === 'all'}
                   >
-                    All <span>{rows.length}</span>
+                    All <span>{tenantCounts.total}</span>
                   </button>
                   <button
                     className={statusFilter === 'outstanding' ? 'is-active' : ''}
@@ -1037,7 +1108,7 @@ export function CurrentMonthCollectionPage({
                     onClick={() => setStatusFilter('outstanding')}
                     aria-pressed={statusFilter === 'outstanding'}
                   >
-                    Outstanding <span>{summary.unpaidCount + summary.partialCount}</span>
+                    Outstanding <span>{tenantCounts.outstanding}</span>
                   </button>
                   <button
                     className={statusFilter === 'unpaid' ? 'is-active' : ''}
@@ -1045,7 +1116,7 @@ export function CurrentMonthCollectionPage({
                     onClick={() => setStatusFilter('unpaid')}
                     aria-pressed={statusFilter === 'unpaid'}
                   >
-                    Unpaid <span>{summary.unpaidCount}</span>
+                    Unpaid <span>{tenantCounts.unpaid}</span>
                   </button>
                   <button
                     className={statusFilter === 'partial' ? 'is-active' : ''}
@@ -1053,7 +1124,7 @@ export function CurrentMonthCollectionPage({
                     onClick={() => setStatusFilter('partial')}
                     aria-pressed={statusFilter === 'partial'}
                   >
-                    Partial <span>{summary.partialCount}</span>
+                    Partial <span>{tenantCounts.partial}</span>
                   </button>
                   <button
                     className={statusFilter === 'paid' ? 'is-active' : ''}
@@ -1061,7 +1132,7 @@ export function CurrentMonthCollectionPage({
                     onClick={() => setStatusFilter('paid')}
                     aria-pressed={statusFilter === 'paid'}
                   >
-                    Paid <span>{summary.paidCount}</span>
+                    Paid <span>{tenantCounts.paid}</span>
                   </button>
                 </div>
                 <SearchInput
@@ -1071,7 +1142,7 @@ export function CurrentMonthCollectionPage({
                 />
               </div>
 
-              {filteredRows.length === 0 ? (
+              {filteredTenantRows.length === 0 ? (
                 <div className="collection-filter-empty">
                   No rent bills match this filter. Try another status or search term.
                 </div>
@@ -1081,7 +1152,7 @@ export function CurrentMonthCollectionPage({
                     <thead>
                       <tr>
                         <th>Tenant</th>
-                        <th>Room</th>
+                        <th>Room(s)</th>
                         <th className="is-numeric">Rent bill</th>
                         <th className="is-numeric">Paid against bill</th>
                         <th className="is-numeric">Remaining</th>
@@ -1089,24 +1160,27 @@ export function CurrentMonthCollectionPage({
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredRows.map(({ bill, paidAmountMinor, outstandingMinor, status }) => (
-                        <tr key={bill.id}>
+                      {filteredTenantRows.map((tenant) => (
+                        <tr key={tenant.tenantId}>
                           <td>
                             <div className="collection-tenant-cell">
-                              <strong>{bill.tenantName}</strong>
-                              <span>{bill.tenantCode} · {bill.propertyCode}</span>
+                              <strong>{tenant.tenantName}</strong>
+                              <span>
+                                {tenant.tenantCode}
+                                {tenant.propertyCodes.length > 0 ? ` · ${tenant.propertyCodes.join(', ')}` : ''}
+                              </span>
                             </div>
                           </td>
                           <td>
                             <div className="collection-room-cell">
-                              <strong>{bill.roomNumber}</strong>
-                              <span>{bill.floorName}</span>
+                              <strong>{tenant.rooms.join(', ') || '—'}</strong>
+                              {tenant.floorNames.length > 0 && <span>{tenant.floorNames.join(', ')}</span>}
                             </div>
                           </td>
-                          <td className="is-numeric">{formatTaka(bill.totalMinor)}</td>
-                          <td className="is-numeric collection-paid-amount">{formatTaka(paidAmountMinor)}</td>
-                          <td className="is-numeric collection-remaining-amount">{formatTaka(outstandingMinor)}</td>
-                          <td><span className={getStatusClass(status)}>{getStatusLabel(status)}</span></td>
+                          <td className="is-numeric">{formatTaka(tenant.rentBillMinor)}</td>
+                          <td className="is-numeric collection-paid-amount">{formatTaka(tenant.paidAmountMinor)}</td>
+                          <td className="is-numeric collection-remaining-amount">{formatTaka(tenant.outstandingMinor)}</td>
+                          <td><span className={getStatusClass(tenant.status)}>{getStatusLabel(tenant.status)}</span></td>
                         </tr>
                       ))}
                     </tbody>
