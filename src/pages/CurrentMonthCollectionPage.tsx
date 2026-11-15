@@ -493,9 +493,9 @@ function calculateTenantLedgerBalances(data: LedgerSourceData): Map<string, numb
 }
 
 function formatCollectionPdfTenantBalance(balanceMinor: number): string {
-  if (balanceMinor > 0) return `DUE: ${formatCollectionPdfMoney(balanceMinor)}`
-  if (balanceMinor < 0) return `ADVANCE: ${formatCollectionPdfMoney(Math.abs(balanceMinor))}`
-  return formatCollectionPdfMoney(0)
+  // The sign is communicated by the cell color: red = due, green = advance.
+  // Keep the cell itself clean and display only the currency amount.
+  return formatCollectionPdfMoney(Math.abs(balanceMinor))
 }
 
 export function CurrentMonthCollectionPage({
@@ -765,7 +765,7 @@ export function CurrentMonthCollectionPage({
         foot: [[
           'TOTAL',
           '',
-          `Due: ${formatCollectionPdfMoney(pdfTotals.dueMinor)}\nAdvance: ${formatCollectionPdfMoney(pdfTotals.advanceMinor)}`,
+          `${formatCollectionPdfMoney(pdfTotals.dueMinor)}\n${formatCollectionPdfMoney(pdfTotals.advanceMinor)}`,
           formatCollectionPdfMoney(pdfTotals.rentBillMinor),
         ]],
         startY: 154,
@@ -814,8 +814,10 @@ export function CurrentMonthCollectionPage({
                     : colors.black
                 : colors.black
             } else {
-              // Footer totals show due and advance on separate lines; the
-              // summary cards above color each aggregate independently.
+              // Draw the two footer amounts separately so due stays red and
+              // advance stays green without printing DUE/ADVANCE text labels.
+              hookData.cell.text = []
+              hookData.cell.styles.minCellHeight = 30
               hookData.cell.styles.textColor = colors.ink
             }
           } else if (hookData.column.index === 3) {
@@ -825,6 +827,26 @@ export function CurrentMonthCollectionPage({
         },
         didDrawCell: (hookData) => {
           drawCollectionPdfBengaliCell(pdf, hookData.cell as unknown as CollectionPdfCell)
+
+          if (hookData.section === 'foot' && hookData.column.index === 2) {
+            const cell = hookData.cell
+            pdf.setFont('helvetica', 'bold')
+            pdf.setFontSize(8)
+            pdf.setTextColor(...colors.due)
+            pdf.text(
+              formatCollectionPdfMoney(pdfTotals.dueMinor),
+              cell.x + cell.width - 7,
+              cell.y + 11,
+              { align: 'right' },
+            )
+            pdf.setTextColor(...colors.advance)
+            pdf.text(
+              formatCollectionPdfMoney(pdfTotals.advanceMinor),
+              cell.x + cell.width - 7,
+              cell.y + 23,
+              { align: 'right' },
+            )
+          }
         },
         didDrawPage: (hookData) => {
           if (hookData.pageNumber > 1) {
