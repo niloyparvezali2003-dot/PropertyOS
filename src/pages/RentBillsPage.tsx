@@ -596,12 +596,81 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
       pdf.setTextColor(...muted)
       pdf.text(`${rentRateOverview.length} room rent rate record(s) · amounts in BDT`, margin, 88)
 
-      const body = rentRateOverview.map(({ rate, room, tenantLabel }) => [
-        tenantLabel,
-        room?.roomNumber ?? rate.roomCode,
-        formatTakaForPdf(rate.monthlyRentMinor),
-        formatDate(rate.effectiveFrom),
-      ])
+      // Group the PDF by the existing property names in this order.
+      // PropertyOS currently stores a property's name/address/notes, rather
+      // than a separate property-type field, so match the requested labels
+      // against the saved property name and retain any other names afterward.
+      const propertyReportOrder = [
+        '5-Storey Apartment',
+        'Half-Building',
+        'TIN-Shed',
+        'Market',
+      ] as const
+      const normalizePropertyLabel = (value: string) =>
+        value
+          .normalize('NFKC')
+          .toLocaleLowerCase()
+          .replace(/[^a-z0-9]/g, '')
+      const getPropertyReportGroup = (propertyName: string) => {
+        const normalizedName = normalizePropertyLabel(propertyName)
+        return (propertyReportOrder.find((label) => {
+          const normalizedLabel = normalizePropertyLabel(label)
+          return normalizedName.includes(normalizedLabel)
+        }) ?? propertyName.trim()) || 'Unassigned Property'
+      }
+
+      const propertyGroups = new Map<string, typeof rentRateOverview>()
+      for (const item of rentRateOverview) {
+        const propertyName = item.property?.name ?? item.rate.propertyCode
+        const groupName = getPropertyReportGroup(propertyName || 'Unassigned Property')
+        const group = propertyGroups.get(groupName) ?? []
+        group.push(item)
+        propertyGroups.set(groupName, group)
+      }
+
+      const propertyNameCollator = new Intl.Collator('en', {
+        numeric: true,
+        sensitivity: 'base',
+      })
+      const roomNumberCollator = new Intl.Collator('en', {
+        numeric: true,
+        sensitivity: 'base',
+      })
+      const sortedPropertyGroups = [...propertyGroups.entries()].sort(([a], [b]) => {
+        const aIndex = propertyReportOrder.indexOf(a as (typeof propertyReportOrder)[number])
+        const bIndex = propertyReportOrder.indexOf(b as (typeof propertyReportOrder)[number])
+        const aRank = aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex
+        const bRank = bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex
+        if (aRank !== bRank) return aRank - bRank
+        return propertyNameCollator.compare(a, b)
+      })
+
+      const body = sortedPropertyGroups.flatMap(([propertyName, items]) => {
+        const groupHeading = {
+          content: propertyName,
+          colSpan: 4,
+          styles: {
+            fillColor: navy,
+            textColor: white,
+            fontStyle: 'bold' as const,
+            fontSize: 9,
+            cellPadding: 7,
+          },
+        }
+        const rateRows = [...items]
+          .sort((a, b) => roomNumberCollator.compare(
+            a.room?.roomNumber ?? a.rate.roomCode,
+            b.room?.roomNumber ?? b.rate.roomCode,
+          ))
+          .map(({ rate, room, tenantLabel }) => [
+            tenantLabel,
+            room?.roomNumber ?? rate.roomCode,
+            formatTakaForPdf(rate.monthlyRentMinor),
+            formatDate(rate.effectiveFrom),
+          ])
+
+        return [[groupHeading], ...rateRows]
+      })
 
       autoTable(pdf, {
         head: [['Tenant', 'Room', 'Rent Rate', 'Date']],
