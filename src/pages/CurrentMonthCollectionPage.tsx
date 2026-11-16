@@ -29,6 +29,7 @@ import {
   listPaymentBillBalances,
 } from '../services/firebase/payments'
 import {
+  resolveElectricityBillTenantAssignment,
   type ElectricityBillRecord,
 } from '../services/firebase/electricity'
 import { loadWorkspaceSettings } from '../services/firebase/workspaceSettings'
@@ -68,9 +69,13 @@ type CollectionTenantTableRow = {
 type CollectionPdfTenantRow = {
   tenantId: string
   tenantName: string
+  tenantCode: string
   rooms: Set<string>
   balanceMinor: number
   rentBillMinor: number
+  rentCollectedMinor: number
+  electricityBillMinor: number
+  electricityCollectedMinor: number
 }
 
 type CollectionPdfColor = [number, number, number]
@@ -692,48 +697,112 @@ export function CurrentMonthCollectionPage({
   }, [tenantTableRows, searchValue, statusFilter])
 
   const handleDownloadPdf = useCallback(async () => {
-    if (rows.length === 0 || isDownloadingPdf) return
+    if (isDownloadingPdf) return
 
     setIsDownloadingPdf(true)
     setPdfError('')
 
     try {
-      // Use the exact same source records and accounting model as the individual
-      // tenant statement PDF. The old report summed billBalance documents only,
-      // which could miss legacy/history balances and all unallocated advances.
+      // Build the PDF from the complete tenant and ledger sources, not only
+      // from the rent rows currently visible on the page. This ensures every
+      // active tenant is listed even when that tenant has no bill this month.
       invalidateOwnerDataCache(ownerUid)
-      const [ledgerData, { settings }] = await Promise.all([
+      const [ledgerData, freshBillBalances, { settings }] = await Promise.all([
         loadLedgerSourceData(ownerUid),
+        listPaymentBillBalances(ownerUid),
         loadWorkspaceSettings(ownerUid),
       ])
       const tenantLedgerBalanceById = calculateTenantLedgerBalances(ledgerData)
+      const billBalanceByKey = new Map(
+        freshBillBalances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
+      )
 
-      // Group current-month rent invoices by tenant. The Balance value is the
-      // tenant's full current ledger balance (same as the individual statement);
-      // Rent Bill remains a separate reference column for the selected month.
+      // Include all active tenants. Archived tenants are included only when
+      // their full tenant-ledger balance is non-zero (due or advance).
       const tenantRowsById = new Map<string, CollectionPdfTenantRow>()
-      for (const row of rows) {
-        const tenantId = row.bill.tenantId
-        const existing = tenantRowsById.get(tenantId)
-        const roomLabel = row.bill.roomNumber.trim() || row.bill.roomCode.trim()
-        if (existing) {
-          existing.rooms.add(roomLabel)
-          existing.rentBillMinor += row.bill.totalMinor
-        } else {
-          tenantRowsById.set(tenantId, {
-            tenantId,
-            tenantName: row.bill.tenantName,
-            rooms: new Set([roomLabel]),
-            balanceMinor: tenantLedgerBalanceById.get(tenantId) ?? 0,
-            rentBillMinor: row.bill.totalMinor,
-          })
-        }
+      for (const tenant of ledgerData.tenants) {
+        const balanceMinor = tenantLedgerBalanceById.get(tenant.id) ?? 0
+        if (tenant.status !== 'active' && balanceMinor === 0) continue
+
+        const tenantAssignments = ledgerData.tenantAssignments.filter(
+          (assignment) => assignment.tenantId === tenant.id,
+        )
+        const currentAssignments = tenantAssignments.filter(
+          (assignment) => assignment.status === 'current' && assignment.moveOutDate === null,
+        )
+        const roomAssignments = currentAssignments.length > 0
+          ? currentAssignments
+          : tenantAssignments.length > 0
+            ? (() => {
+                const latestAssignmentDate = tenantAssignments.reduce((latest, assignment) => {
+                  const assignmentDate = assignment.moveOutDate ?? assignment.moveInDate
+                  return assignmentDate > latest ? assignmentDate : latest
+                }, '')
+                return tenantAssignments.filter(
+                  (assignment) => (assignment.moveOutDate ?? assignment.moveInDate) === latestAssignmentDate,
+                )
+              })()
+            : []
+
+        tenantRowsById.set(tenant.id, {
+          tenantId: tenant.id,
+          tenantName: tenant.fullName,
+          tenantCode: tenant.tenantCode,
+          rooms: new Set(roomAssignments.map((assignment) =>
+            assignment.roomNumber.trim() || assignment.roomCode.trim(),
+          ).filter(Boolean)),
+          balanceMinor,
+          rentBillMinor: 0,
+          rentCollectedMinor: 0,
+          electricityBillMinor: 0,
+          electricityCollectedMinor: 0,
+        })
+      }
+
+      // Add the selected month's rent invoices and the payments allocated
+      // specifically to those rent invoices.
+      for (const bill of ledgerData.rentBills) {
+        if (bill.billingMonth !== billingMonth) continue
+        const tenantRow = tenantRowsById.get(bill.tenantId)
+        if (!tenantRow) continue
+
+        tenantRow.rooms.add(bill.roomNumber.trim() || bill.roomCode.trim())
+        tenantRow.rentBillMinor += bill.totalMinor
+        tenantRow.rentCollectedMinor += billBalanceByKey.get(`rent__${bill.id}`)?.paidAmountMinor ?? 0
+      }
+
+      // Add the selected month's electricity bills. New bills retain their
+      // tenant snapshot; legacy bills are resolved against the historical room
+      // assignment for the meter reading date.
+      for (const bill of ledgerData.electricityBills) {
+        if (bill.billingMonth !== billingMonth) continue
+        const resolvedAssignment = resolveElectricityBillTenantAssignment(
+          bill,
+          ledgerData.tenantAssignments,
+        )
+        const tenantId = bill.tenantId || resolvedAssignment?.tenantId ||
+          resolveLedgerElectricityTenantId(bill, ledgerData)
+        if (!tenantId) continue
+        const tenantRow = tenantRowsById.get(tenantId)
+        if (!tenantRow) continue
+
+        const roomRecord = ledgerData.rooms.find((room) => room.id === bill.roomId)
+        const roomLabel = bill.tenantRoomNumber?.trim() ||
+          resolvedAssignment?.roomNumber?.trim() ||
+          roomRecord?.roomNumber?.trim() ||
+          bill.roomCode.trim()
+        if (roomLabel) tenantRow.rooms.add(roomLabel)
+        tenantRow.electricityBillMinor += bill.amountMinor
+        tenantRow.electricityCollectedMinor +=
+          billBalanceByKey.get(`electricity__${bill.id}`)?.paidAmountMinor ?? 0
       }
 
       const tenantRows = [...tenantRowsById.values()]
       tenantRows.sort((left, right) => {
         const leftRooms = sortCollectionRoomNumbers(left.rooms)
         const rightRooms = sortCollectionRoomNumbers(right.rooms)
+        if (leftRooms.length === 0 && rightRooms.length > 0) return 1
+        if (leftRooms.length > 0 && rightRooms.length === 0) return -1
         const roomOrder = compareCollectionRoomNumbers(leftRooms[0] ?? '', rightRooms[0] ?? '')
         if (roomOrder !== 0) return roomOrder
 
@@ -744,15 +813,28 @@ export function CurrentMonthCollectionPage({
         })
       })
 
+      if (tenantRows.length === 0) {
+        throw new Error('No active tenants or inactive tenants with a non-zero due/advance balance were found.')
+      }
+
       const pdfTotals = tenantRows.reduce((total, row) => ({
         dueMinor: total.dueMinor + Math.max(0, row.balanceMinor),
         advanceMinor: total.advanceMinor + Math.max(0, -row.balanceMinor),
         rentBillMinor: total.rentBillMinor + row.rentBillMinor,
+        rentCollectedMinor: total.rentCollectedMinor + row.rentCollectedMinor,
+        electricityBillMinor: total.electricityBillMinor + row.electricityBillMinor,
+        electricityCollectedMinor: total.electricityCollectedMinor + row.electricityCollectedMinor,
       }), {
         dueMinor: 0,
         advanceMinor: 0,
         rentBillMinor: 0,
+        rentCollectedMinor: 0,
+        electricityBillMinor: 0,
+        electricityCollectedMinor: 0,
       })
+
+      const activeTenantCount = ledgerData.tenants.filter((tenant) => tenant.status === 'active').length
+      const archivedWithBalanceCount = tenantRows.length - activeTenantCount
 
       const houseName = settings.houseName || "T&N House's"
       const hasBengali = COLLECTION_BENGALI_PATTERN.test(houseName) ||
@@ -773,7 +855,7 @@ export function CurrentMonthCollectionPage({
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10)
       pdf.setTextColor(...colors.white)
-      pdf.text('MONTHLY RENT COLLECTION REPORT', margin, 48)
+      pdf.text('MONTHLY RENT & ELECTRICITY COLLECTION REPORT', margin, 48)
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(7)
       pdf.setTextColor(225, 232, 240)
@@ -784,12 +866,13 @@ export function CurrentMonthCollectionPage({
       pdf.text(`Billing month: ${formatBillingMonth(billingMonth)}`, margin, 62)
 
       const cardY = 84
-      const cardHeight = 43
-      const cardGap = 12
+      const cardHeight = 54
+      const cardGap = 10
       const summaryCards = [
-        { label: 'TOTAL TENANT DUE', value: formatCollectionPdfMoney(pdfTotals.dueMinor), valueColor: colors.due },
-        { label: 'TOTAL ADVANCE CREDIT', value: formatCollectionPdfMoney(pdfTotals.advanceMinor), valueColor: colors.advance },
-        { label: 'CURRENT MONTH RENT BILL', value: formatCollectionPdfMoney(pdfTotals.rentBillMinor), valueColor: colors.black },
+        { label: 'TOTAL TENANT DUE', value: formatCollectionPdfMoney(pdfTotals.dueMinor), detail: 'Full tenant-ledger balance', valueColor: colors.due },
+        { label: 'TOTAL ADVANCE CREDIT', value: formatCollectionPdfMoney(pdfTotals.advanceMinor), detail: 'Available tenant credit', valueColor: colors.advance },
+        { label: 'MONTHLY RENT BILL', value: formatCollectionPdfMoney(pdfTotals.rentBillMinor), detail: `Collected: ${formatCollectionPdfMoney(pdfTotals.rentCollectedMinor)}`, valueColor: colors.black },
+        { label: 'MONTHLY ELECTRICITY BILL', value: formatCollectionPdfMoney(pdfTotals.electricityBillMinor), detail: `Collected: ${formatCollectionPdfMoney(pdfTotals.electricityCollectedMinor)}`, valueColor: colors.black },
       ]
       const cardWidth = (pageWidth - margin * 2 - cardGap * (summaryCards.length - 1)) / summaryCards.length
       summaryCards.forEach((card, index) => {
@@ -804,25 +887,32 @@ export function CurrentMonthCollectionPage({
         pdf.setTextColor(...colors.muted)
         pdf.text(card.label, x + 10, cardY + 14)
         pdf.setFont('helvetica', 'bold')
-        pdf.setFontSize(10)
+        pdf.setFontSize(9)
         pdf.setTextColor(...card.valueColor)
-        pdf.text(card.value, x + 10, cardY + 31, { maxWidth: cardWidth - 18 })
+        pdf.text(card.value, x + 10, cardY + 30, { maxWidth: cardWidth - 18 })
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(6.2)
+        pdf.setTextColor(...colors.muted)
+        pdf.text(card.detail, x + 10, cardY + 44, { maxWidth: cardWidth - 18 })
       })
 
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(8)
       pdf.setTextColor(...colors.muted)
       pdf.text(
-        `${tenantRows.length} tenant${tenantRows.length === 1 ? '' : 's'} · amounts in BDT`,
+        `${tenantRows.length} tenants · ${activeTenantCount} active · ${archivedWithBalanceCount} inactive with balance · amounts in BDT`,
         margin,
-        144,
+        151,
       )
 
       const body = tenantRows.map((row) => [
-        wrapCollectionPdfText(row.tenantName, 150, 8.5),
-        sortCollectionRoomNumbers(row.rooms).join('\n'),
+        wrapCollectionPdfText(row.tenantName, 150, 8.1),
+        sortCollectionRoomNumbers(row.rooms).join('\n') || '—',
         formatCollectionPdfTenantBalance(row.balanceMinor),
         formatCollectionPdfMoney(row.rentBillMinor),
+        formatCollectionPdfMoney(row.rentCollectedMinor),
+        formatCollectionPdfMoney(row.electricityBillMinor),
+        formatCollectionPdfMoney(row.electricityCollectedMinor),
       ])
 
       autoTable(pdf, {
@@ -831,6 +921,9 @@ export function CurrentMonthCollectionPage({
           'Room(s)',
           'Balance',
           'Rent Bill',
+          'Rent Paid',
+          'Electricity Bill',
+          'Electricity Paid',
         ]],
         body,
         foot: [[
@@ -838,15 +931,18 @@ export function CurrentMonthCollectionPage({
           '',
           `${formatCollectionPdfMoney(pdfTotals.dueMinor)}\n${formatCollectionPdfMoney(pdfTotals.advanceMinor)}`,
           formatCollectionPdfMoney(pdfTotals.rentBillMinor),
+          formatCollectionPdfMoney(pdfTotals.rentCollectedMinor),
+          formatCollectionPdfMoney(pdfTotals.electricityBillMinor),
+          formatCollectionPdfMoney(pdfTotals.electricityCollectedMinor),
         ]],
-        startY: 154,
+        startY: 160,
         margin: { top: 64, bottom: 36, left: margin, right: margin },
         showHead: 'everyPage',
         showFoot: 'lastPage',
         styles: {
           font: 'helvetica',
-          fontSize: 8.5,
-          cellPadding: 7,
+          fontSize: 7.6,
+          cellPadding: 6,
           overflow: 'linebreak',
           valign: 'middle',
           textColor: colors.ink,
@@ -867,10 +963,13 @@ export function CurrentMonthCollectionPage({
         },
         alternateRowStyles: { fillColor: [250, 249, 246] },
         columnStyles: {
-          0: { cellWidth: 205 },
-          1: { cellWidth: 150 },
-          2: { cellWidth: 180, halign: 'right' },
-          3: { cellWidth: 180, halign: 'right' },
+          0: { cellWidth: 168 },
+          1: { cellWidth: 110 },
+          2: { cellWidth: 120, halign: 'right' },
+          3: { cellWidth: 90, halign: 'right' },
+          4: { cellWidth: 90, halign: 'right' },
+          5: { cellWidth: 100, halign: 'right' },
+          6: { cellWidth: 100, halign: 'right' },
         },
         didParseCell: (hookData) => {
           if (hookData.section !== 'body' && hookData.section !== 'foot') return
@@ -891,8 +990,8 @@ export function CurrentMonthCollectionPage({
               hookData.cell.styles.minCellHeight = 30
               hookData.cell.styles.textColor = colors.ink
             }
-          } else if (hookData.column.index === 3) {
-            // Current month's rent bill is shown in neutral black.
+          } else if (hookData.column.index >= 3) {
+            // Current-month rent/electricity bill and collected amounts stay black.
             hookData.cell.styles.textColor = colors.black
           }
         },
@@ -927,7 +1026,7 @@ export function CurrentMonthCollectionPage({
             pdf.setFont('helvetica', 'normal')
             pdf.setFontSize(8)
             pdf.setTextColor(225, 232, 240)
-            pdf.text(`Monthly rent collection · ${formatBillingMonth(billingMonth)}`, margin, 37)
+            pdf.text(`Monthly rent & electricity collection · ${formatBillingMonth(billingMonth)}`, margin, 37)
           }
         },
       })
@@ -943,7 +1042,7 @@ export function CurrentMonthCollectionPage({
         pdf.setFontSize(6.5)
         pdf.setTextColor(...colors.muted)
         pdf.text(
-          'Balance matches the tenant statement: issued rent/electricity bills + opening balance adjustments - posted receipts. Positive = due; negative = advance. Current-month rent bill is shown separately for reference.',
+          'Includes all active tenants and inactive tenants with a non-zero due/advance balance. Monthly Rent Paid and Electricity Paid show allocations to the selected month bills. Balance matches the tenant statement: issued rent/electricity bills + opening balance adjustments - posted receipts.',
           margin,
           pageHeight - 16,
           { maxWidth: pageWidth - margin * 2 - 65 },
@@ -951,20 +1050,13 @@ export function CurrentMonthCollectionPage({
         pdf.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 16, { align: 'right' })
       }
 
-      pdf.save(`rent-collection-${billingMonth}.pdf`)
+      pdf.save(`rent-electricity-collection-${billingMonth}.pdf`)
     } catch (error: unknown) {
       setPdfError(error instanceof Error ? error.message : 'Could not generate the rent collection PDF.')
     } finally {
       setIsDownloadingPdf(false)
     }
-  }, [
-    balances,
-    billingMonth,
-    bills,
-    isDownloadingPdf,
-    ownerUid,
-    rows,
-  ])
+  }, [billingMonth, isDownloadingPdf, ownerUid])
 
   const isCurrentMonth = billingMonth === getCurrentBillingMonth()
 
@@ -994,8 +1086,8 @@ export function CurrentMonthCollectionPage({
             className="button button-primary collection-refresh-button"
             type="button"
             onClick={() => void handleDownloadPdf()}
-            disabled={isLoading || isDownloadingPdf || rows.length === 0}
-            title={rows.length === 0 ? 'Generate rent bills before downloading a report' : 'Download the selected month rent collection report'}
+            disabled={isLoading || isDownloadingPdf}
+            title="Download the selected month rent and electricity collection report"
           >
             {isDownloadingPdf
               ? <LoaderCircle size={16} className="collection-spin" aria-hidden="true" />
