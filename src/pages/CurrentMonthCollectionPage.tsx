@@ -1099,8 +1099,6 @@ export function CurrentMonthCollectionPage({
     }
   }, [billingMonth, isDownloadingPdf, ownerUid])
 
-  const isCurrentMonth = billingMonth === getCurrentBillingMonth()
-
   return (
     <div className="current-collection-page">
       <header className="current-collection-header">
