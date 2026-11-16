@@ -10,6 +10,7 @@ import {
   CalendarDays,
   CheckCircle2,
   CircleDollarSign,
+  Download,
   FileText,
   LoaderCircle,
   Plus,
@@ -18,6 +19,9 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
+
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 import { SearchInput } from '../components/ui/SearchInput'
 import { recordAuditEvent } from '../services/firebase/audit'
@@ -118,6 +122,133 @@ function formatBillingMonth(value: string): string {
   }).format(date)
 }
 
+const RENT_RATE_PDF_BENGALI_PATTERN = /[\u0980-\u09FF]/
+const RENT_RATE_PDF_BENGALI_FONT = 'Noto Serif Bengali'
+
+type RentRatePdfCell = {
+  raw?: unknown
+  text?: string[]
+  x: number
+  y: number
+  width: number
+  height: number
+  styles: {
+    fontSize?: number
+    fontStyle?: string
+    textColor?: unknown
+    halign?: string
+  }
+  padding: (side: 'left' | 'right' | 'top' | 'bottom') => number
+}
+
+async function ensureRentRatePdfBengaliFont(): Promise<void> {
+  if (typeof document === 'undefined' || !('fonts' in document)) {
+    throw new Error('Bengali PDF text rendering is unavailable in this browser.')
+  }
+
+  const sample = 'বাংলা পরীক্ষা যুক্তাক্ষর'
+  const [regularFaces, boldFaces] = await Promise.all([
+    document.fonts.load(`400 12px "${RENT_RATE_PDF_BENGALI_FONT}"`, sample),
+    document.fonts.load(`700 12px "${RENT_RATE_PDF_BENGALI_FONT}"`, sample),
+  ])
+  await document.fonts.ready
+
+  if (regularFaces.length === 0 || boldFaces.length === 0) {
+    throw new Error('The Bengali font could not be loaded. Check your internet connection and try the PDF download again.')
+  }
+}
+
+function drawRentRatePdfBengaliCell(pdf: jsPDF, cell: RentRatePdfCell): void {
+  const text = typeof cell.raw === 'string' || typeof cell.raw === 'number'
+    ? String(cell.raw)
+    : (cell.text ?? []).join('\n')
+  if (!RENT_RATE_PDF_BENGALI_PATTERN.test(text)) return
+
+  const paddingLeft = cell.padding('left')
+  const paddingRight = cell.padding('right')
+  const paddingTop = cell.padding('top')
+  const paddingBottom = cell.padding('bottom')
+  const availableWidthPt = Math.max(1, cell.width - paddingLeft - paddingRight)
+  const availableHeightPt = Math.max(1, cell.height - paddingTop - paddingBottom)
+  const pixelsPerPoint = 96 / 72 * 2.5
+  let fontSizePx = Math.max(5, (cell.styles.fontSize ?? 8) * pixelsPerPoint)
+  const color = Array.isArray(cell.styles.textColor)
+    ? cell.styles.textColor.map((part) => Number(part) || 0)
+    : [38, 54, 74]
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const measureCanvas = document.createElement('canvas')
+    const measure = measureCanvas.getContext('2d')
+    if (!measure) throw new Error('Could not prepare Bengali text for the PDF.')
+
+    const bold = String(cell.styles.fontStyle ?? '').includes('bold')
+    measure.font = `${bold ? '700' : '400'} ${fontSizePx}px "${RENT_RATE_PDF_BENGALI_FONT}", "Nirmala UI", serif`
+    const paddingX = fontSizePx * 0.14
+    const paddingY = fontSizePx * 0.12
+    const maxWidthPx = availableWidthPt * pixelsPerPoint
+    const maxTextWidth = Math.max(1, maxWidthPx - paddingX * 2)
+    const lines: string[] = []
+
+    for (const paragraph of text.replace(/\r/g, '').split('\n')) {
+      const words = paragraph.trim().split(/\s+/).filter(Boolean)
+      if (words.length === 0) {
+        lines.push('')
+        continue
+      }
+      let line = ''
+      for (const word of words) {
+        const candidate = line ? `${line} ${word}` : word
+        if (line && measure.measureText(candidate).width > maxTextWidth) {
+          lines.push(line)
+          line = word
+        } else {
+          line = candidate
+        }
+      }
+      if (line) lines.push(line)
+    }
+
+    const metric = measure.measureText(lines.find(Boolean) || text)
+    const ascent = metric.actualBoundingBoxAscent || fontSizePx * 0.86
+    const descent = metric.actualBoundingBoxDescent || fontSizePx * 0.28
+    const lineHeight = fontSizePx * 1.3
+    const contentWidth = Math.max(1, ...lines.map((line) => measure.measureText(line).width))
+    const widthPx = contentWidth + paddingX * 2
+    const heightPx = paddingY * 2 + ascent + descent + Math.max(0, lines.length - 1) * lineHeight
+
+    if (widthPx > maxWidthPx || heightPx > availableHeightPt * pixelsPerPoint) {
+      fontSizePx *= 0.88
+      continue
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.ceil(widthPx))
+    canvas.height = Math.max(1, Math.ceil(heightPx))
+    const draw = canvas.getContext('2d')
+    if (!draw) throw new Error('Could not render Bengali text for the PDF.')
+    draw.font = `${bold ? '700' : '400'} ${fontSizePx}px "${RENT_RATE_PDF_BENGALI_FONT}", "Nirmala UI", serif`
+    draw.textBaseline = 'alphabetic'
+    draw.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`
+    lines.forEach((line, index) => {
+      if (line) draw.fillText(line, paddingX, paddingY + ascent + index * lineHeight)
+    })
+
+    const imageWidthPt = canvas.width / pixelsPerPoint
+    const imageHeightPt = canvas.height / pixelsPerPoint
+    const align = cell.styles.halign ?? 'left'
+    const imageX = align === 'right'
+      ? cell.x + cell.width - paddingRight - imageWidthPt
+      : align === 'center'
+        ? cell.x + (cell.width - imageWidthPt) / 2
+        : cell.x + paddingLeft
+    const imageY = cell.y + paddingTop + Math.max(0, (availableHeightPt - imageHeightPt) / 2)
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', imageX, imageY, imageWidthPt, imageHeightPt)
+    return
+  }
+
+  throw new Error('A Bengali tenant name is too long to fit in the PDF.')
+}
+
 export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const [rates, setRates] = useState<RoomRentRateRecord[]>([])
   const [bills, setBills] = useState<RentBillRecord[]>([])
@@ -144,6 +275,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const [billSearch, setBillSearch] = useState('')
   const [billMonthFilter, setBillMonthFilter] = useState(getCurrentBillingMonth)
   const [activeReviewSection, setActiveReviewSection] = useState<'rates' | 'bills'>('rates')
+  const [isDownloadingRatesPdf, setIsDownloadingRatesPdf] = useState(false)
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -411,6 +543,134 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     () => bills.reduce((sum, bill) => sum + bill.totalMinor, 0),
     [bills],
   )
+
+  async function handleDownloadRentRatePdf() {
+    if (isDownloadingRatesPdf || isLoading || rentRateOverview.length === 0) return
+
+    setIsDownloadingRatesPdf(true)
+    setPageError('')
+    setPageSuccess('')
+
+    try {
+      const hasBengaliTenant = rentRateOverview.some(({ tenantLabel }) =>
+        RENT_RATE_PDF_BENGALI_PATTERN.test(tenantLabel),
+      )
+      if (hasBengaliTenant) await ensureRentRatePdfBengaliFont()
+
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' })
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const pageHeight = pdf.internal.pageSize.getHeight()
+      const margin = 36
+      const navy: [number, number, number] = [16, 44, 80]
+      const gold: [number, number, number] = [213, 165, 46]
+      const ink: [number, number, number] = [38, 54, 74]
+      const muted: [number, number, number] = [100, 116, 139]
+      const border: [number, number, number] = [232, 225, 213]
+      const white: [number, number, number] = [255, 255, 255]
+
+      pdf.setFillColor(...navy)
+      pdf.rect(0, 0, pageWidth, 66, 'F')
+      pdf.setFillColor(...gold)
+      pdf.rect(0, 64, pageWidth, 2, 'F')
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(15)
+      pdf.setTextColor(...white)
+      pdf.text("T&N House's", margin, 27)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(9)
+      pdf.setTextColor(225, 232, 240)
+      pdf.text('RENT RATE REPORT', margin, 47)
+      pdf.text(`Generated: ${formatDate(getToday())}`, pageWidth - margin, 27, { align: 'right' })
+
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(8)
+      pdf.setTextColor(...muted)
+      pdf.text(`${rentRateOverview.length} room rent rate record(s) · amounts in BDT`, margin, 88)
+
+      const body = rentRateOverview.map(({ rate, room, tenantLabel }) => [
+        tenantLabel,
+        room?.roomNumber ?? rate.roomCode,
+        formatTaka(rate.monthlyRentMinor),
+        formatDate(rate.effectiveFrom),
+      ])
+
+      autoTable(pdf, {
+        head: [['Tenant', 'Room', 'Rent Rate', 'Date']],
+        body,
+        startY: 101,
+        margin: { top: 78, bottom: 42, left: margin, right: margin },
+        showHead: 'everyPage',
+        styles: {
+          font: 'helvetica',
+          fontSize: 8.5,
+          cellPadding: 8,
+          overflow: 'linebreak',
+          valign: 'middle',
+          textColor: ink,
+          lineColor: border,
+          lineWidth: 0.35,
+        },
+        headStyles: {
+          fillColor: navy,
+          textColor: white,
+          fontStyle: 'bold',
+          fontSize: 8.5,
+        },
+        alternateRowStyles: { fillColor: [250, 249, 246] },
+        columnStyles: {
+          0: { cellWidth: 215 },
+          1: { cellWidth: 85 },
+          2: { cellWidth: 110, halign: 'right' },
+          3: { cellWidth: 105, halign: 'center' },
+        },
+        didParseCell: (hookData) => {
+          if (hookData.section === 'body' && hookData.column.index === 0) {
+            const tenantName = String(hookData.cell.raw ?? '')
+            if (RENT_RATE_PDF_BENGALI_PATTERN.test(tenantName)) hookData.cell.text = []
+          }
+        },
+        didDrawCell: (hookData) => {
+          if (hookData.section === 'body' && hookData.column.index === 0) {
+            drawRentRatePdfBengaliCell(pdf, hookData.cell as unknown as RentRatePdfCell)
+          }
+        },
+        didDrawPage: (hookData) => {
+          if (hookData.pageNumber > 1) {
+            pdf.setFillColor(...navy)
+            pdf.rect(0, 0, pageWidth, 45, 'F')
+            pdf.setFont('helvetica', 'bold')
+            pdf.setFontSize(11)
+            pdf.setTextColor(...white)
+            pdf.text("T&N House's", margin, 22)
+            pdf.setFont('helvetica', 'normal')
+            pdf.setFontSize(8)
+            pdf.setTextColor(225, 232, 240)
+            pdf.text('Rent rate report', margin, 36)
+          }
+        },
+      })
+
+      const pageCount = pdf.getNumberOfPages()
+      for (let page = 1; page <= pageCount; page += 1) {
+        pdf.setPage(page)
+        pdf.setDrawColor(...border)
+        pdf.setLineWidth(0.5)
+        pdf.line(margin, pageHeight - 27, pageWidth - margin, pageHeight - 27)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(7)
+        pdf.setTextColor(...muted)
+        pdf.text('Rent rate shown is the latest saved rate for each room.', margin, pageHeight - 13)
+        pdf.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 13, { align: 'right' })
+      }
+
+      pdf.save(`rent-rate-report-${getToday()}.pdf`)
+      setPageSuccess('Rent rate PDF downloaded successfully.')
+    } catch (error: unknown) {
+      setPageError(error instanceof Error ? error.message : 'Could not generate the rent rate PDF.')
+    } finally {
+      setIsDownloadingRatesPdf(false)
+    }
+  }
 
   function openRateDialog(roomId = '') {
     setRateForm(emptyRateForm(roomId))
@@ -748,9 +1008,24 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                 <h2>Rent rate history</h2>
                 <p>One latest rate per room is shown here. Every rent change remains recorded in that room's ledger.</p>
               </div>
-              <span className="rent-panel-icon">
-                <CircleDollarSign size={19} aria-hidden="true" />
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, flex: '0 0 auto', flexWrap: 'wrap' }}>
+                <button
+                  className="button button-secondary rent-rate-pdf-button"
+                  type="button"
+                  onClick={() => void handleDownloadRentRatePdf()}
+                  disabled={isLoading || isDownloadingRatesPdf || rentRateOverview.length === 0}
+                >
+                  {isDownloadingRatesPdf ? (
+                    <LoaderCircle className="rent-spin" size={16} aria-hidden="true" />
+                  ) : (
+                    <Download size={16} aria-hidden="true" />
+                  )}
+                  {isDownloadingRatesPdf ? 'Preparing PDF…' : 'Download PDF'}
+                </button>
+                <span className="rent-panel-icon">
+                  <CircleDollarSign size={19} aria-hidden="true" />
+                </span>
+              </div>
             </div>
 
             {!isLoading && (
