@@ -419,6 +419,7 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
     }
 
     return tenants
+      .filter((tenant) => tenant.status === 'active')
       .map((tenant) => {
         const tenantAssignments = assignmentsByTenantId.get(tenant.id) ?? []
         const currentAssignments = currentAssignmentsByTenantId.get(tenant.id) ?? []
@@ -511,8 +512,8 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
     event.preventDefault()
     setFormError('')
     setPageSuccess('')
-    if (!selectedTenant) {
-      setFormError('Select a tenant before recording a payment.')
+    if (!selectedTenant || selectedTenant.status !== 'active') {
+      setFormError('Select an active tenant before recording a payment.')
       return
     }
     if (hasInvalidReceived || amountReceivedMinor === null) {

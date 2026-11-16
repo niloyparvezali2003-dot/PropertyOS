@@ -421,6 +421,11 @@
   color: var(--color-danger, #b91c1c);
 }
 
+.collection-status-not-billed {
+  background: var(--surface-muted, #f1f5f9);
+  color: var(--muted, #64748b);
+}
+
 .collection-table tfoot td {
   border-top: 1px solid var(--border, #cbd5e1);
   border-bottom: 0;

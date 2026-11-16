@@ -41,6 +41,7 @@ import {
 import { listProperties, type PropertyRecord } from '../services/firebase/properties'
 import { listRooms, type RoomRecord } from '../services/firebase/rooms'
 import { listTenantAssignments, type TenantAssignmentRecord } from '../services/firebase/tenantAssignments'
+import { listTenants, type TenantRecord } from '../services/firebase/tenants'
 import { roomRentRateFormSchema } from '../schemas/rentBill'
 import './rent-bills.css'
 
@@ -264,6 +265,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const [rooms, setRooms] = useState<RoomRecord[]>([])
   const [properties, setProperties] = useState<PropertyRecord[]>([])
   const [tenantAssignments, setTenantAssignments] = useState<TenantAssignmentRecord[]>([])
+  const [tenants, setTenants] = useState<TenantRecord[]>([])
 
   const [isLoading, setIsLoading] = useState(true)
   const [pageError, setPageError] = useState('')
@@ -291,13 +293,14 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
     setPageError('')
 
     try {
-      const [nextRates, nextBills, nextRooms, nextProperties, nextTenantAssignments] =
+      const [nextRates, nextBills, nextRooms, nextProperties, nextTenantAssignments, nextTenants] =
         await Promise.all([
           listRoomRentRates(ownerUid),
           listRentBills(ownerUid),
           listRooms(ownerUid),
           listProperties(ownerUid),
           listTenantAssignments(ownerUid),
+          listTenants(ownerUid),
         ])
 
       // Protect rate records referenced by older issued bills before the
@@ -310,6 +313,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
       setRooms(nextRooms)
       setProperties(nextProperties)
       setTenantAssignments(nextTenantAssignments)
+      setTenants(nextTenants)
     } catch (error: unknown) {
       setPageError(getRentBillErrorMessage(error))
     } finally {
@@ -329,6 +333,11 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const roomById = useMemo(
     () => new Map(rooms.map((room) => [room.id, room])),
     [rooms],
+  )
+
+  const activeTenantIds = useMemo(
+    () => new Set(tenants.filter((tenant) => tenant.status === 'active').map((tenant) => tenant.id)),
+    [tenants],
   )
 
   const rateIdsUsedByIssuedBills = useMemo(
@@ -440,6 +449,24 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const selectableRooms = useMemo(
     () => rooms.filter((room) => activePropertyIds.has(room.propertyId)),
     [rooms, activePropertyIds],
+  )
+
+  const activeTenantRoomIds = useMemo(
+    () => new Set(
+      tenantAssignments
+        .filter((assignment) =>
+          assignment.status === 'current' &&
+          assignment.moveOutDate === null &&
+          activeTenantIds.has(assignment.tenantId),
+        )
+        .map((assignment) => assignment.roomId),
+    ),
+    [tenantAssignments, activeTenantIds],
+  )
+
+  const selectableTenantRooms = useMemo(
+    () => selectableRooms.filter((room) => activeTenantRoomIds.has(room.id)),
+    [selectableRooms, activeTenantRoomIds],
   )
 
   const rentRateCoverage = useMemo(() => {
@@ -915,7 +942,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
           className="button button-primary"
           type="button"
           onClick={() => openRateDialog()}
-          disabled={isLoading || selectableRooms.length === 0}
+          disabled={isLoading || selectableTenantRooms.length === 0}
         >
           <Plus size={17} aria-hidden="true" />
           Set rent rate
@@ -1189,7 +1216,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                   type="button"
                   className="button button-secondary"
                   onClick={() => openRateDialog()}
-                  disabled={selectableRooms.length === 0}
+                  disabled={selectableTenantRooms.length === 0}
                 >
                   <Plus size={16} aria-hidden="true" />
                   Add first rate
@@ -1459,15 +1486,16 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                   value={rateForm.roomId}
                   onChange={(event) => updateRateField('roomId', event.target.value)}
                   required
-                  disabled={isSavingRate || selectableRooms.length === 0}
+                  disabled={isSavingRate || selectableTenantRooms.length === 0}
                 >
                   <option value="">Select a room</option>
-                  {[...selectableRooms]
+                  {[...selectableTenantRooms]
                     .map((room) => {
                       const currentTenants = tenantAssignments.filter((assignment) =>
                         assignment.roomId === room.id &&
                         assignment.status === 'current' &&
-                        assignment.moveOutDate === null,
+                        assignment.moveOutDate === null &&
+                        activeTenantIds.has(assignment.tenantId),
                       )
                       const tenantName = currentTenants.length === 1
                         ? currentTenants[0].tenantName
@@ -1494,8 +1522,8 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                       <option value={room.id} key={room.id}>{label}</option>
                     ))}
                 </select>
-                {selectableRooms.length === 0 && (
-                  <small className="field-hint">Create a room under an active property before adding a rent rate.</small>
+                {selectableTenantRooms.length === 0 && (
+                  <small className="field-hint">Only rooms currently assigned to an active tenant can be selected for a rent rate.</small>
                 )}
               </div>
 
@@ -1594,7 +1622,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                 <button
                   className="button button-primary"
                   type="submit"
-                  disabled={isSavingRate || selectableRooms.length === 0 || Boolean(ratePreview?.duplicateRate)}
+                  disabled={isSavingRate || selectableTenantRooms.length === 0 || Boolean(ratePreview?.duplicateRate)}
                 >
                   {isSavingRate && <LoaderCircle className="rent-spin" size={16} aria-hidden="true" />}
                   {isSavingRate ? 'Saving rate…' : 'Confirm & save rate'}

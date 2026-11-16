@@ -21,10 +21,6 @@ import autoTable from 'jspdf-autotable'
 
 import { SearchInput } from '../components/ui/SearchInput'
 import {
-  type RentBillRecord,
-  listRentBills,
-} from '../services/firebase/rentBills'
-import {
   type PaymentBillBalanceRecord,
   listPaymentBillBalances,
 } from '../services/firebase/payments'
@@ -43,15 +39,8 @@ type CurrentMonthCollectionPageProps = {
   onNavigate: (page: AppPage) => void
 }
 
-type CollectionStatus = 'paid' | 'partial' | 'unpaid'
+type CollectionStatus = 'paid' | 'partial' | 'unpaid' | 'not-billed'
 type StatusFilter = 'all' | 'outstanding' | CollectionStatus
-
-type CollectionRow = {
-  bill: RentBillRecord
-  paidAmountMinor: number
-  outstandingMinor: number
-  status: CollectionStatus
-}
 
 type CollectionTenantTableRow = {
   tenantId: string
@@ -61,8 +50,9 @@ type CollectionTenantTableRow = {
   rooms: string[]
   floorNames: string[]
   rentBillMinor: number
+  electricityBillMinor: number
   paidAmountMinor: number
-  outstandingMinor: number
+  remainingMinor: number
   status: CollectionStatus
 }
 
@@ -147,6 +137,7 @@ function formatBillingMonth(value: string): string {
 function getStatusLabel(status: CollectionStatus): string {
   if (status === 'paid') return 'Paid'
   if (status === 'partial') return 'Partially paid'
+  if (status === 'not-billed') return 'Not billed'
   return 'Unpaid'
 }
 
@@ -520,7 +511,7 @@ export function CurrentMonthCollectionPage({
   ownerUid,
   onNavigate,
 }: CurrentMonthCollectionPageProps) {
-  const [bills, setBills] = useState<RentBillRecord[]>([])
+  const [ledgerData, setLedgerData] = useState<LedgerSourceData | null>(null)
   const [balances, setBalances] = useState<PaymentBillBalanceRecord[]>([])
   const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -539,12 +530,12 @@ export function CurrentMonthCollectionPage({
       // recently cached balance from before a payment was recorded.
       invalidateOwnerDataCache(ownerUid)
 
-      const [nextBills, nextBalances] = await Promise.all([
-        listRentBills(ownerUid),
+      const [nextLedgerData, nextBalances] = await Promise.all([
+        loadLedgerSourceData(ownerUid),
         listPaymentBillBalances(ownerUid),
       ])
 
-      setBills(nextBills)
+      setLedgerData(nextLedgerData)
       setBalances(nextBalances)
     } catch (error: unknown) {
       setPageError(getCollectionErrorMessage(error))
@@ -557,132 +548,180 @@ export function CurrentMonthCollectionPage({
     void loadData()
   }, [loadData])
 
-  const rows = useMemo<CollectionRow[]>(() => {
-    const rentBalanceByBillId = new Map(
-      balances
-        .filter((balance) => balance.billType === 'rent')
-        .map((balance) => [balance.billId, balance] as const),
+  // The web table is tenant-wise and combines rent and electricity bills for
+  // the selected month. It includes all active tenants, plus inactive tenants
+  // whose tenant-ledger balance is non-zero (due or advance), matching the PDF.
+  const tenantTableRows = useMemo<CollectionTenantTableRow[]>(() => {
+    if (!ledgerData) return []
+
+    const tenantLedgerBalanceById = calculateTenantLedgerBalances(ledgerData)
+    const billBalanceByKey = new Map(
+      balances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
     )
 
-    const collator = new Intl.Collator('en', {
-      sensitivity: 'base',
-      numeric: true,
-    })
+    type MutableTenantRow = {
+      tenantId: string
+      tenantName: string
+      tenantCode: string
+      propertyCodes: Set<string>
+      rooms: Set<string>
+      floorNames: Set<string>
+      rentBillMinor: number
+      electricityBillMinor: number
+      paidAmountMinor: number
+      remainingMinor: number
+    }
 
-    return bills
-      .filter((bill) => bill.billingMonth === billingMonth)
-      .map((bill) => {
-        const balance = rentBalanceByBillId.get(bill.id)
-        // No balance document means no payment has been allocated to this
-        // issued bill yet. Previous dues and tenant-level opening balances
-        // are deliberately not considered here.
-        const paidAmountMinor = balance?.paidAmountMinor ?? 0
-        const outstandingMinor = balance?.outstandingMinor ?? bill.totalMinor
-        const status: CollectionStatus = outstandingMinor <= 0
+    const grouped = new Map<string, MutableTenantRow>()
+
+    for (const tenant of ledgerData.tenants) {
+      const tenantBalance = tenantLedgerBalanceById.get(tenant.id) ?? 0
+      if (tenant.status !== 'active' && tenantBalance === 0) continue
+
+      const assignments = ledgerData.tenantAssignments.filter(
+        (assignment) => assignment.tenantId === tenant.id,
+      )
+      const currentAssignments = assignments.filter(
+        (assignment) => assignment.status === 'current' && assignment.moveOutDate === null,
+      )
+      const displayAssignments = currentAssignments.length > 0
+        ? currentAssignments
+        : assignments.length > 0
+          ? (() => {
+              const latestAssignmentDate = assignments.reduce((latest, assignment) => {
+                const assignmentDate = assignment.moveOutDate ?? assignment.moveInDate
+                return assignmentDate > latest ? assignmentDate : latest
+              }, '')
+              return assignments.filter(
+                (assignment) => (assignment.moveOutDate ?? assignment.moveInDate) === latestAssignmentDate,
+              )
+            })()
+          : []
+
+      grouped.set(tenant.id, {
+        tenantId: tenant.id,
+        tenantName: tenant.fullName,
+        tenantCode: tenant.tenantCode,
+        propertyCodes: new Set(displayAssignments.map((assignment) => assignment.propertyCode).filter(Boolean)),
+        rooms: new Set(displayAssignments.map((assignment) =>
+          assignment.roomNumber.trim() || assignment.roomCode.trim(),
+        ).filter(Boolean)),
+        floorNames: new Set(displayAssignments.map((assignment) => assignment.floorName).filter(Boolean)),
+        rentBillMinor: 0,
+        electricityBillMinor: 0,
+        paidAmountMinor: 0,
+        remainingMinor: 0,
+      })
+    }
+
+    // Rent bill amount/payment allocation for the selected month.
+    for (const bill of ledgerData.rentBills) {
+      if (bill.billingMonth !== billingMonth || bill.status !== 'issued') continue
+      const tenantRow = grouped.get(bill.tenantId)
+      if (!tenantRow) continue
+
+      tenantRow.rentBillMinor += bill.totalMinor
+      tenantRow.rooms.add(bill.roomNumber.trim() || bill.roomCode.trim())
+      if (bill.propertyCode) tenantRow.propertyCodes.add(bill.propertyCode)
+      if (bill.floorName) tenantRow.floorNames.add(bill.floorName)
+
+      const allocation = billBalanceByKey.get(`rent__${bill.id}`)
+      tenantRow.paidAmountMinor += allocation?.paidAmountMinor ?? 0
+      tenantRow.remainingMinor += Math.max(0, allocation?.outstandingMinor ?? bill.totalMinor)
+    }
+
+    // Electricity is attached to the tenant snapshot when available. Legacy
+    // bills are resolved using the historical assignment for the reading date.
+    for (const bill of ledgerData.electricityBills) {
+      if (bill.billingMonth !== billingMonth || bill.status !== 'issued') continue
+      const resolvedAssignment = resolveElectricityBillTenantAssignment(
+        bill,
+        ledgerData.tenantAssignments,
+      )
+      const tenantId = bill.tenantId || resolvedAssignment?.tenantId ||
+        resolveLedgerElectricityTenantId(bill, ledgerData)
+      if (!tenantId) continue
+
+      const tenantRow = grouped.get(tenantId)
+      if (!tenantRow) continue
+
+      const roomRecord = ledgerData.rooms.find((room) => room.id === bill.roomId)
+      const roomLabel = bill.tenantRoomNumber?.trim() ||
+        resolvedAssignment?.roomNumber?.trim() ||
+        roomRecord?.roomNumber?.trim() ||
+        bill.roomCode.trim()
+      if (roomLabel) tenantRow.rooms.add(roomLabel)
+      if (bill.propertyCode) tenantRow.propertyCodes.add(bill.propertyCode)
+      if (resolvedAssignment?.floorName) tenantRow.floorNames.add(resolvedAssignment.floorName)
+
+      tenantRow.electricityBillMinor += bill.amountMinor
+      const allocation = billBalanceByKey.get(`electricity__${bill.id}`)
+      tenantRow.paidAmountMinor += allocation?.paidAmountMinor ?? 0
+      tenantRow.remainingMinor += Math.max(0, allocation?.outstandingMinor ?? bill.amountMinor)
+    }
+
+    return [...grouped.values()].map((row) => {
+      const totalMonthlyBillMinor = row.rentBillMinor + row.electricityBillMinor
+      const status: CollectionStatus = totalMonthlyBillMinor <= 0
+        ? 'not-billed'
+        : row.remainingMinor <= 0
           ? 'paid'
-          : paidAmountMinor > 0
+          : row.paidAmountMinor > 0
             ? 'partial'
             : 'unpaid'
 
-        return {
-          bill,
-          paidAmountMinor,
-          outstandingMinor,
-          status,
-        }
-      })
-      .sort((a, b) =>
-        compareCollectionRoomNumbers(a.bill.roomNumber, b.bill.roomNumber) ||
-        collator.compare(a.bill.propertyCode, b.bill.propertyCode) ||
-        collator.compare(a.bill.tenantName, b.bill.tenantName),
-      )
-  }, [bills, balances, billingMonth])
-
-  // The on-screen collection table is tenant-wise: a tenant with multiple
-  // room/shop invoices appears once, with room labels and amounts combined.
-  // This is intentionally separate from the PDF generation path below.
-  const tenantTableRows = useMemo<CollectionTenantTableRow[]>(() => {
-    const grouped = new Map<string, CollectionRow[]>()
-
-    for (const row of rows) {
-      const groupKey = row.bill.tenantId || `bill:${row.bill.id}`
-      const tenantRows = grouped.get(groupKey) ?? []
-      tenantRows.push(row)
-      grouped.set(groupKey, tenantRows)
-    }
-
-    return [...grouped.entries()].map(([tenantId, tenantRows]) => {
-      const first = tenantRows[0]!
-      const rentBillMinor = tenantRows.reduce((total, row) => total + row.bill.totalMinor, 0)
-      const paidAmountMinor = tenantRows.reduce((total, row) => total + row.paidAmountMinor, 0)
-      const outstandingMinor = tenantRows.reduce((total, row) => total + row.outstandingMinor, 0)
-      const status: CollectionStatus = outstandingMinor <= 0
-        ? 'paid'
-        : paidAmountMinor > 0
-          ? 'partial'
-          : 'unpaid'
-
       return {
-        tenantId,
-        tenantName: first.bill.tenantName,
-        tenantCode: first.bill.tenantCode,
-        propertyCodes: [...new Set(tenantRows.map((row) => row.bill.propertyCode).filter(Boolean))]
-          .sort((a, b) => COLLECTION_ROOM_COLLATOR.compare(a, b)),
-        rooms: sortCollectionRoomNumbers(tenantRows.map((row) => row.bill.roomNumber || row.bill.roomCode)),
-        floorNames: [...new Set(tenantRows.map((row) => row.bill.floorName).filter(Boolean))]
-          .sort((a, b) => COLLECTION_ROOM_COLLATOR.compare(a, b)),
-        rentBillMinor,
-        paidAmountMinor,
-        outstandingMinor,
+        ...row,
+        propertyCodes: [...row.propertyCodes].sort((a, b) => COLLECTION_ROOM_COLLATOR.compare(a, b)),
+        rooms: sortCollectionRoomNumbers(row.rooms),
+        floorNames: [...row.floorNames].sort((a, b) => COLLECTION_ROOM_COLLATOR.compare(a, b)),
         status,
       }
-    }).sort((a, b) =>
-      compareCollectionRoomNumbers(a.rooms[0] ?? '', b.rooms[0] ?? '') ||
-      COLLECTION_ROOM_COLLATOR.compare(a.tenantName, b.tenantName),
-    )
-  }, [rows])
+    }).sort((left, right) => {
+      const leftRoom = left.rooms[0] ?? ''
+      const rightRoom = right.rooms[0] ?? ''
+      if (!leftRoom && rightRoom) return 1
+      if (leftRoom && !rightRoom) return -1
+      return compareCollectionRoomNumbers(leftRoom, rightRoom) ||
+        COLLECTION_ROOM_COLLATOR.compare(left.tenantName, right.tenantName)
+    })
+  }, [ledgerData, balances, billingMonth])
 
   const tenantCounts = useMemo(() => tenantTableRows.reduce((counts, tenant) => {
     counts.total += 1
     if (tenant.status === 'paid') counts.paid += 1
     if (tenant.status === 'partial') counts.partial += 1
     if (tenant.status === 'unpaid') counts.unpaid += 1
-    if (tenant.outstandingMinor > 0) counts.outstanding += 1
+    if (tenant.status === 'not-billed') counts.notBilled += 1
+    if (tenant.remainingMinor > 0) counts.outstanding += 1
     return counts
   }, {
     total: 0,
     paid: 0,
     partial: 0,
     unpaid: 0,
+    notBilled: 0,
     outstanding: 0,
   }), [tenantTableRows])
 
-  const summary = useMemo(() => {
-    return rows.reduce((result, row) => {
-      result.billedMinor += row.bill.totalMinor
-      result.collectedMinor += row.paidAmountMinor
-      result.outstandingMinor += row.outstandingMinor
-
-      if (row.status === 'paid') result.paidCount += 1
-      if (row.status === 'partial') result.partialCount += 1
-      if (row.status === 'unpaid') result.unpaidCount += 1
-
-      return result
-    }, {
-      billedMinor: 0,
-      collectedMinor: 0,
-      outstandingMinor: 0,
-      paidCount: 0,
-      partialCount: 0,
-      unpaidCount: 0,
-    })
-  }, [rows])
+  const summary = useMemo(() => tenantTableRows.reduce((result, tenant) => {
+    result.rentBilledMinor += tenant.rentBillMinor
+    result.electricityBilledMinor += tenant.electricityBillMinor
+    result.collectedMinor += tenant.paidAmountMinor
+    result.remainingMinor += tenant.remainingMinor
+    return result
+  }, {
+    rentBilledMinor: 0,
+    electricityBilledMinor: 0,
+    collectedMinor: 0,
+    remainingMinor: 0,
+  }), [tenantTableRows])
 
   const filteredTenantRows = useMemo(() => {
     const search = searchValue.trim().toLocaleLowerCase()
 
     return tenantTableRows.filter((tenant) => {
-      if (statusFilter === 'outstanding' && tenant.outstandingMinor <= 0) return false
+      if (statusFilter === 'outstanding' && tenant.remainingMinor <= 0) return false
       if (statusFilter !== 'all' && statusFilter !== 'outstanding' && tenant.status !== statusFilter) return false
       if (!search) return true
 
@@ -695,6 +734,8 @@ export function CurrentMonthCollectionPage({
       ].join(' ').toLocaleLowerCase().includes(search)
     })
   }, [tenantTableRows, searchValue, statusFilter])
+
+  const isCurrentMonth = billingMonth === getCurrentBillingMonth()
 
   const handleDownloadPdf = useCallback(async () => {
     if (isDownloadingPdf) return
@@ -1067,8 +1108,8 @@ export function CurrentMonthCollectionPage({
           <p className="eyebrow">Finance / Rent</p>
           <h1>Current Month Collection</h1>
           <p className="page-description">
-            Track which tenants have paid the rent bill for the selected month.
-            Previous dues are kept separate.
+            Track each tenant's rent and electricity bill collection for the selected month.
+            Previous dues do not change the current-month payment status.
           </p>
         </div>
 
@@ -1110,7 +1151,7 @@ export function CurrentMonthCollectionPage({
         <CircleAlert size={17} aria-hidden="true" />
         <span>
           <strong>Month-specific report:</strong> payment status is calculated only
-          from each rent bill in {formatBillingMonth(billingMonth)}. Previous-month
+          from rent and electricity bills in {formatBillingMonth(billingMonth)}. Previous-month
           dues and opening balances do not change this status.
         </span>
       </div>
@@ -1140,37 +1181,35 @@ export function CurrentMonthCollectionPage({
         <>
           <section className="collection-financial-summary" aria-label="Selected month financial summary">
             <article className="collection-money-card">
-              <span className="collection-money-label"><ReceiptText size={16} aria-hidden="true" /> Total rent billed</span>
-              <strong>{formatTaka(summary.billedMinor)}</strong>
-              <small>{rows.length} rent bill{rows.length === 1 ? '' : 's'} issued</small>
+              <span className="collection-money-label"><ReceiptText size={16} aria-hidden="true" /> Total bills issued</span>
+              <strong>{formatTaka(summary.rentBilledMinor + summary.electricityBilledMinor)}</strong>
+              <small>Rent {formatTaka(summary.rentBilledMinor)} · E-bill {formatTaka(summary.electricityBilledMinor)}</small>
             </article>
             <article className="collection-money-card collection-money-card-paid">
-              <span className="collection-money-label"><CheckCircle2 size={16} aria-hidden="true" /> Paid against these bills</span>
+              <span className="collection-money-label"><CheckCircle2 size={16} aria-hidden="true" /> Paid against bills</span>
               <strong>{formatTaka(summary.collectedMinor)}</strong>
-              <small>Payments allocated to {formatBillingMonth(billingMonth)} rent invoices</small>
+              <small>Rent and electricity allocations for {formatBillingMonth(billingMonth)}</small>
             </article>
             <article className="collection-money-card collection-money-card-due">
               <span className="collection-money-label"><Wallet size={16} aria-hidden="true" /> Current month remaining</span>
-              <strong>{formatTaka(summary.outstandingMinor)}</strong>
-              <small>{summary.unpaidCount + summary.partialCount} bill{summary.unpaidCount + summary.partialCount === 1 ? '' : 's'} not fully paid</small>
+              <strong>{formatTaka(summary.remainingMinor)}</strong>
+              <small>{tenantCounts.unpaid + tenantCounts.partial} tenant(s) with unpaid monthly bills</small>
             </article>
           </section>
 
-          {rows.length === 0 ? (
+          {tenantTableRows.length === 0 ? (
             <section className="collection-empty-panel">
               <span className="collection-empty-icon"><ReceiptText size={23} aria-hidden="true" /></span>
-              <h2>No rent bills found for {formatBillingMonth(billingMonth)}</h2>
+              <h2>No qualifying tenants found</h2>
               <p>
-                {isCurrentMonth
-                  ? 'Generate the monthly rent bills first. Once bills are issued, this page will show which tenants have paid and which still have a balance.'
-                  : 'There are no issued rent bills for this month.'}
+                All active tenants will appear here. Inactive tenants appear only when they have a non-zero due or advance balance.
               </p>
               <button
                 className="button button-primary"
                 type="button"
-                onClick={() => onNavigate('Rent & Bills')}
+                onClick={() => onNavigate('Tenants')}
               >
-                Open Rent &amp; Bills
+                Open Tenants
               </button>
             </section>
           ) : (
@@ -1178,14 +1217,14 @@ export function CurrentMonthCollectionPage({
               <div className="collection-list-heading">
                 <div>
                   <p className="eyebrow">{isCurrentMonth ? 'Running month' : 'Selected month'}</p>
-                  <h2>{formatBillingMonth(billingMonth)} rent status</h2>
-                  <p>{tenantCounts.paid} paid · {tenantCounts.partial} partially paid · {tenantCounts.unpaid} unpaid tenants</p>
+                  <h2>{formatBillingMonth(billingMonth)} rent &amp; electricity status</h2>
+                  <p>{tenantCounts.paid} paid · {tenantCounts.partial} partially paid · {tenantCounts.unpaid} unpaid · {tenantCounts.notBilled} not billed</p>
                 </div>
                 <span className="collection-bill-count">{tenantCounts.total} tenants</span>
               </div>
 
               <div className="collection-toolbar">
-                <div className="collection-status-filters" aria-label="Filter rent bills by payment status">
+                <div className="collection-status-filters" aria-label="Filter monthly rent and electricity collection by payment status">
                   <button
                     className={statusFilter === 'all' ? 'is-active' : ''}
                     type="button"
@@ -1226,6 +1265,14 @@ export function CurrentMonthCollectionPage({
                   >
                     Paid <span>{tenantCounts.paid}</span>
                   </button>
+                  <button
+                    className={statusFilter === 'not-billed' ? 'is-active' : ''}
+                    type="button"
+                    onClick={() => setStatusFilter('not-billed')}
+                    aria-pressed={statusFilter === 'not-billed'}
+                  >
+                    Not billed <span>{tenantCounts.notBilled}</span>
+                  </button>
                 </div>
                 <SearchInput
                   value={searchValue}
@@ -1236,7 +1283,7 @@ export function CurrentMonthCollectionPage({
 
               {filteredTenantRows.length === 0 ? (
                 <div className="collection-filter-empty">
-                  No rent bills match this filter. Try another status or search term.
+                  No tenants match this filter. Try another status or search term.
                 </div>
               ) : (
                 <div className="collection-table-wrap">
@@ -1245,8 +1292,9 @@ export function CurrentMonthCollectionPage({
                       <tr>
                         <th>Tenant</th>
                         <th>Room(s)</th>
-                        <th className="is-numeric">Rent bill</th>
-                        <th className="is-numeric">Paid against bill</th>
+                        <th className="is-numeric">Rent Bill</th>
+                        <th className="is-numeric">Ebill</th>
+                        <th className="is-numeric">Paid Against Bill</th>
                         <th className="is-numeric">Remaining</th>
                         <th>Status</th>
                       </tr>
@@ -1270,8 +1318,9 @@ export function CurrentMonthCollectionPage({
                             </div>
                           </td>
                           <td className="is-numeric">{formatTaka(tenant.rentBillMinor)}</td>
+                          <td className="is-numeric">{formatTaka(tenant.electricityBillMinor)}</td>
                           <td className="is-numeric collection-paid-amount">{formatTaka(tenant.paidAmountMinor)}</td>
-                          <td className="is-numeric collection-remaining-amount">{formatTaka(tenant.outstandingMinor)}</td>
+                          <td className="is-numeric collection-remaining-amount">{formatTaka(tenant.remainingMinor)}</td>
                           <td><span className={getStatusClass(tenant.status)}>{getStatusLabel(tenant.status)}</span></td>
                         </tr>
                       ))}
@@ -1279,9 +1328,10 @@ export function CurrentMonthCollectionPage({
                     <tfoot>
                       <tr>
                         <td colSpan={2}>Selected month total</td>
-                        <td className="is-numeric">{formatTaka(summary.billedMinor)}</td>
+                        <td className="is-numeric">{formatTaka(summary.rentBilledMinor)}</td>
+                        <td className="is-numeric">{formatTaka(summary.electricityBilledMinor)}</td>
                         <td className="is-numeric">{formatTaka(summary.collectedMinor)}</td>
-                        <td className="is-numeric">{formatTaka(summary.outstandingMinor)}</td>
+                        <td className="is-numeric">{formatTaka(summary.remainingMinor)}</td>
                         <td />
                       </tr>
                     </tfoot>
@@ -1290,7 +1340,7 @@ export function CurrentMonthCollectionPage({
               )}
               <div className="collection-footer-note">
                 <Clock3 size={14} aria-hidden="true" />
-                A bill is marked paid only when that specific month’s rent invoice has no remaining balance.
+                Status is based only on payments allocated to the selected month’s rent and electricity bills. Previous dues and opening balances do not change this status.
               </div>
             </section>
           )}

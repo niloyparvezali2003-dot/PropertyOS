@@ -189,6 +189,7 @@ function buildEntities(
 ): LedgerEntity[] {
   if (scope === 'tenant') {
     return data.tenants
+      .filter((tenant: TenantRecord) => tenant.status === 'active')
       .map((tenant: TenantRecord) => ({
         id: tenant.id,
         title: tenant.fullName,

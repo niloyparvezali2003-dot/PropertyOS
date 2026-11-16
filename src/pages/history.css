@@ -9,6 +9,13 @@
   gap: 16px;
 }
 
+.history-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .history-stat-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -305,4 +312,11 @@
   .history-event-title-row > strong { flex-basis: 100%; }
   .history-event-meta { line-height: 1.5; }
   .history-error { flex-direction: column; align-items: flex-start; }
+}
+
+@media (max-width: 720px) {
+  .history-heading-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
 }
