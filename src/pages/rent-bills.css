@@ -948,3 +948,124 @@
     transition: none;
   }
 }
+/* Desktop rate-history table mirrors the downloadable PDF. The existing card
+   list remains the mobile presentation to preserve comfortable small-screen use. */
+.rent-rate-table-wrap {
+  display: none;
+}
+
+@media (min-width: 761px) {
+  .rent-rate-table-wrap {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+  }
+
+  .rent-rate-table {
+    width: 100%;
+    min-width: 540px;
+    border-collapse: separate;
+    border-spacing: 0;
+    color: var(--text);
+    font-size: 11px;
+  }
+
+  .rent-rate-table th {
+    padding: 12px 11px;
+    color: #fff;
+    background: #102c50;
+    border-bottom: 1px solid #102c50;
+    font-size: 10px;
+    font-weight: 700;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .rent-rate-table th:first-child {
+    border-top-left-radius: 10px;
+  }
+
+  .rent-rate-table th:last-child {
+    border-top-right-radius: 10px;
+  }
+
+  .rent-rate-table td {
+    padding: 11px;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .rent-rate-table tbody tr:nth-child(even) td {
+    background: var(--surface-secondary, #faf9f6);
+  }
+
+  .rent-rate-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .rent-rate-table .is-numeric {
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .rent-rate-table-primary,
+  .rent-rate-table-secondary,
+  .rent-rate-table-note {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+
+  .rent-rate-table-primary {
+    color: var(--text);
+    font-size: 11px;
+  }
+
+  .rent-rate-table-secondary {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 9px;
+    line-height: 1.4;
+  }
+
+  .rent-rate-table-note {
+    margin-top: 4px;
+    color: var(--text-tertiary);
+    font-size: 9px;
+    line-height: 1.4;
+  }
+
+  .rent-rate-table-amount {
+    color: var(--text);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rent-rate-table-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    min-width: 145px;
+  }
+
+  .rent-rate-table-lock {
+    color: var(--text-tertiary);
+    font-size: 9px;
+    line-height: 1.35;
+  }
+
+  .rent-rate-table-lock.is-locked {
+    color: var(--color-warning, #9a6700);
+  }
+
+  .rent-rate-table .rent-rate-delete-button {
+    min-height: 30px;
+    padding: 5px 7px;
+  }
+
+  .rent-rate-list {
+    display: none;
+  }
+}

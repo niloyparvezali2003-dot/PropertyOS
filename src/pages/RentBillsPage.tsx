@@ -99,6 +99,15 @@ function formatTaka(amountMinor: number): string {
   }).format(amountMinor / 100)}`
 }
 
+// jsPDF's built-in Helvetica font does not reliably contain the Bangladeshi
+// Taka sign. Use its ASCII currency code in the PDF so every viewer renders it.
+function formatTakaForPdf(amountMinor: number): string {
+  return `BDT ${new Intl.NumberFormat('en-BD', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amountMinor / 100)}`
+}
+
 function formatDate(value: string): string {
   const date = new Date(`${value}T00:00:00`)
 
@@ -590,7 +599,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
       const body = rentRateOverview.map(({ rate, room, tenantLabel }) => [
         tenantLabel,
         room?.roomNumber ?? rate.roomCode,
-        formatTaka(rate.monthlyRentMinor),
+        formatTakaForPdf(rate.monthlyRentMinor),
         formatDate(rate.effectiveFrom),
       ])
 
@@ -1118,7 +1127,81 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                 </button>
               </div>
             ) : (
-              <div className="rent-rate-list">
+              <>
+                <div className="rent-rate-table-wrap" aria-label="Rent rate history table">
+                  <table className="rent-rate-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Tenant</th>
+                        <th scope="col">Room</th>
+                        <th scope="col" className="is-numeric">Rent Rate</th>
+                        <th scope="col">Date</th>
+                        <th scope="col">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rentRateOverview.map(({ rate, room, property, tenantLabel }) => {
+                        const isRateLocked = rateIdsUsedByIssuedBills.has(rate.id)
+                        return (
+                          <tr key={rate.roomId}>
+                            <td>
+                              <strong className="rent-rate-table-primary">{tenantLabel}</strong>
+                              <span className="rent-rate-table-secondary">
+                                {property?.name ?? rate.propertyCode}
+                                {room ? ` · Floor ${room.floorName}` : ''}
+                              </span>
+                              {rate.notes && (
+                                <span className="rent-rate-table-note">{rate.notes}</span>
+                              )}
+                            </td>
+                            <td>
+                              <strong>{room?.roomNumber ?? rate.roomCode}</strong>
+                              <span className="rent-rate-table-secondary">{rate.roomCode}</span>
+                            </td>
+                            <td className="is-numeric">
+                              <strong className="rent-rate-table-amount">{formatTaka(rate.monthlyRentMinor)}</strong>
+                              <span className="rent-rate-table-secondary">per month</span>
+                            </td>
+                            <td>{formatDate(rate.effectiveFrom)}</td>
+                            <td>
+                              <div className="rent-rate-table-actions">
+                                <span className={isRateLocked ? 'rent-rate-table-lock is-locked' : 'rent-rate-table-lock'}>
+                                  {isRateLocked ? 'Used in issued bill' : 'Unused rate'}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="button button-secondary rent-rate-delete-button"
+                                  onClick={() => void handleDeleteRate(rate)}
+                                  disabled={
+                                    isRateLocked ||
+                                    Boolean(deletingRateId) ||
+                                    isSavingRate ||
+                                    isGenerating ||
+                                    isLoading
+                                  }
+                                  title={
+                                    isRateLocked
+                                      ? 'This rate is used by an issued bill and cannot be deleted.'
+                                      : 'Delete this unused rent rate'
+                                  }
+                                >
+                                  {deletingRateId === rate.id ? (
+                                    <LoaderCircle className="rent-spin" size={14} aria-hidden="true" />
+                                  ) : (
+                                    <Trash2 size={14} aria-hidden="true" />
+                                  )}
+                                  {deletingRateId === rate.id ? 'Deleting…' : 'Delete'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="rent-rate-list">
                 {rentRateOverview.map(({ rate, room, property, tenantLabel }) => (
                   <article className="rent-rate-item" key={rate.roomId}>
                     <div className="rent-rate-main">
@@ -1172,7 +1255,8 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
                     </div>
                   </article>
                 ))}
-              </div>
+                </div>
+              </>
             )}
           </section>
           )}
