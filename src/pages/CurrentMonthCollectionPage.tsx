@@ -858,20 +858,29 @@ export function CurrentMonthCollectionPage({
         throw new Error('No active tenants or inactive tenants with a non-zero due/advance balance were found.')
       }
 
-      const pdfTotals = tenantRows.reduce((total, row) => ({
-        dueMinor: total.dueMinor + Math.max(0, row.balanceMinor),
-        advanceMinor: total.advanceMinor + Math.max(0, -row.balanceMinor),
-        rentBillMinor: total.rentBillMinor + row.rentBillMinor,
-        rentCollectedMinor: total.rentCollectedMinor + row.rentCollectedMinor,
-        electricityBillMinor: total.electricityBillMinor + row.electricityBillMinor,
-        electricityCollectedMinor: total.electricityCollectedMinor + row.electricityCollectedMinor,
-      }), {
+      const pdfTotals = tenantRows.reduce((total, row) => {
+        const totalPaidMinor = row.rentCollectedMinor + row.electricityCollectedMinor
+        const monthBillMinor = row.rentBillMinor + row.electricityBillMinor
+
+        return {
+          dueMinor: total.dueMinor + Math.max(0, row.balanceMinor),
+          advanceMinor: total.advanceMinor + Math.max(0, -row.balanceMinor),
+          rentBillMinor: total.rentBillMinor + row.rentBillMinor,
+          rentCollectedMinor: total.rentCollectedMinor + row.rentCollectedMinor,
+          electricityBillMinor: total.electricityBillMinor + row.electricityBillMinor,
+          electricityCollectedMinor: total.electricityCollectedMinor + row.electricityCollectedMinor,
+          totalPaidMinor: total.totalPaidMinor + totalPaidMinor,
+          remainingAfterTotalPaymentMinor: total.remainingAfterTotalPaymentMinor + Math.max(0, monthBillMinor - totalPaidMinor),
+        }
+      }, {
         dueMinor: 0,
         advanceMinor: 0,
         rentBillMinor: 0,
         rentCollectedMinor: 0,
         electricityBillMinor: 0,
         electricityCollectedMinor: 0,
+        totalPaidMinor: 0,
+        remainingAfterTotalPaymentMinor: 0,
       })
 
       const activeTenantCount = ledgerData.tenants.filter((tenant) => tenant.status === 'active').length
@@ -946,15 +955,22 @@ export function CurrentMonthCollectionPage({
         151,
       )
 
-      const body = tenantRows.map((row) => [
-        wrapCollectionPdfText(row.tenantName, 150, 8.1),
-        sortCollectionRoomNumbers(row.rooms).join('\n') || '—',
-        formatCollectionPdfTenantBalance(row.balanceMinor),
-        formatCollectionPdfMoney(row.rentBillMinor),
-        formatCollectionPdfMoney(row.rentCollectedMinor),
-        formatCollectionPdfMoney(row.electricityBillMinor),
-        formatCollectionPdfMoney(row.electricityCollectedMinor),
-      ])
+      const body = tenantRows.map((row) => {
+        const totalPaidMinor = row.rentCollectedMinor + row.electricityCollectedMinor
+        const monthBillMinor = row.rentBillMinor + row.electricityBillMinor
+
+        return [
+          wrapCollectionPdfText(row.tenantName, 105, 7.6),
+          sortCollectionRoomNumbers(row.rooms).join('\n') || '—',
+          formatCollectionPdfTenantBalance(row.balanceMinor),
+          formatCollectionPdfMoney(row.rentBillMinor),
+          formatCollectionPdfMoney(row.rentCollectedMinor),
+          formatCollectionPdfMoney(row.electricityBillMinor),
+          formatCollectionPdfMoney(row.electricityCollectedMinor),
+          formatCollectionPdfMoney(totalPaidMinor),
+          formatCollectionPdfMoney(Math.max(0, monthBillMinor - totalPaidMinor)),
+        ]
+      })
 
       autoTable(pdf, {
         head: [[
@@ -965,6 +981,8 @@ export function CurrentMonthCollectionPage({
           'Rent Paid',
           'Electricity Bill',
           'Electricity Paid',
+          'Total Paid\n(Month)',
+          'Remaining After\nTotal Payment (Month)',
         ]],
         body,
         foot: [[
@@ -975,6 +993,8 @@ export function CurrentMonthCollectionPage({
           formatCollectionPdfMoney(pdfTotals.rentCollectedMinor),
           formatCollectionPdfMoney(pdfTotals.electricityBillMinor),
           formatCollectionPdfMoney(pdfTotals.electricityCollectedMinor),
+          formatCollectionPdfMoney(pdfTotals.totalPaidMinor),
+          formatCollectionPdfMoney(pdfTotals.remainingAfterTotalPaymentMinor),
         ]],
         startY: 160,
         margin: { top: 64, bottom: 36, left: margin, right: margin },
@@ -1004,13 +1024,16 @@ export function CurrentMonthCollectionPage({
         },
         alternateRowStyles: { fillColor: [250, 249, 246] },
         columnStyles: {
-          0: { cellWidth: 168 },
-          1: { cellWidth: 110 },
-          2: { cellWidth: 120, halign: 'right' },
-          3: { cellWidth: 90, halign: 'right' },
-          4: { cellWidth: 90, halign: 'right' },
-          5: { cellWidth: 100, halign: 'right' },
-          6: { cellWidth: 100, halign: 'right' },
+          // Nine columns are sized to stay within the A4 landscape page width.
+          0: { cellWidth: 115 },
+          1: { cellWidth: 82 },
+          2: { cellWidth: 84, halign: 'right' },
+          3: { cellWidth: 73, halign: 'right' },
+          4: { cellWidth: 73, halign: 'right' },
+          5: { cellWidth: 78, halign: 'right' },
+          6: { cellWidth: 78, halign: 'right' },
+          7: { cellWidth: 87, halign: 'right' },
+          8: { cellWidth: 87, halign: 'right' },
         },
         didParseCell: (hookData) => {
           if (hookData.section !== 'body' && hookData.section !== 'foot') return
@@ -1083,7 +1106,7 @@ export function CurrentMonthCollectionPage({
         pdf.setFontSize(6.5)
         pdf.setTextColor(...colors.muted)
         pdf.text(
-          'Includes all active tenants and inactive tenants with a non-zero due/advance balance. Monthly Rent Paid and Electricity Paid show allocations to the selected month bills. Balance matches the tenant statement: issued rent/electricity bills + opening balance adjustments - posted receipts.',
+          'Includes all active tenants and inactive tenants with a non-zero due/advance balance. Monthly Rent Paid and Electricity Paid show allocations to the selected month bills. Total Paid combines those allocations; Remaining After Total Payment is selected-month rent and electricity bills minus those payments. Balance matches the tenant statement: issued rent/electricity bills + opening balance adjustments - posted receipts.',
           margin,
           pageHeight - 16,
           { maxWidth: pageWidth - margin * 2 - 65 },
