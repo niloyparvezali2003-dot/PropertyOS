@@ -9,6 +9,9 @@ export type MonthlyBillReportRow = {
   /** Immutable meter-reading snapshots saved on the issued electricity bill. */
   previousReading: number
   currentReading: number
+  unitsConsumed: number
+  /** Immutable per-unit rate snapshot saved when the electricity bill was issued. */
+  pricePerUnitMinor: number
 }
 
 export type MonthlyBillReportKind = 'rent' | 'electricity'
@@ -355,13 +358,13 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
     left.roomNumber.localeCompare(right.roomNumber, undefined, { numeric: true }),
   )
 
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' })
+  const isElectricityReport = options.kind === 'electricity'
+  const pdf = new jsPDF({ orientation: isElectricityReport ? 'landscape' : 'portrait', unit: 'pt', format: 'a4' })
   const pageWidth = pdf.internal.pageSize.getWidth()
   const pageHeight = pdf.internal.pageSize.getHeight()
   const margin = 34
   const reportTitle = options.kind === 'rent' ? 'Monthly Rent Bill Report' : 'Monthly Electricity Bill Report'
   const amountHeading = options.kind === 'rent' ? 'Rent amount' : 'E-Bill amount'
-  const isElectricityReport = options.kind === 'electricity'
 
   pdf.setFillColor(...COLORS.navy)
   pdf.rect(0, 0, pageWidth, 82, 'F')
@@ -398,6 +401,8 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
         wrapBengaliTableCell(row.tenantName || 'Unassigned', 205, 8),
         formatReading(row.previousReading),
         formatReading(row.currentReading),
+        formatReading(row.unitsConsumed),
+        formatMoney(row.pricePerUnitMinor),
         formatMoney(row.amountMinor),
       ]
     : [
@@ -413,7 +418,7 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
     tableRows.push([
       {
         content: 'TOTAL E-BILL AMOUNT',
-        colSpan: 4,
+        colSpan: 6,
         styles: {
           fillColor: COLORS.ivory,
           textColor: COLORS.navy,
@@ -437,7 +442,7 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
 
   autoTable(pdf, {
     head: [isElectricityReport
-      ? ['#', 'Tenant name', 'Previous Reading', 'Current Reading', 'E-Bill amount']
+      ? ['#', 'Tenant name', 'Previous Reading', 'Current Reading', 'Unit Usage', 'Rate', 'E-Bill amount']
       : ['#', 'Tenant name', 'Room number', 'Property', amountHeading]],
     body: tableRows as never,
     startY: 119,
@@ -462,11 +467,13 @@ export async function downloadMonthlyBillReportPdf(options: MonthlyBillReportOpt
     alternateRowStyles: { fillColor: COLORS.ivory },
     columnStyles: isElectricityReport
       ? {
-          0: { cellWidth: 25, halign: 'center' },
+          0: { cellWidth: 28, halign: 'center' },
           1: { cellWidth: 205 },
-          2: { cellWidth: 88, halign: 'right' },
-          3: { cellWidth: 88, halign: 'right' },
-          4: { cellWidth: 'auto', halign: 'right', fontStyle: 'bold' },
+          2: { cellWidth: 100, halign: 'right' },
+          3: { cellWidth: 100, halign: 'right' },
+          4: { cellWidth: 85, halign: 'right' },
+          5: { cellWidth: 105, halign: 'right' },
+          6: { cellWidth: 'auto', halign: 'right', fontStyle: 'bold' },
         }
       : {
           0: { cellWidth: 25, halign: 'center' },

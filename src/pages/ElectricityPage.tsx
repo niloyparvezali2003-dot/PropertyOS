@@ -367,6 +367,8 @@ export function ElectricityPage({ ownerUid }: ElectricityPageProps) {
             previousReading: bill.previousReading,
             currentReading: bill.currentReading,
             unitsConsumed: bill.unitsConsumed,
+            // Use the immutable rate snapshot saved with this issued bill.
+            pricePerUnitMinor: bill.pricePerUnitMinor,
           }
         }),
       })
