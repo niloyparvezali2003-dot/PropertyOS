@@ -319,10 +319,12 @@ function validateSourceBill(
   }
 
   if (billType === 'rent') {
-    assertAssignmentMatches(assignment, allocation)
-    const assignmentEnd = typeof assignment.moveOutDate === 'string'
-      ? assignment.moveOutDate
-      : '9999-12-31'
+    // The issued bill records who occupied the room and the dates charged at
+    // issue time. Do not require the mutable assignment to still cover those
+    // dates: a later move-out or room change must not block collection of an
+    // already-issued bill. Verify the saved assignment and bill snapshots
+    // still identify the same tenant, room, and property.
+    assertAssignmentMatches(assignment, allocation, false)
     if (
       bill.assignmentId !== allocation.tenantAssignmentId ||
       bill.tenantId !== allocation.tenantId ||
@@ -332,8 +334,7 @@ function validateSourceBill(
       bill.floorName !== allocation.floorName ||
       typeof bill.occupancyStartDate !== 'string' ||
       typeof bill.occupancyEndDate !== 'string' ||
-      bill.occupancyStartDate < (assignment.moveInDate as string) ||
-      bill.occupancyEndDate > assignmentEnd ||
+      bill.occupancyEndDate < bill.occupancyStartDate ||
       allocation.referenceDate !== bill.occupancyEndDate
     ) {
       throw new PaymentBillMismatchError()

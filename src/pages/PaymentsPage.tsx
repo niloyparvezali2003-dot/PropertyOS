@@ -241,9 +241,15 @@ function makePayableBills(
 
   for (const bill of rentBills) {
     const assignment = assignmentById.get(bill.assignmentId)
-    if (!assignment || assignment.tenantId !== bill.tenantId || assignment.roomId !== bill.roomId ||
-      assignment.moveInDate > bill.occupancyStartDate ||
-      (assignment.moveOutDate !== null && assignment.moveOutDate < bill.occupancyEndDate)) {
+    // An issued rent bill is an immutable debt snapshot. The assignment may
+    // have ended (or the tenant may have moved to another room) since issue;
+    // its current move-in/move-out dates must not make that old bill unpayable.
+    // Still require the saved assignment to match the bill's original identity.
+    if (!assignment || assignment.tenantId !== bill.tenantId ||
+      assignment.tenantCode !== bill.tenantCode || assignment.tenantName !== bill.tenantName ||
+      assignment.roomId !== bill.roomId || assignment.roomCode !== bill.roomCode ||
+      assignment.roomNumber !== bill.roomNumber || assignment.floorName !== bill.floorName ||
+      assignment.propertyId !== bill.propertyId || assignment.propertyCode !== bill.propertyCode) {
       unmatchedRent += 1
       continue
     }
@@ -403,6 +409,14 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
   const tenantsById = useMemo(() => new Map(tenants.map((tenant) => [tenant.id, tenant])), [tenants])
   const propertyById = useMemo(() => new Map(properties.map((property) => [property.id, property])), [properties])
   const tenantOptions = useMemo(() => {
+    // Former/inactive tenants can still owe money for previously issued bills.
+    // Keep them selectable while a bill or opening balance remains outstanding.
+    const tenantsWithOutstandingBalances = new Set([
+      ...openBills.map((bill) => bill.tenantId),
+      ...openingBalances
+        .filter((balance) => balance.outstandingMinor > 0)
+        .map((balance) => balance.tenantId),
+    ])
     const assignmentsByTenantId = new Map<string, TenantAssignmentRecord[]>()
     const currentAssignmentsByTenantId = new Map<string, TenantAssignmentRecord[]>()
 
@@ -419,7 +433,7 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
     }
 
     return tenants
-      .filter((tenant) => tenant.status === 'active')
+      .filter((tenant) => tenant.status === 'active' || tenantsWithOutstandingBalances.has(tenant.id))
       .map((tenant) => {
         const tenantAssignments = assignmentsByTenantId.get(tenant.id) ?? []
         const currentAssignments = currentAssignmentsByTenantId.get(tenant.id) ?? []
@@ -447,7 +461,7 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
         }
       })
       .sort((left, right) => compareTenantNames(left.name, right.name))
-  }, [tenants, assignments, propertyById])
+  }, [tenants, assignments, propertyById, openBills, openingBalances])
   const creditByTenantId = useMemo(() => new Map(credits.map((credit) => [credit.tenantId, credit])), [credits])
   const selectedTenant = tenantsById.get(selectedTenantId) ?? null
   const selectedTenantCredit = selectedTenantId ? creditByTenantId.get(selectedTenantId)?.creditMinor ?? 0 : 0
@@ -512,8 +526,12 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
     event.preventDefault()
     setFormError('')
     setPageSuccess('')
-    if (!selectedTenant || selectedTenant.status !== 'active') {
-      setFormError('Select an active tenant before recording a payment.')
+    if (!selectedTenant) {
+      setFormError('Select a tenant before recording a payment.')
+      return
+    }
+    if (selectedTenant.status !== 'active' && selectedTenantOutstandingMinor <= 0) {
+      setFormError('Inactive tenants can only receive payments against an existing outstanding balance.')
       return
     }
     if (hasInvalidReceived || amountReceivedMinor === null) {
