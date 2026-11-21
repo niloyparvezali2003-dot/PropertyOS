@@ -186,6 +186,29 @@
   overflow-wrap: anywhere;
 }
 
+.payment-bill-meter-reading {
+  display: grid;
+  gap: 3px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  color: var(--text-secondary, #475569);
+  background: var(--surface-secondary, #f8fafc);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.payment-bill-meter-reading strong {
+  color: var(--text, #0f172a);
+  font-size: 11px;
+}
+
+.payment-bill-meter-reading small {
+  color: var(--muted, #64748b);
+  font-size: 10px;
+}
+
 .payment-allocation-input {
   display: flex;
   align-items: end;

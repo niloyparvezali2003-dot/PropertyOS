@@ -1902,13 +1902,76 @@ service cloud.firestore {
         && getAfter(lockPath).data.tenantId == data.tenantId;
     }
 
-    // One room may receive at most one issued rent bill in a billing month.
-    // The lock and bill are created atomically to prevent concurrent duplicates.
-    match /users/{userId}/rentBillRoomMonthLocks/{lockId} {
+    function validRentBillAssignmentMonthLock(userId, lockId, data) {
+      let billPath =
+        /databases/$(database)/documents/users/$(userId)/rentBills/$(data.billId);
+
+      return data.keys().hasAll([
+          'roomId', 'roomCode', 'billingMonth', 'billId', 'assignmentId',
+          'tenantId', 'tenantCode', 'tenantName', 'createdAt', 'createdBy'
+        ])
+        && data.keys().hasOnly([
+          'roomId', 'roomCode', 'billingMonth', 'billId', 'assignmentId',
+          'tenantId', 'tenantCode', 'tenantName', 'createdAt', 'createdBy'
+        ])
+        && data.roomId is string
+        && data.roomId.size() > 0
+        && data.roomCode is string
+        && data.roomCode.matches('^R[0-9]{4}$')
+        && data.billingMonth is string
+        && validRentBillingMonth(data.billingMonth)
+        && data.assignmentId is string
+        && data.assignmentId.size() > 0
+        && lockId == data.assignmentId + '__' + data.billingMonth
+        && data.billId == lockId
+        && data.tenantId is string
+        && data.tenantId.size() > 0
+        && data.tenantCode is string
+        && data.tenantCode.matches('^T[0-9]{5}[A-Z]$')
+        && data.tenantName is string
+        && data.tenantName.size() >= 2
+        && data.tenantName.size() <= 100
+        && data.createdAt is timestamp
+        && data.createdBy == request.auth.uid
+        && existsAfter(billPath)
+        && getAfter(billPath).data.roomId == data.roomId
+        && getAfter(billPath).data.roomCode == data.roomCode
+        && getAfter(billPath).data.billingMonth == data.billingMonth
+        && getAfter(billPath).data.assignmentId == data.assignmentId
+        && getAfter(billPath).data.tenantId == data.tenantId
+        && getAfter(billPath).data.tenantCode == data.tenantCode
+        && getAfter(billPath).data.tenantName == data.tenantName
+        && getAfter(billPath).data.status == 'issued';
+    }
+
+    function rentBillAssignmentMonthLockMatchesAfter(userId, billId, data) {
+      let lockId = data.assignmentId + '__' + data.billingMonth;
+      let lockPath =
+        /databases/$(database)/documents/users/$(userId)/rentBillAssignmentMonthLocks/$(lockId);
+
+      return existsAfter(lockPath)
+        && getAfter(lockPath).data.billId == billId
+        && getAfter(lockPath).data.assignmentId == data.assignmentId
+        && getAfter(lockPath).data.roomId == data.roomId
+        && getAfter(lockPath).data.billingMonth == data.billingMonth
+        && getAfter(lockPath).data.tenantId == data.tenantId;
+    }
+
+    // New assignment/month lock permits separate non-overlapping tenants to
+    // receive their own prorated invoice when a room changes occupants mid-month.
+    match /users/{userId}/rentBillAssignmentMonthLocks/{lockId} {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
-        && validRentBillRoomMonthLock(userId, lockId, request.resource.data)
+        && validRentBillAssignmentMonthLock(userId, lockId, request.resource.data)
         && createdByCurrentActor(request.resource.data);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Legacy room/month locks are retained read-only for existing records.
+    match /users/{userId}/rentBillRoomMonthLocks/{lockId} {
+      allow read: if isOwner(userId);
+      allow create: if false;
       allow update: if false;
       allow delete: if false;
     }
@@ -1986,7 +2049,7 @@ service cloud.firestore {
 
       allow create: if isOwner(userId)
         && validRentBill(userId, billId, request.resource.data)
-        && rentBillRoomMonthLockMatchesAfter(userId, billId, request.resource.data)
+        && rentBillAssignmentMonthLockMatchesAfter(userId, billId, request.resource.data)
         && createdByCurrentActor(request.resource.data);
 
       // Issued bills are historical financial records and cannot be rewritten.
@@ -3531,7 +3594,7 @@ service cloud.firestore {
           'electricityBills', 'electricityRates', 'electricityReadings',
           'electricityReadingState', 'meterAssignments', 'meters',
           'payments', 'properties', 'propertyNameIndex', 'rentBills',
-          'rentBillRoomMonthLocks', 'roomNameIndex', 'roomRentRateUsageLocks', 'roomRentRates', 'rooms', 'tenantAssignments',
+          'rentBillAssignmentMonthLocks', 'rentBillRoomMonthLocks', 'roomNameIndex', 'roomRentRateUsageLocks', 'roomRentRates', 'rooms', 'tenantAssignments',
           'settings', 'tenantCredits', 'tenants', 'transactionReferences', 'system'
         ];
     }

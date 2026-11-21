@@ -14,6 +14,9 @@ import {
   listTenantAssignments,
   type TenantAssignmentRecord,
 } from '../../services/firebase/tenantAssignments'
+import {
+  generateMoveOutRentBills,
+} from '../../services/firebase/rentBills'
 import type { TenantAssignmentFormValues, TenantMoveOutFormValues } from '../../schemas/tenantAssignment'
 
 import './tenant-assignments.css'
@@ -63,6 +66,7 @@ export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChang
   const [pageError, setPageError] = useState('')
   const [formError, setFormError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [warningMessage, setWarningMessage] = useState('')
   const [showAllHistory, setShowAllHistory] = useState(false)
   const [currentPropertyFilter, setCurrentPropertyFilter] = useState('all')
 
@@ -226,6 +230,7 @@ export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChang
     setIsSaving(true)
     setFormError('')
     setSuccessMessage('')
+    setWarningMessage('')
 
     try {
       const endingAssignment = assignments.find((item) => item.id === moveOutAssignmentId)
@@ -239,9 +244,47 @@ export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChang
           summary: `Recorded move-out for ${endingAssignment.tenantName} from ${endingAssignment.roomCode} / Room ${endingAssignment.roomNumber} on ${moveOutForm.moveOutDate}.`,
         })
       }
+
+      const moveOutWarnings: string[] = []
+      let rentBillSummary = 'No rent invoices were generated.'
+      try {
+        const billResult = await generateMoveOutRentBills(
+          ownerUid,
+          moveOutAssignmentId,
+          moveOutForm.moveOutDate,
+        )
+        rentBillSummary = `Rent bills: ${billResult.created} created, ${billResult.alreadyExisted} already issued.`
+
+        if (billResult.created > 0 && endingAssignment) {
+          await recordAuditEvent(ownerUid, {
+            action: 'bills_generated',
+            entityType: 'rent_bills',
+            entityId: `${moveOutAssignmentId}__moveout__${moveOutForm.moveOutDate}`,
+            entityLabel: `${endingAssignment.tenantName} move-out rent`,
+            summary: `Generated ${billResult.created} rent bill(s) for ${endingAssignment.tenantName} for the month before and the month of move-out (${billResult.billingMonths.join(', ')}).`,
+          })
+        }
+
+        if (billResult.errors.length > 0) {
+          moveOutWarnings.push(
+            `Some rent bills could not be generated: ${billResult.errors.map((item) => `${item.billingMonth} — ${item.message}`).join('; ')}`,
+          )
+        }
+        if (billResult.existingBillsNeedingReview.length > 0) {
+          moveOutWarnings.push(
+            `An issued rent bill already exists for ${billResult.existingBillsNeedingReview.join(', ')} with dates that do not match this move-out. It was not edited; review it in Rent & Bills because issued bills are historical records.`,
+          )
+        }
+      } catch (billingError: unknown) {
+        moveOutWarnings.push(
+          `Move-out was saved, but automatic rent-bill preparation needs attention: ${billingError instanceof Error ? billingError.message : 'Unknown billing error.'}`,
+        )
+      }
+
       setMoveOutAssignmentId(null)
       setMoveOutForm(emptyMoveOutForm())
-      setSuccessMessage('Move-out recorded. The completed assignment remains in history.')
+      setSuccessMessage(`Move-out recorded. The completed assignment remains in history. ${rentBillSummary}`)
+      setWarningMessage(moveOutWarnings.join(' '))
       await loadData()
     } catch (error: unknown) {
       setFormError(getTenantAssignmentErrorMessage(error))
@@ -386,6 +429,7 @@ export function TenantAssignmentsPanel({ ownerUid, activeSection, onSectionChang
 
           {formError && <p className="tenant-assignment-message is-error" role="alert">{formError}</p>}
           {successMessage && <p className="tenant-assignment-message is-success" role="status">{successMessage}</p>}
+          {warningMessage && <p className="tenant-assignment-message is-warning" role="status">{warningMessage}</p>}
 
           <button
             type="submit"

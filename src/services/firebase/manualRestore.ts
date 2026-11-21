@@ -98,6 +98,7 @@ const RESTORE_COLLECTIONS = [
   'properties',
   'propertyNameIndex',
   'rentBills',
+  'rentBillAssignmentMonthLocks',
   'rentBillRoomMonthLocks',
   'roomNameIndex',
   'roomRentRateUsageLocks',
@@ -263,6 +264,7 @@ function validateArchive(raw: unknown): BackupArchive {
     'openingBalanceAdjustments',
     'openingBalanceCreditApplications',
     'roomRentRateUsageLocks',
+    'rentBillAssignmentMonthLocks',
     'rentBillRoomMonthLocks',
   ]) {
     if (!(optionalCollection in archiveCollections)) {

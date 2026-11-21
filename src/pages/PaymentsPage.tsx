@@ -477,6 +477,10 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
   const selectedTenant = tenantsById.get(selectedTenantId) ?? null
   const selectedTenantCredit = selectedTenantId ? creditByTenantId.get(selectedTenantId)?.creditMinor ?? 0 : 0
   const selectedTenantBills = useMemo(() => openBills.filter((bill) => bill.tenantId === selectedTenantId), [openBills, selectedTenantId])
+  const electricityBillById = useMemo(
+    () => new Map(electricityBills.map((bill) => [bill.id, bill])),
+    [electricityBills],
+  )
   const selectedOpeningBalance = openingBalances.find((balance) => balance.tenantId === selectedTenantId) ?? null
   const selectedTenantBillOutstandingMinor = selectedTenantBills.reduce((total, bill) => total + bill.outstandingMinor, 0)
   const selectedTenantOutstandingMinor = selectedTenantBillOutstandingMinor + (selectedOpeningBalance?.outstandingMinor ?? 0)
@@ -794,10 +798,20 @@ export function PaymentsPage({ ownerUid }: PaymentsPageProps) {
               {selectedOpeningBalance && selectedOpeningBalance.outstandingMinor === 0 && <div className="payment-opening-settled"><CheckCircle2 size={16} /> Previous opening due has been fully settled.</div>}
               {selectedTenantBills.map((bill) => {
                 const billCredit = creditByTenantId.get(bill.tenantId)?.creditMinor ?? 0
+                const meterReading = bill.billType === 'electricity'
+                  ? electricityBillById.get(bill.billId)
+                  : undefined
                 return (
                   <article className="payment-bill-row" key={bill.key}>
                     <div className="payment-bill-topline"><div><p className="payment-bill-title">{billTypeLabel(bill.billType)} · {formatMonth(bill.billingMonth)}</p><div className="payment-bill-meta">{bill.roomCode} · Room {bill.roomNumber} · {bill.propertyCode} · {bill.floorName}</div></div><strong>{formatTaka(bill.outstandingMinor)} due</strong></div>
                     <div className="payment-bill-amounts"><div><span>Original bill</span><strong>{formatTaka(bill.billAmountMinor)}</strong></div><div><span>Already paid</span><strong>{formatTaka(bill.paidAmountMinor)}</strong></div><div><span>Remaining</span><strong>{formatTaka(bill.outstandingMinor)}</strong></div></div>
+                    {meterReading && (
+                      <div className="payment-bill-meter-reading">
+                        <strong>Meter reading · {formatDate(meterReading.readingDate)}</strong>
+                        <span>Previous: {meterReading.previousReading.toLocaleString('en-BD')} · Current: {meterReading.currentReading.toLocaleString('en-BD')} · Units: {meterReading.unitsConsumed.toLocaleString('en-BD')}</span>
+                        <small>Rate: {formatTaka(meterReading.pricePerUnitMinor)} / unit</small>
+                      </div>
+                    )}
                     <div className="payment-allocation-input"><label>Amount to allocate (BDT)
                       <input type="number" min="0" max={(bill.outstandingMinor / 100).toFixed(2)} step="0.01" inputMode="decimal" value={allocationAmounts[bill.key] ?? ''} onChange={(event) => setAllocationAmounts((current) => ({ ...current, [bill.key]: event.target.value }))} placeholder="0.00" />
                     </label><button className="payment-small-button" type="button" onClick={() => setAllocationAmounts((current) => ({ ...current, [bill.key]: (bill.outstandingMinor / 100).toFixed(2) }))}>Full balance</button></div>

@@ -112,6 +112,15 @@ export type RentBillGenerationResult = {
   errors: RentBillGenerationError[]
 }
 
+export type MoveOutRentBillGenerationResult = {
+  billingMonths: string[]
+  created: number
+  alreadyExisted: number
+  skipped: number
+  errors: Array<{ billingMonth: string; message: string }>
+  existingBillsNeedingReview: string[]
+}
+
 export class RentRateAlreadyExistsError extends Error {
   constructor() {
     super(
@@ -249,9 +258,9 @@ function getRentBillRef(
   )
 }
 
-function getRentBillRoomMonthLockRef(
+function getRentBillAssignmentMonthLockRef(
   ownerUid: string,
-  roomId: string,
+  assignmentId: string,
   billingMonth: string,
 ) {
   const { db } = getFirebaseServices()
@@ -260,8 +269,8 @@ function getRentBillRoomMonthLockRef(
     db,
     'users',
     ownerUid,
-    'rentBillRoomMonthLocks',
-    `${roomId}__${billingMonth}`,
+    'rentBillAssignmentMonthLocks',
+    `${assignmentId}__${billingMonth}`,
   )
 }
 
@@ -530,6 +539,12 @@ function daysInBillingMonth(billingMonth: string): number {
   return new Date(
     Date.UTC(year, month, 0),
   ).getUTCDate()
+}
+
+function previousBillingMonth(billingMonth: string): string {
+  const [year, month] = billingMonth.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 2, 1))
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
 }
 
 function addDays(
@@ -904,12 +919,11 @@ export async function ensureRentRateUsageLocks(
 }
 
 /**
- * Backfill one permanent room/month lock for every previously issued bill.
- * If legacy data already contains duplicate bills for a room/month, retain all
- * bills unchanged and let the first deterministic bill reserve the lock so no
- * additional duplicate can be created.
+ * Backfill one permanent assignment/month lock for every issued bill.
+ * Separate, non-overlapping tenants may now receive prorated bills for the
+ * same room and month; one assignment cannot receive duplicate bills.
  */
-export async function ensureRentBillRoomMonthLocks(
+export async function ensureRentBillAssignmentMonthLocks(
   ownerUid: string,
   bills: RentBillRecord[],
 ): Promise<void> {
@@ -917,7 +931,7 @@ export async function ensureRentBillRoomMonthLocks(
 
   const { db } = getFirebaseServices()
   const actorUid = getCurrentActorUid()
-  const firstBillByRoomMonth = new Map<string, RentBillRecord>()
+  const firstBillByAssignmentMonth = new Map<string, RentBillRecord>()
 
   const orderedBills = [...bills].sort((a, b) =>
     a.billingMonth.localeCompare(b.billingMonth) ||
@@ -926,24 +940,24 @@ export async function ensureRentBillRoomMonthLocks(
   )
 
   for (const bill of orderedBills) {
-    const lockId = `${bill.roomId}__${bill.billingMonth}`
-    if (!firstBillByRoomMonth.has(lockId)) {
-      firstBillByRoomMonth.set(lockId, bill)
+    const lockId = `${bill.assignmentId}__${bill.billingMonth}`
+    if (!firstBillByAssignmentMonth.has(lockId)) {
+      firstBillByAssignmentMonth.set(lockId, bill)
     }
   }
 
   const existingLocks = await getDocs(
-    collection(db, 'users', ownerUid, 'rentBillRoomMonthLocks'),
+    collection(db, 'users', ownerUid, 'rentBillAssignmentMonthLocks'),
   )
   const lockedIds = new Set(existingLocks.docs.map((item) => item.id))
-  const missing = [...firstBillByRoomMonth.entries()].filter(
+  const missing = [...firstBillByAssignmentMonth.entries()].filter(
     ([lockId]) => !lockedIds.has(lockId),
   )
 
   for (let offset = 0; offset < missing.length; offset += 8) {
     const batch = missing.slice(offset, offset + 8)
     await Promise.all(batch.map(async ([lockId, bill]) => {
-      const lockRef = doc(db, 'users', ownerUid, 'rentBillRoomMonthLocks', lockId)
+      const lockRef = doc(db, 'users', ownerUid, 'rentBillAssignmentMonthLocks', lockId)
       const billRef = getRentBillRef(ownerUid, bill.id)
 
       await runTransaction(db, async (transaction) => {
@@ -966,7 +980,7 @@ export async function ensureRentBillRoomMonthLocks(
           stored.status !== 'issued'
         ) {
           throw new InvalidRentBillingDataError(
-            `Rent bill ${bill.id} does not match its room/month lock data.`,
+            `Rent bill ${bill.id} does not match its assignment/month lock data.`,
           )
         }
 
@@ -1168,9 +1182,9 @@ async function createRentBillForAssignmentMonth(
     previewAssignment.roomId,
   )
 
-  const roomMonthLockRef = getRentBillRoomMonthLockRef(
+  const assignmentMonthLockRef = getRentBillAssignmentMonthLockRef(
     ownerUid,
-    previewAssignment.roomId,
+    assignmentId,
     billingMonth,
   )
 
@@ -1188,20 +1202,20 @@ async function createRentBillForAssignmentMonth(
       assignmentSnapshot,
       roomSnapshot,
       roomIndexSnapshot,
-      roomMonthLockSnapshot,
+      assignmentMonthLockSnapshot,
     ] = await Promise.all([
       transaction.get(billRef),
       transaction.get(assignmentRef),
       transaction.get(roomRef),
       transaction.get(roomIndexRef),
-      transaction.get(roomMonthLockRef),
+      transaction.get(assignmentMonthLockRef),
     ])
 
     if (existingBillSnapshot.exists()) {
       return 'exists'
     }
 
-    if (roomMonthLockSnapshot.exists()) {
+    if (assignmentMonthLockSnapshot.exists()) {
       return 'exists'
     }
 
@@ -1451,7 +1465,7 @@ async function createRentBillForAssignmentMonth(
       updatedBy: actorUid,
     })
 
-    transaction.set(roomMonthLockRef, {
+    transaction.set(assignmentMonthLockRef, {
       roomId: assignment.roomId,
       roomCode: assignment.roomCode,
       billingMonth,
@@ -1497,25 +1511,18 @@ export async function generateRentBillsForMonth(
     listRentBills(ownerUid),
   ])
 
-  // Make legacy issued bills reserve their room/month before attempting any
-  // new bill. The Firestore rules require this lock on every new bill.
-  await ensureRentBillRoomMonthLocks(ownerUid, existingBills)
+  // Backfill assignment/month locks for old issued bills before generating
+  // additional invoices. Each historical assignment can have one bill per month.
+  await ensureRentBillAssignmentMonthLocks(ownerUid, existingBills)
   await ensureRentRateUsageLocks(ownerUid, existingBills)
 
   const relevantAssignments = assignments
     .filter((assignment) =>
       assignmentOverlapsMonth(assignment, billingMonth),
     )
-    // The room/month lock permits one bill for a room in a month. When a
-    // room has multiple assignment records in that month, bill the current
-    // occupant first; if vacant, prefer the most recent occupancy. This keeps
-    // the room-level duplicate guard deterministic without conflating tenants
-    // who occupy different rooms.
     .sort((a, b) =>
       a.roomId.localeCompare(b.roomId) ||
-      Number(b.status === 'current') - Number(a.status === 'current') ||
-      b.moveInDate.localeCompare(a.moveInDate) ||
-      (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0) ||
+      a.moveInDate.localeCompare(b.moveInDate) ||
       a.id.localeCompare(b.id),
     )
 
@@ -1557,6 +1564,101 @@ export async function generateRentBillsForMonth(
     }
   }
 
+  invalidateOwnerDataCache(ownerUid)
+  return result
+}
+
+/**
+ * Prepare rent invoices for the month before move-out and the move-out month
+ * for one ended assignment. Existing issued bills are never rewritten: when
+ * a current-month bill was issued before the move-out date was entered, the
+ * caller is told that its occupancy dates need review instead of silently
+ * changing a historical financial snapshot.
+ */
+export async function generateMoveOutRentBills(
+  ownerUid: string,
+  assignmentId: string,
+  moveOutDate: string,
+): Promise<MoveOutRentBillGenerationResult> {
+  const validMoveOutDate = rentIsoDateSchema.parse(moveOutDate)
+  const moveOutMonth = validMoveOutDate.slice(0, 7)
+  const billingMonths = [previousBillingMonth(moveOutMonth), moveOutMonth]
+
+  const [assignments, rates, existingBills] = await Promise.all([
+    listTenantAssignments(ownerUid),
+    listRoomRentRates(ownerUid),
+    listRentBills(ownerUid),
+  ])
+
+  const assignment = assignments.find((item) => item.id === assignmentId)
+  if (!assignment || assignment.status !== 'ended' || assignment.moveOutDate !== validMoveOutDate) {
+    throw new InvalidRentBillingDataError(
+      'The move-out assignment could not be verified. Refresh the page before generating its rent bills.',
+    )
+  }
+
+  await ensureRentBillAssignmentMonthLocks(ownerUid, existingBills)
+  await ensureRentRateUsageLocks(ownerUid, existingBills)
+
+  const result: MoveOutRentBillGenerationResult = {
+    billingMonths,
+    created: 0,
+    alreadyExisted: 0,
+    skipped: 0,
+    errors: [],
+    existingBillsNeedingReview: [],
+  }
+
+  for (const billingMonth of billingMonths) {
+    if (!assignmentOverlapsMonth(assignment, billingMonth)) {
+      result.skipped += 1
+      continue
+    }
+
+    const monthStart = monthStartDate(billingMonth)
+    const monthEnd = monthEndDate(billingMonth)
+    const expectedStart = assignment.moveInDate > monthStart
+      ? assignment.moveInDate
+      : monthStart
+    const expectedEnd = validMoveOutDate < monthEnd
+      ? validMoveOutDate
+      : monthEnd
+    const existingBill = existingBills.find((bill) =>
+      bill.assignmentId === assignmentId && bill.billingMonth === billingMonth,
+    )
+
+    if (existingBill) {
+      result.alreadyExisted += 1
+      if (
+        existingBill.occupancyStartDate !== expectedStart ||
+        existingBill.occupancyEndDate !== expectedEnd
+      ) {
+        result.existingBillsNeedingReview.push(billingMonth)
+      }
+      continue
+    }
+
+    try {
+      const outcome = await createRentBillForAssignmentMonth(
+        ownerUid,
+        assignmentId,
+        billingMonth,
+        assignments,
+        rates,
+      )
+
+      if (outcome === 'created') result.created += 1
+      else if (outcome === 'exists') result.alreadyExisted += 1
+      else result.skipped += 1
+    } catch (error: unknown) {
+      result.errors.push({
+        billingMonth,
+        message: getRentBillErrorMessage(error),
+      })
+    }
+  }
+
+  invalidateOwnerDataCache(ownerUid)
   return result
 }
 

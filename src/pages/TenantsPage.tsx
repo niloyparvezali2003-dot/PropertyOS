@@ -7,12 +7,16 @@ import {
 } from 'react'
 
 import {
+    CircleDollarSign,
+    Eye,
     LoaderCircle,
     MapPin,
     Pencil,
     Phone,
     Plus,
+    ReceiptText,
     Users,
+    Wallet,
     X,
 } from 'lucide-react'
 
@@ -36,9 +40,56 @@ import {
     type TenantFormValues,
     type TenantStatus,
 } from '../schemas/tenant'
+import { invalidateOwnerDataCache } from '../services/firebase/listCache'
+import { loadLedgerSourceData, type LedgerSourceData } from '../services/firebase/ledgers'
+import {
+    listTenantCredits,
+    type TenantCreditRecord,
+} from '../services/firebase/payments'
+import { resolveElectricityBillTenantAssignment } from '../services/firebase/electricity'
+import type { AppPage } from '../types/navigation'
+import './tenant-financial-profile.css'
+
+type TenantProfileBillRow = {
+    key: string
+    billType: 'rent' | 'electricity'
+    billingMonth: string
+    referenceDate: string
+    roomLabel: string
+    amountMinor: number
+    paidMinor: number
+    outstandingMinor: number
+    reading?: {
+        previous: number
+        current: number
+        units: number
+    }
+}
 
 type TenantsPageProps = {
     ownerUid: string
+    onNavigate: (page: AppPage) => void
+}
+
+function formatTenantMoney(amountMinor: number): string {
+    return `৳${new Intl.NumberFormat('en-BD', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    }).format(amountMinor / 100)}`
+}
+
+function formatTenantProfileDate(value: string): string {
+    const date = new Date(`${value}T00:00:00`)
+    return Number.isNaN(date.getTime())
+        ? value
+        : new Intl.DateTimeFormat('en-BD', { day: '2-digit', month: 'short', year: 'numeric' }).format(date)
+}
+
+function formatTenantProfileMonth(value: string): string {
+    const date = new Date(`${value}-01T00:00:00`)
+    return Number.isNaN(date.getTime())
+        ? value
+        : new Intl.DateTimeFormat('en-BD', { month: 'long', year: 'numeric' }).format(date)
 }
 
 const emptyForm: TenantFormValues = {
@@ -90,7 +141,7 @@ function compareTenantDirectoryNames(left: string, right: string): number {
     return collator.compare(leftName, rightName)
 }
 
-export function TenantsPage({ ownerUid }: TenantsPageProps) {
+export function TenantsPage({ ownerUid, onNavigate }: TenantsPageProps) {
     const [tenants, setTenants] = useState<TenantRecord[]>([])
     const [search, setSearch] = useState('')
     const [statusFilter, setStatusFilter] = useState<
@@ -110,6 +161,11 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
 
     const [formError, setFormError] = useState('')
     const [isSaving, setIsSaving] = useState(false)
+    const [financialProfileTenant, setFinancialProfileTenant] = useState<TenantRecord | null>(null)
+    const [financialProfileData, setFinancialProfileData] = useState<LedgerSourceData | null>(null)
+    const [financialProfileCredits, setFinancialProfileCredits] = useState<TenantCreditRecord[]>([])
+    const [isFinancialProfileLoading, setIsFinancialProfileLoading] = useState(false)
+    const [financialProfileError, setFinancialProfileError] = useState('')
 
     const loadTenants = useCallback(async () => {
         setIsLoading(true)
@@ -128,6 +184,126 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
     useEffect(() => {
         void loadTenants()
     }, [loadTenants])
+
+    async function openFinancialProfile(tenant: TenantRecord) {
+        setFinancialProfileTenant(tenant)
+        setFinancialProfileData(null)
+        setFinancialProfileCredits([])
+        setFinancialProfileError('')
+        setIsFinancialProfileLoading(true)
+        try {
+            invalidateOwnerDataCache(ownerUid)
+            const [ledgerData, credits] = await Promise.all([
+                loadLedgerSourceData(ownerUid),
+                listTenantCredits(ownerUid),
+            ])
+            setFinancialProfileData(ledgerData)
+            setFinancialProfileCredits(credits)
+        } catch (error: unknown) {
+            setFinancialProfileError(error instanceof Error
+                ? error.message
+                : 'Could not load this tenant’s financial profile.')
+        } finally {
+            setIsFinancialProfileLoading(false)
+        }
+    }
+
+    function closeFinancialProfile() {
+        if (isFinancialProfileLoading) return
+        setFinancialProfileTenant(null)
+        setFinancialProfileData(null)
+        setFinancialProfileCredits([])
+        setFinancialProfileError('')
+    }
+
+    const financialProfileSummary = useMemo(() => {
+        if (!financialProfileTenant || !financialProfileData) return null
+
+        const balanceByKey = new Map(
+            financialProfileData.billBalances.map((balance) => [
+                `${balance.billType}__${balance.billId}`,
+                balance,
+            ] as const),
+        )
+
+        const billRows: TenantProfileBillRow[] = []
+        for (const bill of financialProfileData.rentBills) {
+            if (bill.tenantId !== financialProfileTenant.id || bill.status !== 'issued') continue
+            const balance = balanceByKey.get(`rent__${bill.id}`)
+            billRows.push({
+                key: `rent__${bill.id}`,
+                billType: 'rent',
+                billingMonth: bill.billingMonth,
+                referenceDate: bill.occupancyEndDate,
+                roomLabel: `${bill.roomCode} · Room ${bill.roomNumber}`,
+                amountMinor: bill.totalMinor,
+                paidMinor: balance?.paidAmountMinor ?? 0,
+                outstandingMinor: balance?.outstandingMinor ?? bill.totalMinor,
+            })
+        }
+
+        const tenantElectricityBills = financialProfileData.electricityBills.filter((bill) => {
+            const balance = balanceByKey.get(`electricity__${bill.id}`)
+            const resolvedAssignment = resolveElectricityBillTenantAssignment(
+                bill,
+                financialProfileData.tenantAssignments,
+            )
+            const tenantId = bill.tenantId || balance?.tenantId || resolvedAssignment?.tenantId
+            return tenantId === financialProfileTenant.id
+        })
+
+        for (const bill of tenantElectricityBills) {
+            const balance = balanceByKey.get(`electricity__${bill.id}`)
+            const resolvedAssignment = resolveElectricityBillTenantAssignment(
+                bill,
+                financialProfileData.tenantAssignments,
+            )
+            billRows.push({
+                key: `electricity__${bill.id}`,
+                billType: 'electricity',
+                billingMonth: bill.billingMonth,
+                referenceDate: bill.readingDate,
+                roomLabel: `${bill.roomCode} · Room ${bill.tenantRoomNumber || resolvedAssignment?.roomNumber || '—'}`,
+                amountMinor: bill.amountMinor,
+                paidMinor: balance?.paidAmountMinor ?? 0,
+                outstandingMinor: balance?.outstandingMinor ?? bill.amountMinor,
+                reading: {
+                    previous: bill.previousReading,
+                    current: bill.currentReading,
+                    units: bill.unitsConsumed,
+                },
+            })
+        }
+
+        billRows.sort((left, right) =>
+            right.billingMonth.localeCompare(left.billingMonth) ||
+            right.referenceDate.localeCompare(left.referenceDate),
+        )
+
+        const openingDueMinor = financialProfileData.openingBalances
+            .filter((balance) => balance.tenantId === financialProfileTenant.id)
+            .reduce((total, balance) => total + balance.outstandingMinor, 0)
+        const outstandingMinor = openingDueMinor + billRows.reduce(
+            (total, bill) => total + Math.max(0, bill.outstandingMinor),
+            0,
+        )
+        const advanceMinor = financialProfileCredits.find(
+            (credit) => credit.tenantId === financialProfileTenant.id,
+        )?.creditMinor ?? 0
+
+        return {
+            billRows,
+            readingRows: tenantElectricityBills.sort((left, right) =>
+                right.readingDate.localeCompare(left.readingDate),
+            ),
+            openingDueMinor,
+            outstandingMinor,
+            advanceMinor,
+            assignments: financialProfileData.tenantAssignments
+                .filter((assignment) => assignment.tenantId === financialProfileTenant.id)
+                .sort((left, right) => right.moveInDate.localeCompare(left.moveInDate)),
+        }
+    }, [financialProfileTenant, financialProfileData, financialProfileCredits])
 
     const filteredTenants = useMemo(() => {
         const query = search.trim().toLowerCase()
@@ -418,16 +594,25 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
                                 >
                                     Permanent tenant ID
                                 </span>
-
-                                <button
-                                    className="button button-secondary tenant-edit-button"
-                                    type="button"
-                                    onClick={() => openEditDialog(tenant)}
-                                    aria-label={`Edit ${tenant.fullName}`}
-                                >
-                                    <Pencil size={15} aria-hidden="true" />
-                                    Edit
-                                </button>
+                                <div className="tenant-card-actions">
+                                    <button
+                                        className="button button-secondary tenant-profile-button"
+                                        type="button"
+                                        onClick={() => void openFinancialProfile(tenant)}
+                                    >
+                                        <Eye size={15} aria-hidden="true" />
+                                        Financial profile
+                                    </button>
+                                    <button
+                                        className="button button-secondary tenant-edit-button"
+                                        type="button"
+                                        onClick={() => openEditDialog(tenant)}
+                                        aria-label={`Edit ${tenant.fullName}`}
+                                    >
+                                        <Pencil size={15} aria-hidden="true" />
+                                        Edit
+                                    </button>
+                                </div>
                             </div>
                         </article>
                     ))}
@@ -627,6 +812,158 @@ export function TenantsPage({ ownerUid }: TenantsPageProps) {
                                 </button>
                             </div>
                         </form>
+                    </section>
+                </div>
+            )}
+
+            {financialProfileTenant && (
+                <div className="modal-overlay" role="presentation" onMouseDown={(event) => {
+                    if (event.target === event.currentTarget) closeFinancialProfile()
+                }}>
+                    <section
+                        className="property-modal tenant-financial-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="tenant-financial-profile-title"
+                    >
+                        <header className="property-modal-heading">
+                            <div>
+                                <p className="eyebrow">Tenant profile · Financial history</p>
+                                <h2 id="tenant-financial-profile-title">{financialProfileTenant.fullName}</h2>
+                                <p className="tenant-financial-profile-code">{financialProfileTenant.tenantCode}</p>
+                            </div>
+                            <button
+                                className="icon-button"
+                                type="button"
+                                onClick={closeFinancialProfile}
+                                disabled={isFinancialProfileLoading}
+                                aria-label="Close financial profile"
+                            >
+                                <X size={20} aria-hidden="true" />
+                            </button>
+                        </header>
+
+                        {isFinancialProfileLoading ? (
+                            <div className="tenant-financial-state" role="status">
+                                <LoaderCircle size={20} className="auth-spinner" aria-hidden="true" />
+                                Loading tenant bills and meter readings…
+                            </div>
+                        ) : financialProfileError ? (
+                            <div className="tenant-financial-error" role="alert">{financialProfileError}</div>
+                        ) : financialProfileSummary ? (
+                            <>
+                                <div className="tenant-financial-summary">
+                                    <article>
+                                        <span><Wallet size={15} aria-hidden="true" /> Outstanding due</span>
+                                        <strong>{formatTenantMoney(financialProfileSummary.outstandingMinor)}</strong>
+                                    </article>
+                                    <article>
+                                        <span><CircleDollarSign size={15} aria-hidden="true" /> Available advance</span>
+                                        <strong>{formatTenantMoney(financialProfileSummary.advanceMinor)}</strong>
+                                    </article>
+                                    <article>
+                                        <span><ReceiptText size={15} aria-hidden="true" /> Issued bills</span>
+                                        <strong>{financialProfileSummary.billRows.length}</strong>
+                                    </article>
+                                </div>
+
+                                <section className="tenant-financial-section">
+                                    <div className="tenant-financial-section-heading">
+                                        <h3>Outstanding and paid bills</h3>
+                                        <span>{financialProfileSummary.billRows.length} records</span>
+                                    </div>
+                                    {financialProfileSummary.billRows.length === 0 && financialProfileSummary.openingDueMinor === 0 ? (
+                                        <p className="tenant-financial-empty">No issued rent or electricity bills are recorded for this tenant.</p>
+                                    ) : (
+                                        <div className="tenant-financial-table-wrap">
+                                            <table className="tenant-financial-table">
+                                                <thead><tr><th>Bill</th><th>Month / date</th><th>Room</th><th>Bill</th><th>Paid</th><th>Due</th></tr></thead>
+                                                <tbody>
+                                                    {financialProfileSummary.openingDueMinor > 0 && (
+                                                        <tr>
+                                                            <td>Opening due</td>
+                                                            <td>Previous balance</td>
+                                                            <td>Tenant</td>
+                                                            <td>—</td>
+                                                            <td>—</td>
+                                                            <td>{formatTenantMoney(financialProfileSummary.openingDueMinor)}</td>
+                                                        </tr>
+                                                    )}
+                                                    {financialProfileSummary.billRows.map((bill) => (
+                                                        <tr key={bill.key}>
+                                                            <td>{bill.billType === 'rent' ? 'Rent' : 'Electricity'}</td>
+                                                            <td>{formatTenantProfileMonth(bill.billingMonth)}<small>{formatTenantProfileDate(bill.referenceDate)}</small></td>
+                                                            <td>{bill.roomLabel}</td>
+                                                            <td>{formatTenantMoney(bill.amountMinor)}</td>
+                                                            <td>{formatTenantMoney(bill.paidMinor)}</td>
+                                                            <td>{formatTenantMoney(bill.outstandingMinor)}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </section>
+
+                                <section className="tenant-financial-section">
+                                    <div className="tenant-financial-section-heading">
+                                        <h3>Electricity reading history</h3>
+                                        <span>{financialProfileSummary.readingRows.length} readings</span>
+                                    </div>
+                                    {financialProfileSummary.readingRows.length === 0 ? (
+                                        <p className="tenant-financial-empty">No electricity readings are recorded for this tenant.</p>
+                                    ) : (
+                                        <div className="tenant-financial-reading-list">
+                                            {financialProfileSummary.readingRows.map((reading) => (
+                                                <article key={reading.id}>
+                                                    <div>
+                                                        <strong>{reading.meterCode} · {reading.roomCode}</strong>
+                                                        <small>{formatTenantProfileDate(reading.readingDate)} · {formatTenantProfileMonth(reading.billingMonth)}</small>
+                                                    </div>
+                                                    <div className="tenant-financial-reading-values">
+                                                        <span><small>Previous</small><b>{reading.previousReading.toLocaleString('en-BD')}</b></span>
+                                                        <span><small>Current</small><b>{reading.currentReading.toLocaleString('en-BD')}</b></span>
+                                                        <span><small>Units</small><b>{reading.unitsConsumed.toLocaleString('en-BD')}</b></span>
+                                                        <span><small>Bill</small><b>{formatTenantMoney(reading.amountMinor)}</b></span>
+                                                    </div>
+                                                </article>
+                                            ))}
+                                        </div>
+                                    )}
+                                </section>
+
+                                <section className="tenant-financial-section">
+                                    <div className="tenant-financial-section-heading">
+                                        <h3>Room assignment history</h3>
+                                        <span>{financialProfileSummary.assignments.length} assignments</span>
+                                    </div>
+                                    {financialProfileSummary.assignments.length === 0 ? (
+                                        <p className="tenant-financial-empty">No room assignments are recorded.</p>
+                                    ) : (
+                                        <div className="tenant-financial-assignment-list">
+                                            {financialProfileSummary.assignments.map((assignment) => (
+                                                <article key={assignment.id}>
+                                                    <strong>{assignment.roomCode} · Room {assignment.roomNumber}</strong>
+                                                    <span>{assignment.propertyCode} · {assignment.floorName}</span>
+                                                    <small>{assignment.moveInDate} – {assignment.moveOutDate ?? 'Current'}</small>
+                                                </article>
+                                            ))}
+                                        </div>
+                                    )}
+                                </section>
+                                <div className="tenant-financial-footer">
+                                    <p>Record or allocate a receipt for this tenant from the Payments page. Existing unpaid bills remain available there.</p>
+                                    <button
+                                        className="button button-primary"
+                                        type="button"
+                                        onClick={() => onNavigate('Payments')}
+                                    >
+                                        <Wallet size={16} aria-hidden="true" />
+                                        Open Payments
+                                    </button>
+                                </div>
+                            </>
+                        ) : null}
                     </section>
                 </div>
             )}

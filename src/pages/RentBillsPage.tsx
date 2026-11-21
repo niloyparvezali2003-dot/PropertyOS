@@ -28,7 +28,7 @@ import { recordAuditEvent } from '../services/firebase/audit'
 import {
   createRoomRentRate,
   deleteRoomRentRate,
-  ensureRentBillRoomMonthLocks,
+  ensureRentBillAssignmentMonthLocks,
   ensureRentRateUsageLocks,
   generateRentBillsForMonth,
   getRentBillErrorMessage,
@@ -67,6 +67,12 @@ function getToday(): string {
 
 function getCurrentBillingMonth(): string {
   return getToday().slice(0, 7)
+}
+
+function getPreviousBillingMonth(): string {
+  const today = new Date()
+  const previousMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1)
+  return `${previousMonth.getFullYear()}-${String(previousMonth.getMonth() + 1).padStart(2, '0')}`
 }
 
 function emptyRateForm(roomId = ''): RateFormState {
@@ -277,14 +283,14 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
   const [isSavingRate, setIsSavingRate] = useState(false)
   const [deletingRateId, setDeletingRateId] = useState('')
 
-  const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
+  const [billingMonth, setBillingMonth] = useState(getPreviousBillingMonth)
   const [isGenerationConfirmOpen, setIsGenerationConfirmOpen] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationResult, setGenerationResult] =
     useState<RentBillGenerationResult | null>(null)
 
   const [billSearch, setBillSearch] = useState('')
-  const [billMonthFilter, setBillMonthFilter] = useState(getCurrentBillingMonth)
+  const [billMonthFilter, setBillMonthFilter] = useState(getPreviousBillingMonth)
   const [activeReviewSection, setActiveReviewSection] = useState<'rates' | 'bills'>('rates')
   const [isDownloadingRatesPdf, setIsDownloadingRatesPdf] = useState(false)
 
@@ -306,7 +312,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
       // Protect rate records referenced by older issued bills before the
       // user can attempt to delete an unused rate.
       await ensureRentRateUsageLocks(ownerUid, nextBills)
-      await ensureRentBillRoomMonthLocks(ownerUid, nextBills)
+      await ensureRentBillAssignmentMonthLocks(ownerUid, nextBills)
 
       setRates(nextRates)
       setBills(nextBills)
@@ -539,7 +545,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
 
   const billMonths = useMemo(
     () =>
-      [...new Set([getCurrentBillingMonth(), ...bills.map((bill) => bill.billingMonth)])]
+      [...new Set([getPreviousBillingMonth(), getCurrentBillingMonth(), ...bills.map((bill) => bill.billingMonth)])]
         .sort()
         .reverse(),
     [bills],
@@ -1035,7 +1041,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
             <div className="panel-heading">
               <div>
                 <h2>Generate monthly bills</h2>
-                <p>One bill per eligible tenant assignment for the selected month.</p>
+                <p>One prorated bill per eligible tenant assignment. The page defaults to the previous month.</p>
               </div>
               <span className="rent-panel-icon">
                 <CalendarDays size={19} aria-hidden="true" />
@@ -1057,7 +1063,7 @@ export function RentBillsPage({ ownerUid }: RentBillsPageProps) {
             </label>
 
             <p className="rent-help-text">
-              Existing bills are kept as-is. Running the same month again will not create duplicate bills.
+              Existing issued bills are kept as-is. Each assignment can have one bill per month, including separate tenants who occupied the same room at different times.
             </p>
 
             <button

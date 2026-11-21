@@ -412,7 +412,7 @@ function App() {
             ) : activePage === 'Rooms' ? (
               <RoomsPage ownerUid={ownerUid} onNavigate={setActivePage} />
             ) : activePage === 'Tenants' ? (
-              <TenantsPage ownerUid={ownerUid} />
+              <TenantsPage ownerUid={ownerUid} onNavigate={setActivePage} />
             ) : activePage === 'Meters' ? (
               <MetersPage ownerUid={ownerUid} />
             ) : activePage === 'Rent & Bills' ? (

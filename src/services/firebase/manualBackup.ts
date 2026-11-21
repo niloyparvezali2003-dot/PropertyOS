@@ -62,6 +62,7 @@ const COLLECTIONS = [
   'properties',
   'propertyNameIndex',
   'rentBills',
+  'rentBillAssignmentMonthLocks',
   'rentBillRoomMonthLocks',
   'roomNameIndex',
   'roomRentRateUsageLocks',

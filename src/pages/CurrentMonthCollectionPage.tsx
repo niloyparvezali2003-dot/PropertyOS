@@ -113,6 +113,12 @@ function getCurrentBillingMonth(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 }
 
+function getDefaultCollectionBillingMonth(): string {
+  const now = new Date()
+  const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  return `${previousMonth.getFullYear()}-${String(previousMonth.getMonth() + 1).padStart(2, '0')}`
+}
+
 function formatTaka(amountMinor: number): string {
   return `৳${new Intl.NumberFormat('en-BD', {
     minimumFractionDigits: 2,
@@ -532,7 +538,9 @@ export function CurrentMonthCollectionPage({
   onNavigate,
 }: CurrentMonthCollectionPageProps) {
   const [ledgerData, setLedgerData] = useState<LedgerSourceData | null>(null)
-  const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
+  // Rent is collected in arrears by default. The month selector remains
+  // editable for current-month collections and older outstanding periods.
+  const [billingMonth, setBillingMonth] = useState(getDefaultCollectionBillingMonth)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchValue, setSearchValue] = useState('')
   const [isLoading, setIsLoading] = useState(true)
@@ -1140,10 +1148,10 @@ export function CurrentMonthCollectionPage({
       <header className="current-collection-header">
         <div>
           <p className="eyebrow">Finance / Rent</p>
-          <h1>Current Month Collection</h1>
+          <h1>Monthly Collection</h1>
           <p className="page-description">
             Track each tenant's rent and electricity bill collection for the selected month.
-            Previous dues do not change the current-month payment status.
+            This page defaults to the previous month for rent collection in arrears; you can select any month.
           </p>
         </div>
 
@@ -1185,8 +1193,8 @@ export function CurrentMonthCollectionPage({
         <CircleAlert size={17} aria-hidden="true" />
         <span>
           <strong>Month-specific report:</strong> payment status is calculated only
-          from rent and electricity bills in {formatBillingMonth(billingMonth)}. Previous-month
-          dues and opening balances do not change this status.
+          from rent and electricity bills in {formatBillingMonth(billingMonth)}. Older unpaid dues
+          remain available in Payments and the tenant financial profile until collected.
         </span>
       </div>
 
@@ -1225,7 +1233,7 @@ export function CurrentMonthCollectionPage({
               <small>Rent and electricity allocations for {formatBillingMonth(billingMonth)}</small>
             </article>
             <article className="collection-money-card collection-money-card-due">
-              <span className="collection-money-label"><Wallet size={16} aria-hidden="true" /> Current month remaining</span>
+              <span className="collection-money-label"><Wallet size={16} aria-hidden="true" /> Selected month remaining</span>
               <strong>{formatTaka(summary.remainingMinor)}</strong>
               <small>{tenantCounts.unpaid + tenantCounts.partial} tenant(s) with unpaid monthly bills</small>
             </article>
@@ -1250,7 +1258,7 @@ export function CurrentMonthCollectionPage({
             <section className="collection-list-panel">
               <div className="collection-list-heading">
                 <div>
-                  <p className="eyebrow">{isCurrentMonth ? 'Running month' : 'Selected month'}</p>
+                  <p className="eyebrow">{isCurrentMonth ? 'Current billing month' : 'Selected billing month'}</p>
                   <h2>{formatBillingMonth(billingMonth)} rent &amp; electricity status</h2>
                   <p>{tenantCounts.paid} paid · {tenantCounts.partial} partially paid · {tenantCounts.unpaid} unpaid · {tenantCounts.notBilled} not billed</p>
                 </div>
