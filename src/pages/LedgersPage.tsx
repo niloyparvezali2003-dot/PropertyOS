@@ -280,18 +280,33 @@ function buildEntities(
     })
 }
 
+function electricityBillBalanceSnapshot(
+  data: LedgerSourceData,
+  bill: ElectricityBillRecord,
+) {
+  return data.billBalances.find((balance) =>
+    balance.billType === 'electricity' && balance.billId === bill.id,
+  ) ?? null
+}
+
 function findTenantAssignmentForElectricityBill(
   data: LedgerSourceData,
   bill: ElectricityBillRecord,
 ): TenantAssignmentRecord | null {
-  // New electricity bills have an immutable tenant-assignment snapshot.
-  // Honor it before looking at historical room occupancy, which may now
-  // contain overlapping or subsequently changed assignment records.
-  if (bill.tenantAssignmentId) {
-    return data.tenantAssignments.find((assignment) =>
-      assignment.id === bill.tenantAssignmentId &&
-      (!bill.tenantId || assignment.tenantId === bill.tenantId),
-    ) ?? null
+  const paymentBalance = electricityBillBalanceSnapshot(data, bill)
+  // Prefer the bill's immutable tenant assignment. For legacy bills, a
+  // successful payment/application balance also contains an immutable copy
+  // of the assignment used when the bill was paid. This avoids losing a
+  // historical electricity debit when old occupancy data is incomplete.
+  const savedAssignmentId = bill.tenantAssignmentId || paymentBalance?.tenantAssignmentId
+  if (savedAssignmentId) {
+    const savedAssignment = data.tenantAssignments.find((assignment) =>
+      assignment.id === savedAssignmentId &&
+      (!bill.tenantId || assignment.tenantId === bill.tenantId) &&
+      (!paymentBalance?.tenantId || assignment.tenantId === paymentBalance.tenantId),
+    )
+    if (savedAssignment) return savedAssignment
+    if (bill.tenantAssignmentId) return null
   }
 
   // The reading is tied to an immutable meter-assignment snapshot. Use that
@@ -337,6 +352,8 @@ function electricityBillTenantLabel(
   bill: ElectricityBillRecord,
 ): string {
   if (bill.tenantName) return bill.tenantName
+  const paymentBalance = electricityBillBalanceSnapshot(data, bill)
+  if (paymentBalance?.tenantName) return paymentBalance.tenantName
 
   const tenantAssignment = findTenantAssignmentForElectricityBill(data, bill)
   if (tenantAssignment) return tenantAssignment.tenantName
@@ -700,10 +717,11 @@ function buildEntries(
     if (bill.status !== 'issued' || !safeMinor(bill.amountMinor)) continue
     if (scope === 'room') continue
 
+    const paymentBalance = electricityBillBalanceSnapshot(data, bill)
     const linkedTenantAssignment = findTenantAssignmentForElectricityBill(data, bill)
-    const linkedTenantId = bill.tenantId || linkedTenantAssignment?.tenantId
-    const linkedTenantLabel = bill.tenantName || linkedTenantAssignment?.tenantName ||
-      electricityBillTenantLabel(data, bill)
+    const linkedTenantId = bill.tenantId || paymentBalance?.tenantId || linkedTenantAssignment?.tenantId
+    const linkedTenantLabel = bill.tenantName || paymentBalance?.tenantName ||
+      linkedTenantAssignment?.tenantName || electricityBillTenantLabel(data, bill)
     const matches =
       (scope === 'tenant' && linkedTenantId === entityId) ||
       (scope === 'meter' && bill.meterId === entityId)

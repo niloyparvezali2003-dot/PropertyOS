@@ -21,10 +21,6 @@ import autoTable from 'jspdf-autotable'
 
 import { SearchInput } from '../components/ui/SearchInput'
 import {
-  type PaymentBillBalanceRecord,
-  listPaymentBillBalances,
-} from '../services/firebase/payments'
-import {
   resolveElectricityBillTenantAssignment,
   type ElectricityBillRecord,
 } from '../services/firebase/electricity'
@@ -423,6 +419,23 @@ function resolveLedgerElectricityTenantId(
   // The bill's tenant snapshot is authoritative for newly issued bills.
   if (bill.tenantId) return bill.tenantId
 
+  // Paid legacy bills retain the exact tenant and assignment from the payment
+  // allocation. Use that immutable snapshot before trying to reconstruct old
+  // occupancy from mutable room history.
+  const paymentBalance = data.billBalances.find((balance) =>
+    balance.billType === 'electricity' && balance.billId === bill.id,
+  )
+  if (paymentBalance?.tenantId) return paymentBalance.tenantId
+
+  const savedAssignmentId = bill.tenantAssignmentId || paymentBalance?.tenantAssignmentId
+  if (savedAssignmentId) {
+    const savedAssignment = data.tenantAssignments.find((assignment) =>
+      assignment.id === savedAssignmentId &&
+      (!paymentBalance?.tenantId || assignment.tenantId === paymentBalance.tenantId),
+    )
+    if (savedAssignment) return savedAssignment.tenantId
+  }
+
   const meterAssignment = data.meterAssignments.find(
     (assignment) =>
       assignment.id === bill.meterAssignmentId &&
@@ -519,7 +532,6 @@ export function CurrentMonthCollectionPage({
   onNavigate,
 }: CurrentMonthCollectionPageProps) {
   const [ledgerData, setLedgerData] = useState<LedgerSourceData | null>(null)
-  const [balances, setBalances] = useState<PaymentBillBalanceRecord[]>([])
   const [billingMonth, setBillingMonth] = useState(getCurrentBillingMonth)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchValue, setSearchValue] = useState('')
@@ -537,13 +549,8 @@ export function CurrentMonthCollectionPage({
       // recently cached balance from before a payment was recorded.
       invalidateOwnerDataCache(ownerUid)
 
-      const [nextLedgerData, nextBalances] = await Promise.all([
-        loadLedgerSourceData(ownerUid),
-        listPaymentBillBalances(ownerUid),
-      ])
-
+      const nextLedgerData = await loadLedgerSourceData(ownerUid)
       setLedgerData(nextLedgerData)
-      setBalances(nextBalances)
     } catch (error: unknown) {
       setPageError(getCollectionErrorMessage(error))
     } finally {
@@ -563,7 +570,7 @@ export function CurrentMonthCollectionPage({
 
     const tenantLedgerBalanceById = calculateTenantLedgerBalances(ledgerData)
     const billBalanceByKey = new Map(
-      balances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
+      ledgerData.billBalances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
     )
 
     type MutableTenantRow = {
@@ -645,8 +652,8 @@ export function CurrentMonthCollectionPage({
         bill,
         ledgerData.tenantAssignments,
       )
-      const tenantId = bill.tenantId || resolvedAssignment?.tenantId ||
-        resolveLedgerElectricityTenantId(bill, ledgerData)
+      const tenantId = resolveLedgerElectricityTenantId(bill, ledgerData) ||
+        resolvedAssignment?.tenantId
       if (!tenantId) continue
 
       const tenantRow = grouped.get(tenantId)
@@ -692,7 +699,7 @@ export function CurrentMonthCollectionPage({
       return compareCollectionRoomNumbers(leftRoom, rightRoom) ||
         COLLECTION_ROOM_COLLATOR.compare(left.tenantName, right.tenantName)
     })
-  }, [ledgerData, balances, billingMonth])
+  }, [ledgerData, billingMonth])
 
   const tenantCounts = useMemo(() => tenantTableRows.reduce((counts, tenant) => {
     counts.total += 1
@@ -755,14 +762,13 @@ export function CurrentMonthCollectionPage({
       // from the rent rows currently visible on the page. This ensures every
       // active tenant is listed even when that tenant has no bill this month.
       invalidateOwnerDataCache(ownerUid)
-      const [ledgerData, freshBillBalances, { settings }] = await Promise.all([
+      const [ledgerData, { settings }] = await Promise.all([
         loadLedgerSourceData(ownerUid),
-        listPaymentBillBalances(ownerUid),
         loadWorkspaceSettings(ownerUid),
       ])
       const tenantLedgerBalanceById = calculateTenantLedgerBalances(ledgerData)
       const billBalanceByKey = new Map(
-        freshBillBalances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
+        ledgerData.billBalances.map((balance) => [`${balance.billType}__${balance.billId}`, balance] as const),
       )
 
       // Include all active tenants. Archived tenants are included only when
@@ -828,8 +834,8 @@ export function CurrentMonthCollectionPage({
           bill,
           ledgerData.tenantAssignments,
         )
-        const tenantId = bill.tenantId || resolvedAssignment?.tenantId ||
-          resolveLedgerElectricityTenantId(bill, ledgerData)
+        const tenantId = resolveLedgerElectricityTenantId(bill, ledgerData) ||
+          resolvedAssignment?.tenantId
         if (!tenantId) continue
         const tenantRow = tenantRowsById.get(tenantId)
         if (!tenantRow) continue

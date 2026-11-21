@@ -273,7 +273,18 @@ function makePayableBills(
   }
 
   for (const bill of electricityBills) {
-    const assignment = resolveElectricityBillTenantAssignment(bill, assignments)
+    const paymentBalance = balanceByKey.get(`electricity__${bill.id}`)
+    const assignmentFromPayment = paymentBalance
+      ? assignmentById.get(paymentBalance.tenantAssignmentId)
+      : undefined
+    // Legacy electricity bills may not contain a tenant-at-issue snapshot.
+    // When they have a saved payment balance, reuse the exact assignment that
+    // was validated at payment time before falling back to mutable occupancy.
+    const assignment = bill.tenantAssignmentId
+      ? resolveElectricityBillTenantAssignment(bill, assignments)
+      : assignmentFromPayment && assignmentFromPayment.tenantId === paymentBalance?.tenantId
+        ? assignmentFromPayment
+        : resolveElectricityBillTenantAssignment(bill, assignments)
     if (!assignment) {
       unmatchedElectricity += 1
       continue

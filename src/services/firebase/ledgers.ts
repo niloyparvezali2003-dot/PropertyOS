@@ -12,8 +12,10 @@ import {
 
 import {
   listPayments,
+  listPaymentBillBalances,
   listCreditApplications,
   type CreditApplicationRecord,
+  type PaymentBillBalanceRecord,
   type PaymentRecord,
 } from './payments'
 
@@ -59,6 +61,8 @@ export type LedgerSourceData = {
   rentBills: RentBillRecord[]
   roomRentRates: RoomRentRateRecord[]
   electricityBills: ElectricityBillRecord[]
+  /** Immutable tenant identity recorded when a bill was paid or credited. */
+  billBalances: PaymentBillBalanceRecord[]
   payments: PaymentRecord[]
   creditApplications: CreditApplicationRecord[]
   openingBalances: OpeningBalanceRecord[]
@@ -84,6 +88,7 @@ export async function loadLedgerSourceData(
     rentBills,
     roomRentRates,
     electricityBills,
+    billBalances,
     payments,
     creditApplications,
     openingBalances,
@@ -98,6 +103,7 @@ export async function loadLedgerSourceData(
     listRentBills(ownerUid),
     listRoomRentRates(ownerUid),
     listElectricityBills(ownerUid),
+    listPaymentBillBalances(ownerUid),
     listPayments(ownerUid),
     listCreditApplications(ownerUid),
     listOpeningBalances(ownerUid),
@@ -114,6 +120,7 @@ export async function loadLedgerSourceData(
     rentBills,
     roomRentRates,
     electricityBills,
+    billBalances,
     payments,
     creditApplications,
     openingBalances,
