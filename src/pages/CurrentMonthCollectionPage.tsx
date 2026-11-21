@@ -420,18 +420,8 @@ function resolveLedgerElectricityTenantId(
   bill: ElectricityBillRecord,
   data: LedgerSourceData,
 ): string | null {
-  // Bills issued after tenant snapshots were introduced must stay attached to
-  // the tenant who was charged at issue time. Re-resolving these bills from a
-  // historical room assignment can put the charge on a different tenant (or
-  // no tenant), while the receipt remains credited to the saved bill tenant.
+  // The bill's tenant snapshot is authoritative for newly issued bills.
   if (bill.tenantId) return bill.tenantId
-
-  if (bill.tenantAssignmentId) {
-    const savedAssignment = data.tenantAssignments.find(
-      (assignment) => assignment.id === bill.tenantAssignmentId,
-    )
-    if (savedAssignment) return savedAssignment.tenantId
-  }
 
   const meterAssignment = data.meterAssignments.find(
     (assignment) =>
@@ -499,6 +489,10 @@ function calculateTenantLedgerBalances(data: LedgerSourceData): Map<string, numb
 
   for (const bill of data.electricityBills) {
     if (bill.status !== 'issued') continue
+    // New electricity bills carry an immutable tenant snapshot. Prefer it
+    // over re-resolving the tenant from historical room assignments: those
+    // assignments can overlap or later change, while the bill's snapshot is
+    // the tenant who was charged when the bill was issued.
     const tenantId = resolveLedgerElectricityTenantId(bill, data)
     if (tenantId) add(tenantId, bill.amountMinor)
   }

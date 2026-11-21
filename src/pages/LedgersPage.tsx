@@ -284,20 +284,19 @@ function findTenantAssignmentForElectricityBill(
   data: LedgerSourceData,
   bill: ElectricityBillRecord,
 ): TenantAssignmentRecord | null {
-  // New electricity bills carry an immutable tenant-assignment snapshot.
-  // Prefer that exact assignment; if it is no longer present, callers use the
-  // tenant fields saved on the bill instead of charging a different tenant.
+  // New electricity bills have an immutable tenant-assignment snapshot.
+  // Honor it before looking at historical room occupancy, which may now
+  // contain overlapping or subsequently changed assignment records.
   if (bill.tenantAssignmentId) {
-    const savedAssignment = data.tenantAssignments.find((assignment) =>
+    return data.tenantAssignments.find((assignment) =>
       assignment.id === bill.tenantAssignmentId &&
       (!bill.tenantId || assignment.tenantId === bill.tenantId),
-    )
-    if (savedAssignment) return savedAssignment
+    ) ?? null
   }
-  if (bill.tenantId) return null
 
-  // Legacy bills have no tenant snapshot. Resolve them from the historical
-  // meter/room assignment for the reading date.
+  // The reading is tied to an immutable meter-assignment snapshot. Use that
+  // assignment's room whenever available, then resolve the tenant on the
+  // actual meter-reading date (not the tenant's current room today).
   const meterAssignment = data.meterAssignments.find(
     (assignment) =>
       assignment.id === bill.meterAssignmentId &&
@@ -338,9 +337,7 @@ function electricityBillTenantLabel(
   bill: ElectricityBillRecord,
 ): string {
   if (bill.tenantName) return bill.tenantName
-  if (bill.tenantId) {
-    return data.tenants.find((tenant) => tenant.id === bill.tenantId)?.fullName ?? 'Tenant unavailable'
-  }
+
   const tenantAssignment = findTenantAssignmentForElectricityBill(data, bill)
   if (tenantAssignment) return tenantAssignment.tenantName
 
@@ -370,16 +367,7 @@ function tenantPaymentRoomLabel(payment: PaymentRecord): string {
   )]
   if (roomNumbers.length === 1) return `Room ${roomNumbers[0]}`
   if (roomNumbers.length > 1) return `Rooms ${roomNumbers.join(', ')}`
-
-  // A receipt allocated entirely to the legacy opening balance has no room
-  // allocation, but it is not advance credit. Keep those two cases distinct
-  // in the exported tenant statement.
-  if (payment.openingBalanceAllocationMinor > 0 && payment.advanceAddedMinor > 0) {
-    return 'Opening balance / advance'
-  }
-  if (payment.openingBalanceAllocationMinor > 0) return 'Opening balance'
-  if (payment.advanceAddedMinor > 0) return 'Unallocated / advance'
-  return 'Tenant-level payment'
+  return 'Unallocated / advance'
 }
 
 function safeMinor(value: number): number {
@@ -713,8 +701,9 @@ function buildEntries(
     if (scope === 'room') continue
 
     const linkedTenantAssignment = findTenantAssignmentForElectricityBill(data, bill)
-    const linkedTenantId = bill.tenantId ?? linkedTenantAssignment?.tenantId
-    const linkedTenantLabel = electricityBillTenantLabel(data, bill)
+    const linkedTenantId = bill.tenantId || linkedTenantAssignment?.tenantId
+    const linkedTenantLabel = bill.tenantName || linkedTenantAssignment?.tenantName ||
+      electricityBillTenantLabel(data, bill)
     const matches =
       (scope === 'tenant' && linkedTenantId === entityId) ||
       (scope === 'meter' && bill.meterId === entityId)
