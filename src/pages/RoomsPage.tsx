@@ -63,6 +63,18 @@ const statusLabels: Record<RoomStatus, string> = {
     inactive: 'Inactive',
 }
 
+// Keep the stored Ground value compatible with existing room records.
+const floorLevelOptions = [
+    { value: 'Ground', label: 'Ground Floor' },
+    { value: '1st Floor', label: '1st Floor' },
+    { value: '2nd Floor', label: '2nd Floor' },
+    { value: '3rd Floor', label: '3rd Floor' },
+    ...Array.from({ length: 7 }, (_, index) => {
+        const floor = index + 4
+        return { value: `${floor}th Floor`, label: `${floor}th Floor` }
+    }),
+]
+
 export function RoomsPage({
     ownerUid,
     onNavigate,
@@ -182,10 +194,8 @@ export function RoomsPage({
     function openCreateDialog() {
         setEditingRoom(null)
 
-        setForm({
-            ...emptyForm,
-            propertyId: activeProperties[0]?.id ?? '',
-        })
+        // Keep Property unselected until the user chooses it explicitly.
+        setForm({ ...emptyForm })
 
         setFormError('')
         setIsDialogOpen(true)
@@ -554,18 +564,35 @@ export function RoomsPage({
                                         Floor / level <span aria-hidden="true">*</span>
                                     </label>
 
-                                    <input
+                                    <select
                                         id="room-floor"
-                                        type="text"
                                         value={form.floorName}
                                         onChange={(event) =>
                                             updateField('floorName', event.target.value)
                                         }
-                                        placeholder="e.g. 1st Floor"
-                                        maxLength={80}
                                         required
                                         disabled={isSaving}
-                                    />
+                                    >
+                                        <option value="" disabled>
+                                            Select a floor
+                                        </option>
+
+                                        {/* Preserve older custom floor names when editing existing rooms. */}
+                                        {form.floorName &&
+                                            !floorLevelOptions.some(
+                                                (option) => option.value === form.floorName,
+                                            ) && (
+                                                <option value={form.floorName}>
+                                                    {form.floorName} (existing)
+                                                </option>
+                                            )}
+
+                                        {floorLevelOptions.map((option) => (
+                                            <option key={option.value} value={option.value}>
+                                                {option.label}
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
 
                                 <div className="property-form-field">
