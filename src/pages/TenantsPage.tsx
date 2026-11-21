@@ -10,9 +10,7 @@ import {
     CircleDollarSign,
     Eye,
     LoaderCircle,
-    MapPin,
     Pencil,
-    Phone,
     Plus,
     ReceiptText,
     Users,
@@ -540,82 +538,54 @@ export function TenantsPage({ ownerUid, onNavigate }: TenantsPageProps) {
                     )}
                 </section>
             ) : (
-                <section className="tenants-grid" aria-label="Tenants">
-                    {filteredTenants.map((tenant) => (
-                        <article className="tenant-card" key={tenant.id}>
-                            <div className="tenant-card-heading">
-                                <span className="tenant-avatar">
-                                    {tenant.fullName
-                                        .trim()
-                                        .charAt(0)
-                                        .toUpperCase()}
-                                </span>
-
-                                <span
-                                    className={`tenant-status tenant-status--${tenant.status}`}
-                                >
-                                    {statusLabels[tenant.status]}
-                                </span>
-                            </div>
-
-                            <div className="tenant-name-row">
-                                <h2>{tenant.fullName}</h2>
-                                <span className="tenant-code">
-                                    {tenant.tenantCode}
-                                </span>
-                            </div>
-
-                            <p className="tenant-contact">
-                                <Phone size={15} aria-hidden="true" />
-                                <span>{tenant.phone}</span>
-                            </p>
-
-                            {tenant.email && (
-                                <p className="tenant-secondary">
-                                    {tenant.email}
-                                </p>
-                            )}
-
-                            {tenant.address && (
-                                <p className="tenant-contact">
-                                    <MapPin size={15} aria-hidden="true" />
-                                    <span>{tenant.address}</span>
-                                </p>
-                            )}
-
-                            {tenant.notes && (
-                                <p className="tenant-notes">{tenant.notes}</p>
-                            )}
-
-                            <div className="tenant-card-footer">
-                                <span
-                                    className="tenant-permanent-label"
-                                    title={`Database reference: ${tenant.id}`}
-                                >
-                                    Permanent tenant ID
-                                </span>
-                                <div className="tenant-card-actions">
-                                    <button
-                                        className="button button-secondary tenant-profile-button"
-                                        type="button"
-                                        onClick={() => void openFinancialProfile(tenant)}
-                                    >
-                                        <Eye size={15} aria-hidden="true" />
-                                        Financial profile
-                                    </button>
-                                    <button
-                                        className="button button-secondary tenant-edit-button"
-                                        type="button"
-                                        onClick={() => openEditDialog(tenant)}
-                                        aria-label={`Edit ${tenant.fullName}`}
-                                    >
-                                        <Pencil size={15} aria-hidden="true" />
-                                        Edit
-                                    </button>
-                                </div>
-                            </div>
-                        </article>
-                    ))}
+                <section className="tenant-directory-wrap" aria-label="Tenant list">
+                    <table className="tenant-directory-table">
+                        <thead>
+                            <tr>
+                                <th scope="col" className="tenant-directory-index">#</th>
+                                <th scope="col">Name</th>
+                                <th scope="col">Number</th>
+                                <th scope="col">Status</th>
+                                <th scope="col" className="tenant-directory-actions-heading">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filteredTenants.map((tenant, index) => (
+                                <tr key={tenant.id}>
+                                    <td className="tenant-directory-index">{index + 1}</td>
+                                    <td className="tenant-directory-name">{tenant.fullName}</td>
+                                    <td className="tenant-directory-phone">{tenant.phone}</td>
+                                    <td>
+                                        <span className={`tenant-status tenant-status--${tenant.status}`}>
+                                            {statusLabels[tenant.status]}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div className="tenant-directory-actions">
+                                            <button
+                                                className="button button-secondary tenant-directory-profile-button"
+                                                type="button"
+                                                onClick={() => void openFinancialProfile(tenant)}
+                                                aria-label={`Financial profile for ${tenant.fullName}`}
+                                            >
+                                                <Eye size={15} aria-hidden="true" />
+                                                Financial Profile
+                                            </button>
+                                            <button
+                                                className="button button-secondary tenant-directory-edit-button"
+                                                type="button"
+                                                onClick={() => openEditDialog(tenant)}
+                                                aria-label={`Edit ${tenant.fullName}`}
+                                            >
+                                                <Pencil size={15} aria-hidden="true" />
+                                                Edit
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
                 </section>
             )}
                 </>

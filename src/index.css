@@ -1989,6 +1989,89 @@ input:focus-visible {
   padding: 7px 10px;
 }
 
+/* Compact tenant directory list */
+.tenant-directory-wrap {
+  width: 100%;
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--panel-radius);
+  box-shadow: 0 2px 6px rgb(15 23 42 / 2%);
+}
+
+.tenant-directory-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13px;
+}
+
+.tenant-directory-table th,
+.tenant-directory-table td {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.tenant-directory-table th {
+  color: var(--muted);
+  background: var(--surface-secondary);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.tenant-directory-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.tenant-directory-table tbody tr:hover {
+  background: var(--surface-secondary);
+}
+
+.tenant-directory-index {
+  width: 54px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tenant-directory-name {
+  min-width: 190px;
+  color: var(--text-heading);
+  font-weight: 700;
+}
+
+.tenant-directory-phone {
+  min-width: 150px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tenant-directory-actions-heading {
+  min-width: 260px;
+}
+
+.tenant-directory-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.tenant-directory-profile-button,
+.tenant-directory-edit-button {
+  min-height: 34px;
+  padding: 7px 11px;
+  font-size: 11px;
+}
+
+.tenant-directory-profile-button {
+  color: var(--color-primary, var(--text));
+}
+
 @media (max-width: 1150px) {
   .tenants-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
